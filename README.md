@@ -121,6 +121,23 @@ Test Trade**. This is the same connection test, just from the UI instead of
 the CLI — useful once the bot is running on a remote host and you want to
 confirm it's alive without SSHing in.
 
+## Running it fully automated
+
+Three pieces, each hosted separately:
+
+1. **Trading worker** (Railway or similar always-on host) — runs
+   `scripts/run_live.py` continuously, holding the live Tradovate
+   connection and placing trades per the strategy rules. See `RAILWAY.md`
+   for step-by-step setup.
+2. **Supabase** — the trade-log database. The worker writes every trade
+   here (in addition to the local JSON file); the dashboard reads from here
+   live. See `supabase/schema.sql`.
+3. **Dashboard** (Vercel) — reads from Supabase when configured, falls back
+   to the static `dashboard/data/trades.json` otherwise.
+
+This chat/session cannot itself run the always-on worker — it's an
+ephemeral container. `RAILWAY.md` walks through standing this up properly.
+
 ## Dashboard (Vercel)
 
 `dashboard/` is a separate Next.js app you deploy to Vercel as its own

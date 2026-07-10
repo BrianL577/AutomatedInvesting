@@ -1,8 +1,31 @@
 import { promises as fs } from "fs";
 import path from "path";
-import type { Trade } from "../app/api/trades/route";
+import type { Trade } from "./types";
 
-export async function loadTrades(): Promise<Trade[]> {
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+async function loadTradesFromSupabase(): Promise<Trade[] | null> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/trades?select=*&order=timestamp.asc`,
+      {
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        },
+        cache: "no-store",
+      }
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as Trade[];
+  } catch {
+    return null;
+  }
+}
+
+async function loadTradesFromFile(): Promise<Trade[]> {
   const filePath = path.join(process.cwd(), "data", "trades.json");
   try {
     const raw = await fs.readFile(filePath, "utf-8");
@@ -12,6 +35,16 @@ export async function loadTrades(): Promise<Trade[]> {
     return [];
   }
 }
+
+/** Prefers Supabase (live data) when configured; falls back to the static
+ * bundled JSON file otherwise. */
+export async function loadTrades(): Promise<Trade[]> {
+  const fromSupabase = await loadTradesFromSupabase();
+  if (fromSupabase !== null) return fromSupabase;
+  return loadTradesFromFile();
+}
+
+export const usingSupabase = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 
 export type Stats = {
   totalTrades: number;
