@@ -12,6 +12,7 @@ strategy:
   max_wick_ratio: 0.30           # (total wick) / range must be <= this to count as displacement
   structure_lookback: 30         # minutes to look back for swing high/low ("structure")
   swing_strength: 2              # bars on each side required to confirm a pivot
+  break_buffer_points: 1.0       # close must clear structure by this much to avoid noise breaks
 
 risk:
   stop_points: 25
@@ -19,6 +20,10 @@ risk:
   max_trades_per_day: 4
   stop_after_consecutive_losses: 2
   contracts_per_trade: 1
+  # Daily rate limiter: stop trading for the day once running P&L touches
+  # either cap. Not stated in the transcript — set per user instruction.
+  daily_profit_cap: 1520
+  daily_loss_cap: 1000
 
 instrument:
   symbol: "NQ"                   # Nasdaq-100 e-mini futures, front month resolved at runtime

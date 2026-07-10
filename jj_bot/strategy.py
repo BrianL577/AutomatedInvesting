@@ -8,11 +8,14 @@ Turns the discretionary ideas from the video into concrete, backtestable rules:
 - Phase 2 (10-90 min after open, until a hard cutoff): mean reversion back
   toward the open, once price has displaced away from it.
 - Entry trigger ("displacement" + "break of structure and close"): a candle
-  whose range is notably larger than recent bars and the previous bar, with
-  small wicks, that closes beyond a recent swing high/low.
+  whose *true range* (volatility-adjusted, gap-aware) is notably larger than
+  recent bars and the previous bar, whose body dominates the candle (small
+  wicks), that closes beyond a recent swing high/low by more than a small
+  noise buffer.
 - Fixed 1:1.5 R:R (configurable stop/target in points).
 - Caps: max trades/day, stop after N consecutive losses, no entries after the
-  hard cutoff.
+  hard cutoff, and a daily dollar rate limiter (stop trading once the day's
+  running P&L hits a profit cap or a loss cap).
 
 The engine is fed one confirmed (closed) bar at a time via `on_bar`. It is
 pure decision logic — it does not manage open positions or place orders;
@@ -26,9 +29,18 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
-from .config import StrategyConfig, RiskConfig
+from .config import StrategyConfig, RiskConfig, InstrumentConfig
 from .models import Bar, Direction, Phase, Signal, SetupGrade
 from .time_utils import minutes_since, parse_hhmm
+
+
+def true_range(bar: Bar, prev_close: Optional[float]) -> float:
+    """Volatility-adjusted, gap-aware range: accounts for gaps between bars,
+    not just the bar's own high-low, so displacement detection isn't fooled
+    by a quiet-looking candle that actually gapped hard from the prior close."""
+    if prev_close is None:
+        return bar.range
+    return max(bar.range, abs(bar.high - prev_close), abs(bar.low - prev_close))
 
 
 @dataclass
@@ -41,6 +53,7 @@ class _Pivot:
 class StrategyEngine:
     strategy_cfg: StrategyConfig
     risk_cfg: RiskConfig
+    instrument_cfg: Optional[InstrumentConfig] = None
 
     day_bars: list[Bar] = field(default_factory=list)
     open_bar: Optional[Bar] = None
@@ -54,6 +67,8 @@ class StrategyEngine:
     consecutive_losses: int = 0
     position_open: bool = False
     continuation_direction: Optional[Direction] = None
+    day_pnl_points: float = 0.0
+    rate_limited: bool = False
 
     def reset_day(self) -> None:
         self.day_bars = []
@@ -66,11 +81,27 @@ class StrategyEngine:
         self.consecutive_losses = 0
         self.position_open = False
         self.continuation_direction = None
+        self.day_pnl_points = 0.0
+        self.rate_limited = False
 
-    def record_trade_result(self, win: bool) -> None:
+    def _dollar_per_point(self) -> float:
+        if self.instrument_cfg is None or self.instrument_cfg.tick_size <= 0:
+            return 1.0
+        return self.instrument_cfg.tick_value / self.instrument_cfg.tick_size
+
+    def record_trade_result(self, win: bool, pnl_points: float = 0.0) -> None:
         self.trades_today += 1
         self.consecutive_losses = 0 if win else self.consecutive_losses + 1
         self.position_open = False
+        self.day_pnl_points += pnl_points
+
+        day_pnl_dollars = self.day_pnl_points * self._dollar_per_point()
+        if day_pnl_dollars >= self.risk_cfg.daily_profit_cap:
+            self.rate_limited = True
+            self.phase = Phase.DONE_FOR_DAY
+        elif day_pnl_dollars <= -self.risk_cfg.daily_loss_cap:
+            self.rate_limited = True
+            self.phase = Phase.DONE_FOR_DAY
 
     def _session_open_time(self, dt: datetime) -> datetime:
         t = parse_hhmm(self.strategy_cfg.session_open)
@@ -109,31 +140,46 @@ class StrategyEngine:
             return max(p.price for p in self.pivot_highs)
 
     def _is_displacement(self, bar: Bar) -> bool:
+        """A displacement candle: true-range notably larger than both the
+        recent volatility baseline and the previous bar, with a body that
+        dominates the range (small wicks) — i.e. real directional force, not
+        just a wide, indecisive candle."""
         idx = len(self.day_bars) - 1
         if idx == 0:
             return False
         lookback = self.day_bars[max(0, idx - 10):idx]
         if not lookback:
             return False
-        avg_range = sum(b.range for b in lookback) / len(lookback)
+
+        lookback_closes = [None] + [b.close for b in lookback[:-1]]
+        lookback_tr = [true_range(b, prev_c) for b, prev_c in zip(lookback, lookback_closes)]
+        avg_tr = sum(lookback_tr) / len(lookback_tr)
+
         prev = self.day_bars[idx - 1]
-        if avg_range <= 0 or prev.range <= 0:
+        bar_tr = true_range(bar, prev.close)
+        prev_tr = true_range(prev, self.day_bars[idx - 2].close if idx >= 2 else None)
+
+        if avg_tr <= 0 or prev_tr <= 0:
             return False
-        if bar.range < self.strategy_cfg.displacement_size_ratio * avg_range:
+        if bar_tr < self.strategy_cfg.displacement_size_ratio * avg_tr:
             return False
-        if bar.range < self.strategy_cfg.displacement_prev_ratio * prev.range:
+        if bar_tr < self.strategy_cfg.displacement_prev_ratio * prev_tr:
             return False
         if bar.wick_ratio > self.strategy_cfg.max_wick_ratio:
             return False
         return True
 
     def _break_of_structure(self, bar: Bar, direction: Direction) -> tuple[bool, Optional[float]]:
+        """Break-of-structure requires the close to clear the nearest swing
+        level by more than a small buffer, so marginal/noise breaks (a close
+        one tick past a prior low) don't get treated as a real BOS."""
         level = self._nearest_structure(direction)
         if level is None:
             return False, None
+        buffer = self.strategy_cfg.break_buffer_points
         if direction == Direction.SHORT:
-            return bar.close < level, level
-        return bar.close > level, level
+            return bar.close < level - buffer, level
+        return bar.close > level + buffer, level
 
     def _build_signal(
         self, bar: Bar, direction: Direction, phase: Phase, grade: SetupGrade, reason: str
@@ -174,6 +220,9 @@ class StrategyEngine:
                 self.phase = Phase.CONTINUATION
             return None
 
+        if self.rate_limited:
+            self.phase = Phase.DONE_FOR_DAY
+            return None
         if self.trades_today >= self.risk_cfg.max_trades_per_day:
             self.phase = Phase.DONE_FOR_DAY
             return None

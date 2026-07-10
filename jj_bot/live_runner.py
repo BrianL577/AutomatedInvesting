@@ -16,9 +16,10 @@ import requests
 
 from .bar_aggregator import BarAggregator
 from .config import AppConfig
-from .models import Direction
+from .models import Direction, TradeResult
 from .strategy import StrategyEngine
 from .tradovate_client import TradovateClient, TradovateMarketDataStream
+from .trade_logger import TradeLogger
 from .logging_setup import setup_logging
 
 logger = setup_logging()
@@ -28,10 +29,13 @@ class LiveRunner:
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
         self.client = TradovateClient(cfg.tradovate)
-        self.engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk)
+        self.engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk, instrument_cfg=cfg.instrument)
         self.aggregator = BarAggregator(tz_name=cfg.strategy.timezone)
+        dollar_per_point = cfg.instrument.tick_value / cfg.instrument.tick_size
+        self.trade_logger = TradeLogger(dollar_per_point=dollar_per_point, source="live_paper")
         self._current_day = None
         self._pending_entry_price: float | None = None
+        self._pending_signal = None
 
     def start(self) -> None:
         logger.info("Authenticating with Tradovate (%s)...", self.cfg.tradovate.env)
@@ -92,6 +96,7 @@ class LiveRunner:
             )
             logger.info("Order placed: %s", result)
             self._pending_entry_price = signal.entry_price
+            self._pending_signal = signal
         except Exception:
             logger.exception("Order placement failed; releasing position lock.")
             self.engine.position_open = False
@@ -113,18 +118,34 @@ class LiveRunner:
                 positions = resp.json()
                 open_qty = sum(p.get("netPos", 0) for p in positions if p.get("accountId") == self.client.account_id)
                 if open_qty == 0:
-                    # Flat again — figure out win/loss from realized P&L isn't
-                    # directly available here; a full implementation should read
-                    # /cashBalance or /fill history. As a reasonable proxy we
-                    # look at the account's realized P&L delta via /cashBalance.
                     logger.info("Position flat — trade closed. Fetching fill history for result...")
-                    win = self._infer_last_trade_win()
-                    self.engine.record_trade_result(win)
+                    exit_price = self._infer_last_exit_price()
+                    signal = self._pending_signal
+                    if signal is not None and exit_price is not None:
+                        pnl_points = (
+                            exit_price - signal.entry_price if signal.direction == Direction.LONG
+                            else signal.entry_price - exit_price
+                        )
+                        win = pnl_points > 0
+                        result = TradeResult(
+                            signal=signal, exit_price=exit_price, exit_timestamp=datetime.now(),
+                            win=win, pnl_points=pnl_points,
+                        )
+                        self.trade_logger.log_trade(result)
+                        self.engine.record_trade_result(win, pnl_points=pnl_points)
+                        logger.info(
+                            "Trade closed: %s pnl=%.2f pts (%.2f$) win=%s",
+                            signal.direction.value, pnl_points, pnl_points * self.trade_logger.dollar_per_point, win,
+                        )
+                    else:
+                        logger.warning("Position flat but could not resolve exit price/signal; defaulting to loss for safety.")
+                        self.engine.record_trade_result(False, pnl_points=-self.cfg.risk.stop_points)
                     self._pending_entry_price = None
+                    self._pending_signal = None
             except Exception:
                 logger.exception("Position poll failed")
 
-    def _infer_last_trade_win(self) -> bool:
+    def _infer_last_exit_price(self) -> float | None:
         try:
             resp = requests.get(
                 f"{self.client.rest_base}/fill/list",
@@ -134,13 +155,9 @@ class LiveRunner:
             resp.raise_for_status()
             fills = [f for f in resp.json() if f.get("accountId") == self.client.account_id]
             if not fills:
-                return False
+                return None
             fills.sort(key=lambda f: f.get("timestamp", ""))
-            last_fill = fills[-1]
-            exit_price = last_fill.get("price", self._pending_entry_price)
-            return exit_price is not None and self._pending_entry_price is not None and (
-                exit_price != self._pending_entry_price
-            ) and (exit_price > self._pending_entry_price)
+            return fills[-1].get("price")
         except Exception:
-            logger.exception("Could not infer trade result from fills; defaulting to loss for safety.")
-            return False
+            logger.exception("Could not fetch fill history to resolve exit price.")
+            return None
