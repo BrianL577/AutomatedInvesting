@@ -25,6 +25,10 @@ strategy described by the YouTuber JJ, and runs it against a **Tradovate demo
    configurable in `config.yaml`.
 6. **Trade caps**: max 3–4 trades/day, stop after 2 consecutive losses, no new
    entries after the configured session cutoff (default 11:00 AM ET).
+7. **Daily rate limiter**: not specified in JJ's transcript, so set per
+   instruction — trading stops for the day once running P&L hits a **+$1,520
+   profit cap** or a **-$1,000 loss cap** (`risk.daily_profit_cap` /
+   `risk.daily_loss_cap` in `config.yaml`).
 
 All of this is implemented as an explicit, backtestable state machine in
 `jj_bot/strategy.py` — see that file for the exact rules, since "displacement"
@@ -80,6 +84,21 @@ the NY session, and places bracket orders (market entry + OCO stop/target)
 against your **demo** account only. It refuses to run against a live account
 (`TRADOVATE_ENV` must be `demo`).
 
+## Dashboard (Vercel)
+
+`dashboard/` is a separate Next.js app you deploy to Vercel as its own
+project (Root Directory = `dashboard/`). It shows:
+
+- Success rate % (wins / total trades)
+- Total dollars gained / lost, and net P&L
+- Rate-limiter status (the $1,520 profit cap / $1,000 loss cap above)
+- A full log of every trade the bot took — win or loss, phase, direction,
+  setup grade, entry/exit price, P&L, and the reason it entered
+
+Both `scripts/run_backtest.py` and `scripts/run_live.py` write to
+`dashboard/data/trades.json` via `jj_bot/trade_logger.py`, which is what the
+dashboard reads. See `dashboard/README.md` for local dev + deploy steps.
+
 ## Project layout
 
 ```
@@ -89,6 +108,7 @@ jj_bot/
   models.py            # Bar, Trade, Signal dataclasses
   strategy.py          # displacement/BOS detection + state machine (core logic)
   risk_manager.py       # position sizing, daily trade caps, trailing drawdown sim
+  trade_logger.py        # writes trade results to dashboard/data/trades.json
   tradovate_client.py   # Tradovate REST/WebSocket client (auth, bars, orders)
   backtest.py            # prop-firm-style backtest runner
   live_runner.py          # live loop wiring strategy -> Tradovate orders
@@ -96,6 +116,7 @@ scripts/
   run_backtest.py
   run_live.py
 config.yaml            # strategy + risk parameters
+dashboard/              # Next.js dashboard (deploy to Vercel separately)
 ```
 
 ## Disclaimer

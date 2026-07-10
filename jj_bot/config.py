@@ -24,6 +24,7 @@ class StrategyConfig:
     max_wick_ratio: float
     structure_lookback: int
     swing_strength: int
+    break_buffer_points: float = 1.0
 
 
 @dataclass
@@ -33,6 +34,8 @@ class RiskConfig:
     max_trades_per_day: int
     stop_after_consecutive_losses: int
     contracts_per_trade: int
+    daily_profit_cap: float = 1520.0
+    daily_loss_cap: float = 1000.0
 
 
 @dataclass

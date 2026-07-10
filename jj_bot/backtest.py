@@ -17,6 +17,7 @@ from .models import Bar, Direction, TradeResult
 from .risk_manager import EvalAccountState
 from .strategy import StrategyEngine
 from .time_utils import to_et
+from .trade_logger import TradeLogger
 
 
 def load_bars_csv(path: str, tz_name: str) -> list[Bar]:
@@ -79,7 +80,7 @@ def run_strategy_on_day(day_bars: list[Bar], engine: StrategyEngine) -> list[Tra
             else signal.entry_price - exit_price
         )
         results.append(TradeResult(signal=signal, exit_price=exit_price, exit_timestamp=exit_ts, win=win, pnl_points=pnl_points))
-        engine.record_trade_result(win)
+        engine.record_trade_result(win, pnl_points=pnl_points)
     return results
 
 
@@ -93,10 +94,15 @@ class BacktestReport:
     avg_days_to_result: float
 
 
-def run_backtest(cfg: AppConfig, bars: list[Bar]) -> BacktestReport:
-    engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk)
+def run_backtest(cfg: AppConfig, bars: list[Bar], log_trades: bool = True) -> BacktestReport:
+    engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk, instrument_cfg=cfg.instrument)
     by_day = group_by_day(bars)
     days = list(by_day.keys())
+
+    dollar_per_point = cfg.instrument.tick_value / cfg.instrument.tick_size
+    logger = TradeLogger(dollar_per_point=dollar_per_point, source="backtest") if log_trades else None
+    if logger:
+        logger.clear()
 
     all_trades: list[TradeResult] = []
     daily_pnl: dict[date, float] = {}
@@ -104,6 +110,9 @@ def run_backtest(cfg: AppConfig, bars: list[Bar]) -> BacktestReport:
         trades = run_strategy_on_day(day_bars, engine)
         all_trades.extend(trades)
         daily_pnl[d] = sum(t.pnl_points for t in trades)
+        if logger:
+            for t in trades:
+                logger.log_trade(t)
 
     # Prop-firm-style pass-rate simulation: start a fresh eval attempt on each
     # day in the dataset and play forward day-by-day until pass or bust.
