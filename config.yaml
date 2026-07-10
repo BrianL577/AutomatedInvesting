@@ -1,0 +1,32 @@
+# Strategy + risk configuration for the JJ NY-session strategy bot.
+
+strategy:
+  timezone: "America/New_York"
+  session_open: "09:30"          # anchor candle
+  continuation_end_minutes: 10   # phase 1: 0-10 min after open
+  reversion_end_minutes: 90      # phase 2: 10-90 min after open
+  hard_cutoff: "11:00"           # no new entries after this time regardless of phase
+  min_extension_points: 12       # min move away from open before a reversion trade is valid
+  displacement_size_ratio: 1.15  # candle range must be >= this * avg(range, lookback)
+  displacement_prev_ratio: 1.0   # candle range must be >= this * previous candle range
+  max_wick_ratio: 0.30           # (total wick) / range must be <= this to count as displacement
+  structure_lookback: 30         # minutes to look back for swing high/low ("structure")
+  swing_strength: 2              # bars on each side required to confirm a pivot
+
+risk:
+  stop_points: 25
+  target_points: 38              # ~1:1.5 R:R as in the video
+  max_trades_per_day: 4
+  stop_after_consecutive_losses: 2
+  contracts_per_trade: 1
+
+instrument:
+  symbol: "NQ"                   # Nasdaq-100 e-mini futures, front month resolved at runtime
+  tick_size: 0.25
+  tick_value: 5.0                # USD per tick, NQ
+
+topstep_eval:                    # used only by the backtester's prop-firm-style simulation
+  account_size: 50000
+  profit_target: 3000
+  trailing_max_drawdown: 2000
+  daily_loss_limit: null         # set if your eval enforces one
