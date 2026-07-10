@@ -69,10 +69,20 @@ TRADOVATE_APP_VERSION=1.0
 TRADOVATE_CID=...
 TRADOVATE_SEC=...
 TRADOVATE_DEVICE_ID=jj-bot-01
-TRADOVATE_ACCOUNT_NAME=DEMO...
+TRADOVATE_ACCOUNT_NAMES=DEMO12345,DEMO67890
 ```
 
-Then run:
+`TRADOVATE_ACCOUNT_NAMES` is a comma-separated list — supports trading
+**multiple accounts** under one Tradovate login at once (e.g. several
+TopStep evals/funded accounts). Leave it blank to trade every active
+account on the login. Each account gets its own daily $1,520/$1,000 rate
+limiter, so one account hitting its cap doesn't stop the others.
+
+**Before running the full live loop, confirm the connection actually
+works** (see "Testing the connection" below) — don't find out your
+credentials are wrong at 9:30 AM.
+
+Then run the live strategy loop:
 
 ```bash
 python scripts/run_live.py --symbol NQ
@@ -80,16 +90,46 @@ python scripts/run_live.py --symbol NQ
 
 This polls/streams 1-minute bars for the front-month NQ contract from
 Tradovate's market data API, runs the same strategy state machine live during
-the NY session, and places bracket orders (market entry + OCO stop/target)
-against your **demo** account only. It refuses to run against a live account
+the NY session, and fans out bracket orders (market entry + OCO stop/target)
+to every configured account. It refuses to run against a live account
 (`TRADOVATE_ENV` must be `demo`).
+
+## Testing the connection / automation
+
+Before trusting the live loop, confirm the whole pipeline — auth, account
+resolution, contract lookup, order placement — actually works against your
+account(s):
+
+```bash
+# See exactly which accounts the bot resolves under your login
+python scripts/test_connection.py --list-accounts
+
+# Place one small bracket test order (1 contract, 4pt stop / 6pt target) on
+# a specific account, to confirm automation really reaches your paper account
+python scripts/test_connection.py --account "DEMO12345" --direction Buy
+```
+
+Test trades are logged to the dashboard with `source: "connection_test"` and
+shown with a distinct "Test" badge — they're excluded from the success-rate
+and P&L stats so they can't skew your real results.
+
+You can also trigger a test trade **from the dashboard itself**: run the bot
+API server (`python scripts/run_api_server.py`, defaults to port 8787),
+paste its URL into the "Connection & Automation Test" panel at the top of
+the dashboard, click **Load Accounts**, pick an account, and click **Send
+Test Trade**. This is the same connection test, just from the UI instead of
+the CLI — useful once the bot is running on a remote host and you want to
+confirm it's alive without SSHing in.
 
 ## Dashboard (Vercel)
 
 `dashboard/` is a separate Next.js app you deploy to Vercel as its own
 project (Root Directory = `dashboard/`). It shows:
 
-- Success rate % (wins / total trades)
+- A "Connection & Automation Test" panel to load your accounts and fire a
+  test trade against the bot API, right from the browser
+- Success rate % (wins / total trades) — real strategy trades only, test
+  trades are excluded
 - Total dollars gained / lost, and net P&L
 - Rate-limiter status (the $1,520 profit cap / $1,000 loss cap above)
 - A full log of every trade the bot took — win or loss, phase, direction,
@@ -98,6 +138,13 @@ project (Root Directory = `dashboard/`). It shows:
 Both `scripts/run_backtest.py` and `scripts/run_live.py` write to
 `dashboard/data/trades.json` via `jj_bot/trade_logger.py`, which is what the
 dashboard reads. See `dashboard/README.md` for local dev + deploy steps.
+
+The dashboard's Test Trade panel and its trade data on Vercel are two
+separate concerns: `dashboard/data/trades.json` is bundled at deploy time
+(static — needs a redeploy to pick up new trades), while the Test Trade
+panel calls `jj_bot/api_server.py` **live**, wherever you're running it (see
+`scripts/run_api_server.py` — this needs to run on an always-on host, not
+Vercel, since it holds a live broker session).
 
 ## Project layout
 
@@ -109,12 +156,16 @@ jj_bot/
   strategy.py          # displacement/BOS detection + state machine (core logic)
   risk_manager.py       # position sizing, daily trade caps, trailing drawdown sim
   trade_logger.py        # writes trade results to dashboard/data/trades.json
-  tradovate_client.py   # Tradovate REST/WebSocket client (auth, bars, orders)
-  backtest.py            # prop-firm-style backtest runner
-  live_runner.py          # live loop wiring strategy -> Tradovate orders
+  tradovate_client.py   # Tradovate REST/WebSocket client (auth, bars, orders, multi-account)
+  test_trade.py           # connection/automation test trade helper
+  api_server.py            # FastAPI service backing the dashboard's Test Trade panel
+  backtest.py               # prop-firm-style backtest runner
+  live_runner.py             # live loop wiring strategy -> Tradovate orders (multi-account fan-out)
 scripts/
   run_backtest.py
   run_live.py
+  run_api_server.py
+  test_connection.py
 config.yaml            # strategy + risk parameters
 dashboard/              # Next.js dashboard (deploy to Vercel separately)
 ```

@@ -53,6 +53,7 @@ class Phase(Enum):
     CONTINUATION = "continuation"
     REVERSION = "reversion"
     DONE_FOR_DAY = "done_for_day"
+    TEST = "test"
 
 
 class SetupGrade(Enum):

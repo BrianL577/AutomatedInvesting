@@ -8,7 +8,7 @@ export type Trade = {
   id: number;
   timestamp: string;
   exit_timestamp: string;
-  phase: "continuation" | "reversion";
+  phase: "continuation" | "reversion" | "test" | "waiting_for_open" | "done_for_day";
   direction: "long" | "short";
   grade: string;
   reason: string;
