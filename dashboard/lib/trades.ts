@@ -30,25 +30,33 @@ export type Stats = {
 const PROFIT_CAP = 1520;
 const LOSS_CAP = 1000;
 
+// Connectivity test trades (source=connection_test / phase=test) are excluded
+// from performance stats — they're not real strategy signals, just proof the
+// pipeline can submit an order.
+function isRealTrade(t: Trade): boolean {
+  return t.source !== "connection_test" && t.phase !== "test";
+}
+
 export function computeStats(trades: Trade[]): Stats {
-  const wins = trades.filter((t) => t.win);
-  const losses = trades.filter((t) => !t.win);
+  const real = trades.filter(isRealTrade);
+  const wins = real.filter((t) => t.win);
+  const losses = real.filter((t) => !t.win);
   const totalGained = wins.reduce((sum, t) => sum + t.pnl_dollars, 0);
   const totalLost = Math.abs(losses.reduce((sum, t) => sum + t.pnl_dollars, 0));
   const netPnl = totalGained - totalLost;
 
   const byDay: Record<string, number> = {};
-  for (const t of trades) {
+  for (const t of real) {
     const day = t.timestamp.slice(0, 10);
     byDay[day] = (byDay[day] || 0) + t.pnl_dollars;
   }
   const dayPnls = Object.values(byDay);
 
   return {
-    totalTrades: trades.length,
+    totalTrades: real.length,
     wins: wins.length,
     losses: losses.length,
-    successRate: trades.length ? (wins.length / trades.length) * 100 : 0,
+    successRate: real.length ? (wins.length / real.length) * 100 : 0,
     totalGained,
     totalLost,
     netPnl,

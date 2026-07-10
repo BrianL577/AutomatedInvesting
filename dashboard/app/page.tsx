@@ -1,4 +1,5 @@
 import { loadTrades, computeStats, RATE_LIMITS } from "../lib/trades";
+import TestTradePanel from "../components/TestTradePanel";
 
 export const dynamic = "force-dynamic";
 
@@ -30,6 +31,8 @@ export default async function Page() {
           <p>NY-session displacement / break-of-structure strategy, running against a TopStep/Tradovate paper (demo) account.</p>
         </div>
       </div>
+
+      <TestTradePanel />
 
       <div className="rate-limit-banner">
         <span>Daily rate limiter:</span>
@@ -96,26 +99,33 @@ export default async function Page() {
               </tr>
             </thead>
             <tbody>
-              {[...trades].reverse().map((t) => (
-                <tr key={t.id}>
-                  <td>{fmtTime(t.timestamp)}</td>
-                  <td>{t.phase}</td>
-                  <td>
-                    <span className={`badge ${t.direction}`}>{t.direction}</span>
-                  </td>
-                  <td>{t.grade}</td>
-                  <td>{t.entry_price.toFixed(2)}</td>
-                  <td>{t.exit_price.toFixed(2)}</td>
-                  <td>
-                    <span className={`badge ${t.win ? "win" : "loss"}`}>{t.win ? "Win" : "Loss"}</span>
-                  </td>
-                  <td className={t.pnl_points >= 0 ? "positive" : "negative"}>{t.pnl_points.toFixed(2)}</td>
-                  <td className={t.pnl_dollars >= 0 ? "positive" : "negative"}>{fmtMoney(t.pnl_dollars)}</td>
-                  <td className="reason-cell" title={t.reason}>
-                    {t.reason}
-                  </td>
-                </tr>
-              ))}
+              {[...trades].reverse().map((t) => {
+                const isTest = t.source === "connection_test" || t.phase === "test";
+                return (
+                  <tr key={t.id}>
+                    <td>{fmtTime(t.timestamp)}</td>
+                    <td>{t.phase}</td>
+                    <td>
+                      <span className={`badge ${t.direction}`}>{t.direction}</span>
+                    </td>
+                    <td>{t.grade}</td>
+                    <td>{t.entry_price.toFixed(2)}</td>
+                    <td>{t.exit_price.toFixed(2)}</td>
+                    <td>
+                      {isTest ? (
+                        <span className="badge test">Test</span>
+                      ) : (
+                        <span className={`badge ${t.win ? "win" : "loss"}`}>{t.win ? "Win" : "Loss"}</span>
+                      )}
+                    </td>
+                    <td className={t.pnl_points >= 0 ? "positive" : "negative"}>{t.pnl_points.toFixed(2)}</td>
+                    <td className={t.pnl_dollars >= 0 ? "positive" : "negative"}>{fmtMoney(t.pnl_dollars)}</td>
+                    <td className="reason-cell" title={t.reason}>
+                      {t.reason}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}

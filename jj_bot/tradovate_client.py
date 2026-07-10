@@ -43,6 +43,13 @@ class Contract:
     name: str
 
 
+@dataclass
+class Account:
+    id: int
+    name: str
+    active: bool = True
+
+
 class TradovateClient:
     def __init__(self, creds: TradovateCreds):
         if creds.env != "demo":
@@ -54,6 +61,9 @@ class TradovateClient:
         self.rest_base = REST_HOSTS[creds.env]
         self.access_token: Optional[str] = None
         self.md_access_token: Optional[str] = None
+        self.accounts: list[Account] = []
+        # Kept for backward compatibility / single-account call sites —
+        # points at the first resolved account after load_accounts().
         self.account_id: Optional[int] = None
         self.account_spec: Optional[str] = None
 
@@ -83,20 +93,41 @@ class TradovateClient:
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.access_token}"}
 
-    def load_account(self) -> None:
+    def load_accounts(self) -> list[Account]:
+        """Resolve every configured account (or all active accounts if none
+        are named) under this Tradovate login. Supports trading several
+        accounts — e.g. multiple TopStep evals/funded accounts — at once."""
         resp = requests.get(f"{self.rest_base}/account/list", headers=self._headers(), timeout=15)
         resp.raise_for_status()
-        accounts = resp.json()
-        if not accounts:
+        raw_accounts = resp.json()
+        if not raw_accounts:
             raise TradovateAuthError("No Tradovate accounts found for this user.")
-        match = None
-        if self.creds.account_name:
-            match = next((a for a in accounts if a.get("name") == self.creds.account_name), None)
-        account = match or accounts[0]
-        if not account.get("active", True):
-            raise TradovateAuthError(f"Account {account.get('name')} is not active.")
-        self.account_id = account["id"]
-        self.account_spec = account["name"]
+
+        if self.creds.account_names:
+            wanted = set(self.creds.account_names)
+            matched = [a for a in raw_accounts if a.get("name") in wanted]
+            missing = wanted - {a.get("name") for a in matched}
+            if missing:
+                raise TradovateAuthError(f"Configured account name(s) not found: {sorted(missing)}")
+            selected = matched
+        else:
+            selected = [a for a in raw_accounts if a.get("active", True)]
+
+        if not selected:
+            raise TradovateAuthError("No active/matching Tradovate accounts resolved.")
+
+        self.accounts = [Account(id=a["id"], name=a["name"], active=a.get("active", True)) for a in selected]
+        inactive = [a.name for a in self.accounts if not a.active]
+        if inactive:
+            raise TradovateAuthError(f"Account(s) not active: {inactive}")
+
+        self.account_id = self.accounts[0].id
+        self.account_spec = self.accounts[0].name
+        return self.accounts
+
+    def load_account(self) -> None:
+        """Deprecated alias for load_accounts(), kept for older call sites."""
+        self.load_accounts()
 
     def find_front_month_contract(self, root_symbol: str) -> Contract:
         """Resolve e.g. 'NQ' to the current front-month contract via /contract/suggest."""
@@ -124,13 +155,19 @@ class TradovateClient:
         qty: int,
         stop_price: float,
         target_price: float,
+        account: Optional[Account] = None,
     ) -> dict:
-        """Market entry + OCO stop-loss/take-profit bracket, on the demo account only."""
+        """Market entry + OCO stop-loss/take-profit bracket, on the demo
+        account only. Defaults to the first resolved account; pass `account`
+        to target a specific one when trading multiple accounts."""
         if self.creds.env != "demo":
             raise TradovateGuardError("Refusing to place order outside demo env.")
+        acct = account or (self.accounts[0] if self.accounts else None)
+        if acct is None:
+            raise TradovateAuthError("No account resolved — call load_accounts() first.")
         payload = {
-            "accountSpec": self.account_spec,
-            "accountId": self.account_id,
+            "accountSpec": acct.name,
+            "accountId": acct.id,
             "action": action,
             "symbol": contract.name,
             "orderQty": qty,
@@ -155,6 +192,58 @@ class TradovateClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    def place_test_trade(
+        self,
+        contract: Contract,
+        account: Account,
+        action: str = "Buy",
+        qty: int = 1,
+        stop_points: float = 4.0,
+        target_points: float = 6.0,
+    ) -> dict:
+        """Places a minimal 1-lot bracket order sized for connectivity
+        testing (small stop/target so it resolves quickly), not for actual
+        strategy trading. Used by the 'test automation' flow to confirm the
+        broker connection, account, and order pipeline all work end to end."""
+        quote = self.get_last_price(contract)
+        if action == "Buy":
+            stop_price = quote - stop_points
+            target_price = quote + target_points
+        else:
+            stop_price = quote + stop_points
+            target_price = quote - target_points
+        return self.place_bracket_order(
+            contract=contract, action=action, qty=qty,
+            stop_price=stop_price, target_price=target_price, account=account,
+        )
+
+    def get_last_price(self, contract: Contract) -> float:
+        resp = requests.get(
+            f"{self.rest_base}/md/getquote",
+            params={"contractId": contract.id},
+            headers=self._headers(),
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            price = data.get("last") or data.get("close")
+            if price:
+                return float(price)
+        # Fallback: some Tradovate plans require the WS market-data endpoint
+        # instead of a REST quote snapshot. Try contract/item as a last resort.
+        resp = requests.get(
+            f"{self.rest_base}/contract/item",
+            params={"id": contract.id},
+            headers=self._headers(),
+            timeout=15,
+        )
+        resp.raise_for_status()
+        raise TradovateAuthError(
+            "Could not fetch a live quote for the test trade. Your Tradovate "
+            "plan may require the market-data WebSocket instead of REST "
+            "snapshots — pass an explicit price to place_bracket_order directly."
+        )
 
 
 class TradovateMarketDataStream:

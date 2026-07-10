@@ -55,6 +55,10 @@ class TopstepEvalConfig:
 
 @dataclass
 class TradovateCreds:
+    """One Tradovate login can have several accounts under it (multiple
+    TopStep evals/funded accounts, for example). `account_names` lists which
+    of those to trade; leave empty to trade every active account found."""
+
     env: str = "demo"
     username: str = ""
     password: str = ""
@@ -63,7 +67,7 @@ class TradovateCreds:
     cid: str = ""
     sec: str = ""
     device_id: str = "jj-bot-01"
-    account_name: str = ""
+    account_names: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -82,6 +86,11 @@ def load_config(path: str | Path | None = None) -> AppConfig:
 
     load_dotenv(REPO_ROOT / ".env")
 
+    # TRADOVATE_ACCOUNT_NAMES="EVAL123,EVAL456,FUNDED789" (comma-separated).
+    # TRADOVATE_ACCOUNT_NAME (singular) still works for a single account.
+    names_raw = os.getenv("TRADOVATE_ACCOUNT_NAMES") or os.getenv("TRADOVATE_ACCOUNT_NAME", "")
+    account_names = [n.strip() for n in names_raw.split(",") if n.strip()]
+
     creds = TradovateCreds(
         env=os.getenv("TRADOVATE_ENV", "demo"),
         username=os.getenv("TRADOVATE_USERNAME", ""),
@@ -91,7 +100,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         cid=os.getenv("TRADOVATE_CID", ""),
         sec=os.getenv("TRADOVATE_SEC", ""),
         device_id=os.getenv("TRADOVATE_DEVICE_ID", "jj-bot-01"),
-        account_name=os.getenv("TRADOVATE_ACCOUNT_NAME", ""),
+        account_names=account_names,
     )
 
     return AppConfig(
