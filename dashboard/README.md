@@ -16,18 +16,30 @@ Directory** to `dashboard/`).
 
 ## Data source
 
-The dashboard reads `data/trades.json`, which is written by the Python bot:
+Two modes, auto-detected:
 
-- `jj_bot/trade_logger.py` — `TradeLogger.log_trade()` appends each closed
-  trade here
-- `scripts/run_backtest.py` calls this automatically on every run
-- `scripts/run_live.py` (live paper trading against Tradovate demo) calls
-  this whenever a position closes
+- **Live (Supabase)** — if `NEXT_PUBLIC_SUPABASE_URL` and
+  `NEXT_PUBLIC_SUPABASE_ANON_KEY` are set, the dashboard reads trades
+  straight from Supabase on every page load. This is what the Python bot
+  writes to when `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` are set on its
+  end (see `supabase/schema.sql` and the root `RAILWAY.md`). Header shows
+  "● Live (Supabase)".
+- **Static demo file** — otherwise, falls back to `data/trades.json`,
+  bundled at deploy time. Only updates when you redeploy. Header shows "○
+  Static demo file".
 
-On Vercel, `data/trades.json` is bundled at deploy time — the dashboard
-updates whenever you redeploy after the bot writes new trades (e.g. commit
-the updated file and push, or wire a small sync job/API if you want
-real-time updates without a redeploy).
+`jj_bot/trade_logger.py` writes to both the local JSON file and Supabase
+(when configured) on every closed trade, from both `scripts/run_backtest.py`
+and `scripts/run_live.py`.
+
+## Connection & Automation Test panel
+
+The card at the top of the dashboard lets you point at a running
+`jj_bot/api_server.py` instance (see the root README), load its resolved
+Tradovate accounts, and fire a small test trade — useful for confirming a
+remotely-hosted bot (e.g. on Railway) is actually alive and wired up
+correctly without SSHing in. Test trades are tagged and excluded from the
+stats above.
 
 ## Local development
 
@@ -44,6 +56,9 @@ Then open http://localhost:3000.
 1. Push this repo to GitHub (already done).
 2. In Vercel, "Add New Project" → import the repo.
 3. Set **Root Directory** to `dashboard`.
-4. Framework preset: Next.js (auto-detected). No environment variables
-   required for the dashboard itself.
-5. Deploy.
+4. Framework preset: Next.js (auto-detected).
+5. (Optional, for live data) Add `NEXT_PUBLIC_SUPABASE_URL` and
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY` in Environment Variables — see
+   `.env.example` in this directory. Use the **anon** key only, never the
+   service role key.
+6. Deploy.

@@ -71,7 +71,8 @@ def run_connection_test(cfg: AppConfig, account_name: Optional[str] = None, dire
         reason=f"Connectivity test trade on account {target_account.name} ({contract.name})",
     )
     logger.log_trade(
-        TradeResult(signal=signal, exit_price=0.0, exit_timestamp=signal.timestamp, win=True, pnl_points=0.0)
+        TradeResult(signal=signal, exit_price=0.0, exit_timestamp=signal.timestamp, win=True, pnl_points=0.0),
+        account_name=target_account.name,
     )
 
     return ConnectionTestResult(

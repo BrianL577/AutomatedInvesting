@@ -49,6 +49,24 @@ body {
   font-size: 13px;
 }
 
+.data-source-badge {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+  align-self: flex-start;
+}
+
+.data-source-badge.live {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--green);
+}
+
+.data-source-badge.static {
+  background: rgba(139, 152, 165, 0.2);
+  color: var(--text-dim);
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

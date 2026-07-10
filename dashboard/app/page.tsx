@@ -1,4 +1,4 @@
-import { loadTrades, computeStats, RATE_LIMITS } from "../lib/trades";
+import { loadTrades, computeStats, usingSupabase, RATE_LIMITS } from "../lib/trades";
 import TestTradePanel from "../components/TestTradePanel";
 
 export const dynamic = "force-dynamic";
@@ -30,6 +30,9 @@ export default async function Page() {
           <h1>JJ Strategy — Paper Trading Dashboard</h1>
           <p>NY-session displacement / break-of-structure strategy, running against a TopStep/Tradovate paper (demo) account.</p>
         </div>
+        <span className={`data-source-badge ${usingSupabase ? "live" : "static"}`}>
+          {usingSupabase ? "● Live (Supabase)" : "○ Static demo file"}
+        </span>
       </div>
 
       <TestTradePanel />
@@ -87,6 +90,7 @@ export default async function Page() {
             <thead>
               <tr>
                 <th>Entry Time (ET)</th>
+                <th>Account</th>
                 <th>Phase</th>
                 <th>Direction</th>
                 <th>Grade</th>
@@ -104,6 +108,7 @@ export default async function Page() {
                 return (
                   <tr key={t.id}>
                     <td>{fmtTime(t.timestamp)}</td>
+                    <td>{t.account_name || "—"}</td>
                     <td>{t.phase}</td>
                     <td>
                       <span className={`badge ${t.direction}`}>{t.direction}</span>

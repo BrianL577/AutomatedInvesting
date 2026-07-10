@@ -175,7 +175,7 @@ class LiveRunner:
                     signal=signal, exit_price=exit_price, exit_timestamp=datetime.now(),
                     win=win, pnl_points=pnl_points,
                 )
-                self.trade_logger.log_trade(result)
+                self.trade_logger.log_trade(result, account_name=state.account.name)
                 self.engine.record_trade_result(win, pnl_points=pnl_points)
 
                 pnl_dollars = pnl_points * self.dollar_per_point
