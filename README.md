@@ -1,8 +1,16 @@
-# JJ Strategy — TopStep Paper Trading Bot
+# JJ Strategy — Paper Trading Bot
 
 Automates the NY-session "high-timeframe reversion, low-timeframe continuation"
-strategy described by the YouTuber JJ, and runs it against a **Tradovate demo
-(paper) account** — the platform TopStep accounts are traded through.
+strategy described by the YouTuber JJ, and runs it against a **paper trading
+account**. Two brokers are supported:
+
+- **Interactive Brokers (default, `BROKER=ibkr`)** — free paper trading
+  account, no funding required. See `IBKR.md`.
+- **Tradovate (`BROKER=tradovate`)** — the platform TopStep accounts trade
+  through, but Tradovate only issues API keys once you've funded a live
+  account ($1,000 min) and bought their $25/mo API add-on. Use this once
+  you're ready to move toward TopStep; use IBKR to build/test for free
+  first.
 
 > Paper/demo trading only. This does not place real-money orders and is not
 > investment advice. Verify everything against your own TopStep rules before
@@ -52,15 +60,33 @@ python scripts/run_backtest.py --bars data/NQ_1min.csv --account-size 50000
 Bars CSV needs columns: `timestamp,open,high,low,close,volume` (timestamp in
 UTC or with tz info; the bot converts to America/New_York internally).
 
-You can also pull historical bars directly from Tradovate (see below) instead
-of supplying a CSV.
+You can also pull historical bars directly from Tradovate or IBKR instead of
+supplying a CSV — or use the dashboard's Strategy Creator, which backtests
+against Supabase-hosted historical bars (see `scripts/import_bars.py`).
 
-### 2. Live paper trading against Tradovate demo
+### 2. Live paper trading
 
-Requires a **Tradovate demo account** and an API application registered at
-https://trader.tradovate.com (Settings → API Access). Fill in `.env`:
+`BROKER` in `.env` selects the broker (default `ibkr`). Each has its own
+setup:
+
+**Interactive Brokers (default)** — free, no funding required, but needs a
+running TWS/IB Gateway process (a local app you stay logged into, not a
+hosted API). Full setup: **`IBKR.md`**.
 
 ```
+BROKER=ibkr
+IBKR_HOST=127.0.0.1
+IBKR_PORT=4002
+IBKR_CLIENT_ID=1
+IBKR_ACCOUNT_NAMES=DU1234567
+```
+
+**Tradovate** — requires a funded live account + the $25/mo API add-on
+before `trader.tradovate.com` will show key-generation fields. Once you
+have keys:
+
+```
+BROKER=tradovate
 TRADOVATE_ENV=demo
 TRADOVATE_USERNAME=...
 TRADOVATE_PASSWORD=...
@@ -72,11 +98,11 @@ TRADOVATE_DEVICE_ID=jj-bot-01
 TRADOVATE_ACCOUNT_NAMES=DEMO12345,DEMO67890
 ```
 
-`TRADOVATE_ACCOUNT_NAMES` is a comma-separated list — supports trading
-**multiple accounts** under one Tradovate login at once (e.g. several
-TopStep evals/funded accounts). Leave it blank to trade every active
-account on the login. Each account gets its own daily $1,520/$1,000 rate
-limiter, so one account hitting its cap doesn't stop the others.
+`TRADOVATE_ACCOUNT_NAMES` (or `IBKR_ACCOUNT_NAMES`) is a comma-separated
+list — supports trading **multiple accounts** under one login at once (e.g.
+several TopStep evals/funded accounts, on Tradovate). Leave it blank to
+trade every account found. Each account gets its own daily $1,520/$1,000
+rate limiter, so one account hitting its cap doesn't stop the others.
 
 **Before running the full live loop, confirm the connection actually
 works** (see "Testing the connection" below) — don't find out your
@@ -88,11 +114,11 @@ Then run the live strategy loop:
 python scripts/run_live.py --symbol NQ
 ```
 
-This polls/streams 1-minute bars for the front-month NQ contract from
-Tradovate's market data API, runs the same strategy state machine live during
-the NY session, and fans out bracket orders (market entry + OCO stop/target)
-to every configured account. It refuses to run against a live account
-(`TRADOVATE_ENV` must be `demo`).
+This streams 1-minute bars for the front-month NQ contract from your
+configured broker, runs the same strategy state machine live during the NY
+session, and fans out bracket orders (market entry + stop/target) to every
+configured account. It refuses to run against a live (non-paper) account on
+either broker.
 
 ## Testing the connection / automation
 
@@ -106,7 +132,8 @@ python scripts/test_connection.py --list-accounts
 
 # Place one small bracket test order (1 contract, 4pt stop / 6pt target) on
 # a specific account, to confirm automation really reaches your paper account
-python scripts/test_connection.py --account "DEMO12345" --direction Buy
+# (IBKR account IDs look like "DU1234567"; Tradovate like "DEMO12345")
+python scripts/test_connection.py --account "DU1234567" --direction Buy
 ```
 
 Test trades are logged to the dashboard with `source: "connection_test"` and
@@ -126,9 +153,10 @@ confirm it's alive without SSHing in.
 Three pieces, each hosted separately:
 
 1. **Trading worker** (Railway or similar always-on host) — runs
-   `scripts/run_live.py` continuously, holding the live Tradovate
-   connection and placing trades per the strategy rules. See `RAILWAY.md`
-   for step-by-step setup.
+   `scripts/run_live.py` continuously, holding the live broker connection
+   and placing trades per the strategy rules. On IBKR this also means an
+   always-logged-in TWS/IB Gateway process — see `IBKR.md`. See
+   `RAILWAY.md` for step-by-step hosting setup either way.
 2. **Supabase** — the trade-log database. The worker writes every trade
    here (in addition to the local JSON file); the dashboard reads from here
    live. See `supabase/schema.sql`.
@@ -223,11 +251,13 @@ jj_bot/
   strategy.py          # displacement/BOS detection + state machine (core logic)
   risk_manager.py       # position sizing, daily trade caps, trailing drawdown sim
   trade_logger.py        # writes trade results to dashboard/data/trades.json
+  ibkr_client.py         # IBKR client via ib_insync (TWS/IB Gateway socket, multi-account)
   tradovate_client.py   # Tradovate REST/WebSocket client (auth, bars, orders, multi-account)
-  test_trade.py           # connection/automation test trade helper
+  test_trade.py           # connection/automation test trade helper (dispatches by BROKER)
   api_server.py            # FastAPI service backing the dashboard's Test Trade panel
   backtest.py               # prop-firm-style backtest runner
-  live_runner.py             # live loop wiring strategy -> Tradovate orders (multi-account fan-out)
+  live_runner_ibkr.py        # live loop against IBKR (multi-account fan-out)
+  live_runner.py               # live loop against Tradovate (multi-account fan-out)
 scripts/
   run_backtest.py
   run_live.py

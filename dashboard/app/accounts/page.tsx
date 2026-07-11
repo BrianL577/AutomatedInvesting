@@ -65,11 +65,12 @@ export default function AccountsPage() {
     <div className="container">
       <div className="header">
         <div>
-          <h1>My Tradovate Accounts</h1>
+          <h1>My Broker Accounts</h1>
           <p>
-            Save the Tradovate account name(s) you trade — private to your account, nothing here is shared with
-            other users. Only the account <em>name</em> is stored; your Tradovate login, password, CID, and SEC
-            still live only in your bot host&apos;s environment variables, never in this database.
+            Save the paper trading account name(s) you trade — private to your account, nothing here is shared
+            with other users. Only the account <em>name</em> is stored; your broker login credentials (IBKR
+            username/password, or Tradovate password/CID/SEC) still live only in your bot host&apos;s environment
+            variables, never in this database.
           </p>
         </div>
       </div>
@@ -78,14 +79,15 @@ export default function AccountsPage() {
         <div className="test-panel-header">
           <h2>Add an account</h2>
           <p>
-            Enter each Tradovate account name exactly as it appears in Tradovate (e.g. <code>DEMO12345</code>). One
-            Tradovate login can have several accounts — add all of them here.
+            IBKR paper account IDs start with <code>DU</code> (e.g. <code>DU1234567</code>); Tradovate account
+            names look like <code>DEMO12345</code>. One broker login can have several accounts — add all of them
+            here.
           </p>
         </div>
         <form onSubmit={addAccount} className="test-panel-row">
           <input
             className="test-input"
-            placeholder="Account name, e.g. DEMO12345"
+            placeholder="Account name, e.g. DU1234567"
             value={accountName}
             onChange={(e) => setAccountName(e.target.value)}
             required
@@ -142,7 +144,7 @@ export default function AccountsPage() {
             <h2>Use these in your bot host</h2>
             <p>
               Copy this into your Railway (or wherever <code>scripts/run_live.py</code> runs) environment variables
-              as <code>TRADOVATE_ACCOUNT_NAMES</code>:
+              as <code>IBKR_ACCOUNT_NAMES</code> (or <code>TRADOVATE_ACCOUNT_NAMES</code> if using Tradovate):
             </p>
           </div>
           <code className="env-copy">{namesForEnv}</code>
