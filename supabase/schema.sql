@@ -43,3 +43,54 @@ create policy "Public can read trades"
 -- purpose: only the service role key (used server-side by the Python bot)
 -- can write, since it bypasses RLS. The dashboard's anon key can never
 -- write trades directly.
+
+-- ---------------------------------------------------------------------------
+-- Strategy Creator: saved strategies
+-- ---------------------------------------------------------------------------
+-- Strategies are parameter sets (JSONB) over the fixed rule engine — never
+-- code. They are written only through the dashboard's server-side API route
+-- (service role key) after zod validation, and read publicly via anon.
+
+create table if not exists public.strategies (
+  id uuid primary key default gen_random_uuid(),
+  config jsonb not null,
+  source text not null check (source in ('ai', 'manual')),
+  prompt text,
+  created_at timestamptz not null default now()
+);
+
+alter table public.strategies enable row level security;
+
+create policy "Public can read strategies"
+  on public.strategies
+  for select
+  to anon
+  using (true);
+
+-- Writes: service role only (bypasses RLS; no anon insert policy on purpose).
+
+-- ---------------------------------------------------------------------------
+-- Strategy Creator: historical 1-minute NQ bars for backtesting
+-- ---------------------------------------------------------------------------
+-- Populate with real historical data via scripts/import_bars.py. Until this
+-- table has rows, the dashboard backtests against a bundled synthetic sample
+-- and labels the results accordingly.
+
+create table if not exists public.bars (
+  t timestamptz primary key,
+  o numeric not null,
+  h numeric not null,
+  l numeric not null,
+  c numeric not null,
+  v numeric not null default 0
+);
+
+create index if not exists bars_t_idx on public.bars (t asc);
+
+alter table public.bars enable row level security;
+
+create policy "Public can read bars"
+  on public.bars
+  for select
+  to anon
+  using (true);

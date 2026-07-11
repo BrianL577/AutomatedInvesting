@@ -7,6 +7,7 @@ const nextConfig = {
     outputFileTracingIncludes: {
       "/api/trades": ["./data/trades.json"],
       "/": ["./data/trades.json"],
+      "/api/backtest": ["./data/sample_bars.json"],
     },
   },
 };
