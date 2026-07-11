@@ -31,6 +31,10 @@ def main() -> None:
         from jj_bot.live_runner_ibkr import IBKRLiveRunner
 
         runner = IBKRLiveRunner(cfg)
+    elif cfg.broker == "ninjatrader":
+        from jj_bot.live_runner_ninjatrader import NinjaTraderLiveRunner
+
+        runner = NinjaTraderLiveRunner(cfg)
     elif cfg.broker == "tradovate":
         if cfg.tradovate.env != "demo":
             raise SystemExit("TRADOVATE_ENV must be 'demo'. Refusing to start.")
@@ -38,7 +42,7 @@ def main() -> None:
 
         runner = LiveRunner(cfg)
     else:
-        raise SystemExit(f"Unknown BROKER '{cfg.broker}'. Use 'ibkr' or 'tradovate'.")
+        raise SystemExit(f"Unknown BROKER '{cfg.broker}'. Use 'ibkr', 'ninjatrader', or 'tradovate'.")
 
     runner.start()
 
