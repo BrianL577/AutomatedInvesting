@@ -138,6 +138,35 @@ Three pieces, each hosted separately:
 This chat/session cannot itself run the always-on worker — it's an
 ephemeral container. `RAILWAY.md` walks through standing this up properly.
 
+## Strategy Creator (dashboard/strategies)
+
+The dashboard includes a **Strategy Creator** page where users can:
+
+- Describe a NASDAQ futures strategy in plain English and have **Claude**
+  translate it into a validated, backtestable rule configuration
+- Save strategies (Supabase `strategies` table) alongside the built-in
+  default — JJ's strategy, encoded exactly as the live bot trades it
+- Run a **definitive yield simulation** against historical 1-minute NQ bars:
+  success rate %, total gained/lost, net P&L and return %, max drawdown,
+  best/worst day, daily-cap hits, and the prop-firm-style **eval pass rate**
+  (trailing-drawdown simulation, per JJ's own backtesting method)
+
+Security model: AI output is **data, not code** — Claude fills in parameters
+for the same fixed rule engine (displacement, break-of-structure, phases,
+brackets, caps); every config is validated with strict schema + numeric
+bounds server-side before it is saved or executed. The Claude API key and
+Supabase service role key live only in server-side env vars.
+
+Historical data: backtests run against the Supabase `bars` table when
+populated (import real NQ data with `scripts/import_bars.py` — Databento,
+Polygon, FirstRate, or a TradingView/Tradovate export). Until then, a
+bundled synthetic sample is used and results are clearly labeled as
+synthetic.
+
+Extra Vercel env vars for these features (see `dashboard/.env.example`):
+`ANTHROPIC_API_KEY` (AI generation) and `SUPABASE_SERVICE_ROLE_KEY`
+(strategy saving) — both server-only.
+
 ## Dashboard (Vercel)
 
 `dashboard/` is a separate Next.js app you deploy to Vercel as its own

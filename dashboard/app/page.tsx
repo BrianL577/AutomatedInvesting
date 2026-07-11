@@ -28,7 +28,10 @@ export default async function Page() {
       <div className="header">
         <div>
           <h1>JJ Strategy — Paper Trading Dashboard</h1>
-          <p>NY-session displacement / break-of-structure strategy, running against a TopStep/Tradovate paper (demo) account.</p>
+          <p>
+            NY-session displacement / break-of-structure strategy, running against a TopStep/Tradovate paper
+            (demo) account. <a href="/strategies">Strategy Creator →</a>
+          </p>
         </div>
         <span className={`data-source-badge ${usingSupabase ? "live" : "static"}`}>
           {usingSupabase ? "● Live (Supabase)" : "○ Static demo file"}

@@ -306,6 +306,149 @@ tbody tr:hover {
   color: var(--green);
 }
 
+/* ---- Strategy Creator ---- */
+
+.header a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.strategy-prompt {
+  width: 100%;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.strategy-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 800px) {
+  .strategy-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.strategy-list {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.strategy-list h2 {
+  font-size: 13px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 4px 4px 10px;
+}
+
+.strategy-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text);
+  padding: 9px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.strategy-item:hover {
+  background: #161d27;
+}
+
+.strategy-item.active {
+  background: #161d27;
+  border-color: var(--panel-border);
+}
+
+.strategy-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strategy-detail {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 18px;
+  min-height: 300px;
+}
+
+.strategy-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.strategy-detail-header h2 {
+  font-size: 17px;
+  margin: 0;
+}
+
+.strategy-desc {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 10px 0 16px;
+}
+
+.rule-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.rule {
+  background: #0f151d;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+}
+
+.rule span {
+  display: block;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 3px;
+}
+
+.bt-results {
+  border-top: 1px solid var(--panel-border);
+  padding-top: 16px;
+}
+
+.bt-results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.bt-results-header h3 {
+  font-size: 14px;
+  margin: 0;
+}
+
 .reason-cell {
   max-width: 360px;
   overflow: hidden;
