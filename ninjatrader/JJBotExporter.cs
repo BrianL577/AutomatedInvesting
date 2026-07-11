@@ -5,6 +5,12 @@
 // (or paste into a new Indicator), then Compile (F5), then add it to a
 // 1-minute chart of your NQ contract. See NINJATRADER.md for full setup.
 //
+// Writes EVERY closed bar the chart loads — both the historical backlog
+// (as far back as your chart's "Days to load" setting goes) and every new
+// live bar going forward — not just realtime ones. Combined with
+// scripts/sync_bars_to_supabase.py, this means the historical dataset only
+// grows over time and never has to be manually re-exported.
+//
 // Set ExportDir below (or via the indicator's Properties panel) to match
 // NT_EXPORT_DIR in your .env — must be the same folder on this machine.
 
@@ -63,7 +69,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnBarUpdate()
         {
-            if (CurrentBar < 1 || State != State.Realtime)
+            // Writes both the historical replay (on first attach/load, as far
+            // back as the chart's "Days to load" setting allows) and every
+            // new live bar afterward — this is what lets the historical
+            // dataset backfill once and then keep growing indefinitely.
+            if (CurrentBar < 1)
                 return;
 
             string line = string.Format(
