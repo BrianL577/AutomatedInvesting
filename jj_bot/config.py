@@ -5,10 +5,35 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import requests
 import yaml
 from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _fetch_saved_account_names() -> list[str]:
+    """Pulls account names saved via the dashboard's "My Accounts" page
+    (Supabase `tradovate_accounts` table — used for any broker's account
+    names, not just Tradovate's) instead of requiring them to be
+    hand-copied into an env var. This assumes a single-operator bot: it
+    reads every saved row regardless of which dashboard user added it. If
+    SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY aren't set, returns []."""
+    url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    if not url or not key:
+        return []
+    try:
+        resp = requests.get(
+            f"{url}/rest/v1/tradovate_accounts",
+            params={"select": "account_name", "order": "created_at.asc"},
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return [row["account_name"] for row in resp.json()]
+    except requests.RequestException:
+        return []
 
 
 @dataclass
@@ -125,8 +150,10 @@ def load_config(path: str | Path | None = None) -> AppConfig:
 
     # TRADOVATE_ACCOUNT_NAMES="EVAL123,EVAL456,FUNDED789" (comma-separated).
     # TRADOVATE_ACCOUNT_NAME (singular) still works for a single account.
+    # If neither is set, fall back to whatever's saved on the dashboard's
+    # "My Accounts" page (Supabase) — set the env var to override.
     names_raw = os.getenv("TRADOVATE_ACCOUNT_NAMES") or os.getenv("TRADOVATE_ACCOUNT_NAME", "")
-    account_names = [n.strip() for n in names_raw.split(",") if n.strip()]
+    account_names = [n.strip() for n in names_raw.split(",") if n.strip()] or _fetch_saved_account_names()
 
     tradovate_creds = TradovateCreds(
         env=os.getenv("TRADOVATE_ENV", "demo"),
@@ -141,17 +168,22 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     )
 
     ibkr_names_raw = os.getenv("IBKR_ACCOUNT_NAMES", "")
+    ibkr_account_names = [n.strip() for n in ibkr_names_raw.split(",") if n.strip()] or _fetch_saved_account_names()
     ibkr_creds = IBKRCreds(
         host=os.getenv("IBKR_HOST", "127.0.0.1"),
         port=int(os.getenv("IBKR_PORT", "4002")),
         client_id=int(os.getenv("IBKR_CLIENT_ID", "1")),
-        account_names=[n.strip() for n in ibkr_names_raw.split(",") if n.strip()],
+        account_names=ibkr_account_names,
     )
 
+    nt_account_name = os.getenv("NT_ACCOUNT_NAME")
+    if not nt_account_name:
+        saved = _fetch_saved_account_names()
+        nt_account_name = saved[0] if saved else "Sim101"
     ninjatrader_creds = NinjaTraderCreds(
         incoming_dir=os.getenv("NT_INCOMING_DIR", ""),
         export_dir=os.getenv("NT_EXPORT_DIR", ""),
-        account_name=os.getenv("NT_ACCOUNT_NAME", "Sim101"),
+        account_name=nt_account_name,
         instrument=os.getenv("NT_INSTRUMENT", ""),
     )
 
