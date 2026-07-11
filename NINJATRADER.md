@@ -50,7 +50,7 @@ Python bot to read.
 5. In its Properties, set:
    - **Export Directory**: a folder like `C:\jjbot-export` — this must
      match `NT_EXPORT_DIR` in `.env`.
-   - **Account Name**: `Sim101` (must match `NT_ACCOUNT_NAME`).
+   - **Account Name**: your sim account (e.g. `DEMO8217187` or `Sim101`) — must match the account name saved on the dashboard's My Accounts page, or `NT_ACCOUNT_NAMES` if set.
 6. Leave the chart open with the indicator attached — this is what keeps
    `bars.csv`/`fills.csv` updating live, similar to how IB Gateway has to
    stay logged in for IBKR.
@@ -61,7 +61,7 @@ Python bot to read.
 BROKER=ninjatrader
 NT_INCOMING_DIR=C:\Users\<you>\Documents\NinjaTrader 8\incoming
 NT_EXPORT_DIR=C:\jjbot-export
-NT_ACCOUNT_NAME=Sim101
+NT_ACCOUNT_NAMES=DEMO8217187
 NT_INSTRUMENT=NQ 12-26
 ```
 
