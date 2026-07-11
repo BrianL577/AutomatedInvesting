@@ -57,11 +57,11 @@ class NinjaTraderClient:
                 "Enable ATI in NinjaTrader (Tools > Options > Automated Trading "
                 "Interface) and confirm the folder path. See NINJATRADER.md."
             )
-        if not self.creds.account_name.startswith("Sim"):
+        if not (self.creds.account_name.startswith("Sim") or self.creds.account_name.startswith("DEMO")):
             raise NinjaTraderError(
                 f"Refusing to run: account '{self.creds.account_name}' does not look like a "
-                "simulation account (expected a name starting with 'Sim', e.g. 'Sim101'). "
-                "This bot is for paper/sim trading only."
+                "simulation account (expected a name starting with 'Sim' or 'DEMO', e.g. "
+                "'Sim101' or 'DEMO8217187'). This bot is for paper/sim trading only."
             )
         self.accounts = [self.creds.account_name]
         # Ensure the fill/bar export files exist so tailing doesn't fail on a fresh setup.
