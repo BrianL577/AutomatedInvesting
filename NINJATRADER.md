@@ -85,7 +85,39 @@ existing folder and ATI is enabled. If the test order doesn't fill or
 `bars.csv` stays empty, confirm the JJBotExporter indicator is actually
 attached and the chart is receiving live data (market must be open).
 
-## 6. Running it fully automated
+## 6. Building a growing historical dataset (for backtesting)
+
+JJBotExporter writes every closed bar the chart loads — both the
+**historical replay** (as far back as the chart's "Days to load" setting
+allows, the first time you attach it) and every new live bar afterward. To
+turn that into a permanent, ever-growing dataset for the dashboard's
+Strategy Creator backtests:
+
+1. On your NQ chart, increase the historical lookback as far as your data
+   feed allows (right-click the chart → Data Series, or similar — how far
+   back you can actually go depends on what NinjaTrader's data provider
+   gives you on a sim account).
+2. Check what timezone your chart's timestamps are actually in — NinjaTrader
+   Tools > General Options > Time Zone (commonly `America/Chicago`, CME's
+   exchange timezone, unless you've changed it). Set `NT_BAR_TIMEZONE` in
+   `.env` to match — the strategy's session logic depends on this being
+   correct, since it needs true UTC under the hood.
+3. Run the sync script (separately from `run_live.py`, can run alongside
+   it):
+   ```bash
+   python scripts/sync_bars_to_supabase.py
+   ```
+   On first run this picks up the full historical backlog JJBotExporter
+   already wrote to `bars.csv` and upserts it into Supabase's `bars` table;
+   after that it polls for new rows every 30 seconds, so as long as this
+   keeps running (alongside NinjaTrader being open and the market being
+   live), the dataset keeps growing — a year from now, it'll hold roughly
+   two years of history, not just one.
+4. The dashboard's Strategy Creator automatically backtests against
+   whatever's in Supabase's `bars` table, so no further action is needed
+   once this is syncing.
+
+## 7. Running it fully automated
 
 Since NinjaTrader can't run headless on Railway, "fully automated" here
 means: leave a Windows machine on, NinjaTrader logged into Sim101, the
