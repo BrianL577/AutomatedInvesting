@@ -496,18 +496,29 @@ tbody tr:hover {
 
 .navbar-links {
   display: flex;
-  gap: 18px;
+  gap: 4px;
 }
 
-.navbar-links a {
+.navbar-tab {
   color: var(--text-dim);
   text-decoration: none;
   font-size: 13px;
   font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
 }
 
-.navbar-links a:hover {
+.navbar-tab:hover {
   color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.navbar-tab-active {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--panel-border);
 }
 
 .navbar-auth {
