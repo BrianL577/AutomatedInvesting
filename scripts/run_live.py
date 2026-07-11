@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Run the strategy live against a Tradovate DEMO account.
+"""Run the strategy live against a paper trading account.
+
+Broker is selected via BROKER env var (or config.broker) — "ibkr" (default,
+free paper trading via TWS/IB Gateway) or "tradovate" (requires a funded
+live account + paid API add-on; demo env only).
 
 Usage:
     python scripts/run_live.py --symbol NQ
@@ -11,7 +15,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jj_bot.config import load_config
-from jj_bot.live_runner import LiveRunner
 
 
 def main() -> None:
@@ -24,10 +27,19 @@ def main() -> None:
     if args.symbol:
         cfg.instrument.symbol = args.symbol
 
-    if cfg.tradovate.env != "demo":
-        raise SystemExit("TRADOVATE_ENV must be 'demo'. Refusing to start.")
+    if cfg.broker == "ibkr":
+        from jj_bot.live_runner_ibkr import IBKRLiveRunner
 
-    runner = LiveRunner(cfg)
+        runner = IBKRLiveRunner(cfg)
+    elif cfg.broker == "tradovate":
+        if cfg.tradovate.env != "demo":
+            raise SystemExit("TRADOVATE_ENV must be 'demo'. Refusing to start.")
+        from jj_bot.live_runner import LiveRunner
+
+        runner = LiveRunner(cfg)
+    else:
+        raise SystemExit(f"Unknown BROKER '{cfg.broker}'. Use 'ibkr' or 'tradovate'.")
+
     runner.start()
 
 

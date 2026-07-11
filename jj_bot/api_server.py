@@ -9,7 +9,8 @@ at it via the NEXT_PUBLIC_BOT_API_URL env var.
 
 Endpoints:
   GET  /api/health        -> {"ok": true}
-  GET  /api/accounts      -> resolves + lists every configured Tradovate account
+  GET  /api/accounts      -> resolves + lists every configured broker account
+                              (IBKR by default, or Tradovate if BROKER=tradovate)
   POST /api/test-trade    -> places one small bracket test order, to confirm
                               the automation pipeline is actually wired up
   GET  /api/trades        -> same trade log the dashboard reads directly,
@@ -52,19 +53,20 @@ def health():
 def accounts():
     cfg = load_config()
     try:
-        resolved = list_accounts(cfg)
+        names = list_accounts(cfg)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return {
-        "env": cfg.tradovate.env,
-        "accounts": [{"name": a.name, "id": a.id, "active": a.active} for a in resolved],
+        "broker": cfg.broker,
+        "env": "paper" if cfg.broker == "ibkr" else cfg.tradovate.env,
+        "accounts": [{"name": n, "active": True} for n in names],
     }
 
 
 @app.post("/api/test-trade")
 def test_trade(req: TestTradeRequest):
     cfg = load_config()
-    if cfg.tradovate.env != "demo":
+    if cfg.broker == "tradovate" and cfg.tradovate.env != "demo":
         raise HTTPException(status_code=400, detail="TRADOVATE_ENV must be 'demo'. Refusing to place a test trade.")
     if req.direction not in ("Buy", "Sell"):
         raise HTTPException(status_code=400, detail="direction must be 'Buy' or 'Sell'")

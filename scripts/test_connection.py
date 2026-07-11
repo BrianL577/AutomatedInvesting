@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Confirms the bot is actually wired up to your Tradovate paper account
+"""Confirms the bot is actually wired up to your paper trading account
 before you trust the live strategy runner: authenticates, lists every
 resolved account, and places one small bracket test order (default 4pt
 stop / 6pt target, 1 contract) on the account you choose.
 
+Broker is selected via BROKER env var (or config.broker) — "ibkr" (default)
+or "tradovate".
+
 Usage:
     python scripts/test_connection.py --list-accounts
-    python scripts/test_connection.py --account "DEMO12345" --direction Buy
+    python scripts/test_connection.py --account "DU1234567" --direction Buy
 """
 import argparse
 import sys
@@ -27,14 +30,16 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    if cfg.tradovate.env != "demo":
+    if cfg.broker == "tradovate" and cfg.tradovate.env != "demo":
         raise SystemExit("TRADOVATE_ENV must be 'demo'. Refusing to run.")
+
+    print(f"Broker: {cfg.broker}")
 
     if args.list_accounts:
         accounts = list_accounts(cfg)
         print(f"Resolved {len(accounts)} account(s):")
         for a in accounts:
-            print(f"  - {a.name} (id={a.id}, active={a.active})")
+            print(f"  - {a}")
         return
 
     print("Placing test trade...")
@@ -43,7 +48,7 @@ def main() -> None:
     print(f"Tested account:   {result.tested_account}")
     print(f"Contract:         {result.contract_symbol}")
     print(f"Order response:   {result.order_response}")
-    print("\nCheck this order in your Tradovate demo account to confirm it filled.")
+    print("\nCheck this order in your broker's paper account to confirm it filled.")
     print("It was also logged to dashboard/data/trades.json (source=connection_test).")
 
 

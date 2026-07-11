@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-type AccountInfo = { name: string; id: number; active: boolean };
+type AccountInfo = { name: string; active: boolean };
 
 const STORAGE_KEY = "jj-bot-api-url";
 
