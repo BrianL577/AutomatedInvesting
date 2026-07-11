@@ -40,6 +40,13 @@ def list_accounts(cfg: AppConfig) -> list[str]:
         finally:
             client.disconnect()
 
+    if cfg.broker == "ninjatrader":
+        from .ninjatrader_client import NinjaTraderClient
+
+        client = NinjaTraderClient(cfg.ninjatrader)
+        client.connect()
+        return list(client.accounts)
+
     from .tradovate_client import TradovateClient
 
     client = TradovateClient(cfg.tradovate)
@@ -55,6 +62,8 @@ def run_connection_test(cfg: AppConfig, account_name: Optional[str] = None, dire
     strategy trades."""
     if cfg.broker == "ibkr":
         result = _run_ibkr_test(cfg, account_name, direction)
+    elif cfg.broker == "ninjatrader":
+        result = _run_ninjatrader_test(cfg, account_name, direction)
     else:
         result = _run_tradovate_test(cfg, account_name, direction)
 
@@ -104,6 +113,31 @@ def _run_ibkr_test(cfg: AppConfig, account_name: Optional[str], direction: str) 
         )
     finally:
         client.disconnect()
+
+
+def _run_ninjatrader_test(cfg: AppConfig, account_name: Optional[str], direction: str) -> ConnectionTestResult:
+    from .ninjatrader_client import NinjaTraderClient
+
+    client = NinjaTraderClient(cfg.ninjatrader)
+    client.connect()
+    accounts = client.accounts
+    target_account = account_name or accounts[0]
+    if account_name and account_name not in accounts:
+        raise ValueError(f"Account '{account_name}' not found among resolved accounts: {accounts}")
+
+    contract = client.find_front_month_contract(cfg.instrument.symbol)
+    order_ids = client.place_test_trade(contract=contract, account=target_account, action=direction, qty=1)
+
+    return ConnectionTestResult(
+        accounts=accounts,
+        tested_account=target_account,
+        contract_symbol=contract.symbol,
+        order_response={
+            "entry_order_id": order_ids.entry_id,
+            "take_profit_order_id": order_ids.take_profit_id,
+            "stop_loss_order_id": order_ids.stop_loss_id,
+        },
+    )
 
 
 def _run_tradovate_test(cfg: AppConfig, account_name: Optional[str], direction: str) -> ConnectionTestResult:

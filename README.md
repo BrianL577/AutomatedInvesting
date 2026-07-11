@@ -2,15 +2,18 @@
 
 Automates the NY-session "high-timeframe reversion, low-timeframe continuation"
 strategy described by the YouTuber JJ, and runs it against a **paper trading
-account**. Two brokers are supported:
+account**. Three brokers are supported:
 
 - **Interactive Brokers (default, `BROKER=ibkr`)** — free paper trading
-  account, no funding required. See `IBKR.md`.
+  account, no funding required, runs headless on Railway. See `IBKR.md`.
+- **NinjaTrader (`BROKER=ninjatrader`)** — free sim account (`Sim101`),
+  friendlier signup than IBKR, but Windows-only desktop software — the bot
+  must run on the same Windows machine as NinjaTrader (no Railway hosting).
+  See `NINJATRADER.md`.
 - **Tradovate (`BROKER=tradovate`)** — the platform TopStep accounts trade
   through, but Tradovate only issues API keys once you've funded a live
   account ($1,000 min) and bought their $25/mo API add-on. Use this once
-  you're ready to move toward TopStep; use IBKR to build/test for free
-  first.
+  you're ready to move toward TopStep.
 
 > Paper/demo trading only. This does not place real-money orders and is not
 > investment advice. Verify everything against your own TopStep rules before
