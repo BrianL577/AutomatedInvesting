@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { StrategyConfigSchema } from "../../../lib/strategySchema";
-import { listStrategies, saveStrategy } from "../../../lib/strategyStore";
+import {
+  deleteStrategyForCurrentUser,
+  listStrategiesForCurrentUser,
+  saveStrategyForCurrentUser,
+} from "../../../lib/strategyStore";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const strategies = await listStrategies();
-  return NextResponse.json({ strategies });
+  const { strategies, signedIn } = await listStrategiesForCurrentUser();
+  return NextResponse.json({ strategies, signedIn });
 }
 
 export async function POST(req: NextRequest) {
@@ -34,7 +38,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Prompt too long" }, { status: 400 });
   }
 
-  const result = await saveStrategy(parsed.data, source === "ai" ? "ai" : "manual", prompt);
-  if (!result.ok) return NextResponse.json({ error: result.error }, { status: 503 });
+  const result = await saveStrategyForCurrentUser(parsed.data, source === "ai" ? "ai" : "manual", prompt);
+  if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
   return NextResponse.json({ id: result.id });
+}
+
+export async function DELETE(req: NextRequest) {
+  const id = req.nextUrl.searchParams.get("id");
+  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
+  if (id === "default-jj") return NextResponse.json({ error: "Cannot delete the default strategy" }, { status: 400 });
+
+  const result = await deleteStrategyForCurrentUser(id);
+  if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+  return NextResponse.json({ ok: true });
 }

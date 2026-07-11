@@ -138,6 +138,27 @@ Three pieces, each hosted separately:
 This chat/session cannot itself run the always-on worker — it's an
 ephemeral container. `RAILWAY.md` walks through standing this up properly.
 
+## Accounts & multi-user (dashboard/accounts)
+
+The dashboard has real user accounts (Supabase Auth — sign up / sign in with
+email + password). Once signed in:
+
+- **My Accounts** (`/accounts`) lets each user enter and save their own
+  Tradovate account name(s) — no more hardcoding one operator's
+  `TRADOVATE_ACCOUNT_NAMES` in `.env`. Names are private per user (RLS:
+  `auth.uid() = user_id`), and the page gives a ready-to-paste value for
+  Railway's environment variables.
+- **Strategies** (Strategy Creator) are private per user the same way —
+  each strategy belongs to exactly one account, enforced at the database
+  level, not just in application code.
+
+The bot's Tradovate *login credentials* (username, password, CID, SEC) still
+live only in the bot host's own env vars (Railway) — this system stores
+account *names* for convenience/reference, not broker secrets. See
+`dashboard/README.md` → Accounts & Authentication for setup, and
+`supabase/migrations/` if you already had a Supabase project from before
+auth existed.
+
 ## Strategy Creator (dashboard/strategies)
 
 The dashboard includes a **Strategy Creator** page where users can:

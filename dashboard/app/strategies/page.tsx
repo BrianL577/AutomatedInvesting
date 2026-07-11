@@ -80,6 +80,22 @@ export default function StrategiesPage() {
     }
   }
 
+  async function removeStrategy(id: string) {
+    setBusy("saving");
+    setMessage(null);
+    try {
+      const res = await fetch(`/api/strategies?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Delete failed");
+      if (selected?.id === id) setSelected(null);
+      await refresh();
+    } catch (err: any) {
+      setMessage({ kind: "error", text: err.message });
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function save() {
     if (!draft) return;
     setBusy("saving");
@@ -155,8 +171,10 @@ export default function StrategiesPage() {
         <div className="strategy-list">
           <h2>Strategies</h2>
           {strategies.map((s) => (
-            <button
+            <div
               key={s.id}
+              role="button"
+              tabIndex={0}
               className={`strategy-item ${!draft && selected?.id === s.id ? "active" : ""}`}
               onClick={() => {
                 setSelected(s);
@@ -164,18 +182,38 @@ export default function StrategiesPage() {
                 setResult(null);
                 setMessage(null);
               }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  setSelected(s);
+                  setDraft(null);
+                  setResult(null);
+                  setMessage(null);
+                }
+              }}
             >
               <span className="strategy-item-name">{s.config.name}</span>
               <span className={`badge ${s.source === "default" ? "test" : s.source === "ai" ? "long" : "short"}`}>
                 {s.source}
               </span>
-            </button>
+              {s.source !== "default" && (
+                <button
+                  className="strategy-item-delete"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeStrategy(s.id);
+                  }}
+                  title="Delete strategy"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
           ))}
           {draft && (
-            <button className="strategy-item active">
+            <div className="strategy-item active">
               <span className="strategy-item-name">{draft.name}</span>
               <span className="badge win">draft</span>
-            </button>
+            </div>
           )}
         </div>
 

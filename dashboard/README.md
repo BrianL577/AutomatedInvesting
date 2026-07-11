@@ -32,6 +32,31 @@ Two modes, auto-detected:
 (when configured) on every closed trade, from both `scripts/run_backtest.py`
 and `scripts/run_live.py`.
 
+## Accounts & Authentication
+
+Sign in/sign up (email + password, Supabase Auth) is required to use the
+Strategy Creator and the My Accounts page:
+
+- **My Accounts** (`/accounts`) — save the Tradovate account name(s) you
+  trade (e.g. `DEMO12345`). Private to you via Postgres row-level security
+  (`auth.uid() = user_id`) — no other user can see or edit your accounts.
+  Only the account *name* is stored; your Tradovate login/password/CID/SEC
+  stay in your bot host's own env vars, never in the database. The page
+  gives you a ready-to-copy `TRADOVATE_ACCOUNT_NAMES` value for Railway.
+- **Strategies** are private per user the same way — each strategy row is
+  owned by exactly one `auth.uid()`, enforced by RLS, not just application
+  logic. The built-in JJ default strategy is shown to everyone (it's not a
+  database row).
+
+Setup: run `supabase/schema.sql` (fresh project) or, if you already ran an
+earlier version of it, `supabase/migrations/002_user_scoped_strategies_and_accounts.sql`
+(existing project). No extra env vars beyond `NEXT_PUBLIC_SUPABASE_URL` /
+`NEXT_PUBLIC_SUPABASE_ANON_KEY` are needed for auth — Supabase Auth is
+enabled by default on every project. In Supabase → Authentication →
+Providers, Email is on by default; toggle "Confirm email" under
+Authentication → Settings depending on whether you want email verification
+before first sign-in.
+
 ## Connection & Automation Test panel
 
 The card at the top of the dashboard lets you point at a running

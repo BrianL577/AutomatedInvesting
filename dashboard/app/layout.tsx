@@ -1,5 +1,6 @@
 import "./globals.css";
 import type { Metadata } from "next";
+import NavBar from "../components/NavBar";
 
 export const metadata: Metadata = {
   title: "JJ Strategy — Paper Trading Dashboard",
@@ -9,7 +10,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <NavBar />
+        {children}
+      </body>
     </html>
   );
 }
