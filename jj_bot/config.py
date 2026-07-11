@@ -125,7 +125,7 @@ class NinjaTraderCreds:
 
     incoming_dir: str = ""
     export_dir: str = ""
-    account_name: str = "Sim101"
+    account_names: list[str] = field(default_factory=lambda: ["Sim101"])
     instrument: str = ""
 
 
@@ -176,14 +176,15 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         account_names=ibkr_account_names,
     )
 
-    nt_account_name = os.getenv("NT_ACCOUNT_NAME")
-    if not nt_account_name:
-        saved = _fetch_saved_account_names()
-        nt_account_name = saved[0] if saved else "Sim101"
+    # NT_ACCOUNT_NAMES="DEMO8217187,Sim101" (comma-separated) — same
+    # dashboard-first pattern as IBKR/Tradovate above. NT_ACCOUNT_NAME
+    # (singular) still works for a single account.
+    nt_names_raw = os.getenv("NT_ACCOUNT_NAMES") or os.getenv("NT_ACCOUNT_NAME", "")
+    nt_account_names = [n.strip() for n in nt_names_raw.split(",") if n.strip()] or _fetch_saved_account_names() or ["Sim101"]
     ninjatrader_creds = NinjaTraderCreds(
         incoming_dir=os.getenv("NT_INCOMING_DIR", ""),
         export_dir=os.getenv("NT_EXPORT_DIR", ""),
-        account_name=nt_account_name,
+        account_names=nt_account_names,
         instrument=os.getenv("NT_INSTRUMENT", ""),
     )
 

@@ -54,16 +54,17 @@ class NinjaTraderClient:
         if not self.incoming_dir.exists():
             raise NinjaTraderError(
                 f"ATI incoming folder not found: {self.incoming_dir}. "
-                "Enable ATI in NinjaTrader (Tools > Options > Automated Trading "
+                "Enable ATI in NinjaTrader (Tools > Settings > Automated Trading "
                 "Interface) and confirm the folder path. See NINJATRADER.md."
             )
-        if not (self.creds.account_name.startswith("Sim") or self.creds.account_name.startswith("DEMO")):
+        non_sim = [a for a in self.creds.account_names if not (a.startswith("Sim") or a.startswith("DEMO"))]
+        if non_sim:
             raise NinjaTraderError(
-                f"Refusing to run: account '{self.creds.account_name}' does not look like a "
-                "simulation account (expected a name starting with 'Sim' or 'DEMO', e.g. "
-                "'Sim101' or 'DEMO8217187'). This bot is for paper/sim trading only."
+                f"Refusing to run: account(s) {non_sim} do not look like simulation accounts "
+                "(expected names starting with 'Sim' or 'DEMO', e.g. 'Sim101' or 'DEMO8217187'). "
+                "This bot is for paper/sim trading only."
             )
-        self.accounts = [self.creds.account_name]
+        self.accounts = list(self.creds.account_names)
         # Ensure the fill/bar export files exist so tailing doesn't fail on a fresh setup.
         self.fills_csv.parent.mkdir(parents=True, exist_ok=True)
         self.fills_csv.touch(exist_ok=True)
