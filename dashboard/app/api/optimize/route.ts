@@ -18,6 +18,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { runBacktest, type BacktestResult } from "../../../lib/backtester";
 import { loadBars } from "../../../lib/bars";
 import {
+  DOLLARS_PER_POINT,
   STRATEGY_VARIANT_BATCH_JSON_SCHEMA,
   StrategyConfigSchema,
   StrategyVariantSchema,
@@ -43,6 +44,8 @@ Each round you'll see the current best config and a leaderboard of every variant
 - evalPassRate: probability of ever reaching funded at all
 
 Search heuristics from prop-firm math (JJ's approach): the eval stage is a "hit +$3,000 before the $2,000 trailing drawdown" game, so risk:reward near the account's own ratio (1:1.5, e.g. 50pt stop / 75pt target) tends to maximize pass rate — test that region early. Eval and funded stages reward different configs: watch evalStage vs fundedStage results separately and say which stage a variant is aimed at. Static bracket exits are a given (the engine only does static); prefer variants that change trade frequency (phase windows, displacement looseness) and stop:target geometry over exotic filter tweaks.
+
+HARD SURVIVABILITY CONSTRAINT — non-negotiable, applies to every variant you propose: risk.stopPoints x risk.contractsPerTrade x $20/point MUST NOT exceed eval.trailingMaxDrawdown (a single losing trade must never be able to bust the account outright — the $2,000 limit is a real, fixed rule of the actual account, not a target to optimize against). Any variant that violates this is discarded automatically before backtesting, wasting your proposal — so check this arithmetic yourself before proposing a stopPoints/contractsPerTrade combination.
 
 Propose meaningfully different variants each round, not tiny noise — if recent variants haven't improved realWorldNetPnl, try a different direction (tighter displacement filters vs. looser, different stop:target ratios in both directions, fewer max trades/day). Each variant is a partial diff on top of the CURRENT BEST config — only include fields you're deliberately changing. Give one honest sentence per variant explaining the hypothesis, referencing what the leaderboard actually shows.`;
 
@@ -175,6 +178,15 @@ export async function POST(req: NextRequest) {
         const configCheck = StrategyConfigSchema.safeParse(candidateConfig);
         if (!configCheck.success) continue;
         if (!configCheck.data.phases.tradeContinuation && !configCheck.data.phases.tradeReversion) continue;
+        // Hard survivability floor: a single losing trade must never exceed
+        // the eval's own trailing drawdown limit ($2,000 by default), or the
+        // very first loss guarantee-busts the account regardless of the
+        // strategy's long-run edge. Reject outright — no exceptions, even
+        // if the model proposes one — rather than let a backtest-profitable
+        // but unsurvivable config ever reach the leaderboard.
+        const maxSingleTradeLoss =
+          configCheck.data.risk.stopPoints * configCheck.data.risk.contractsPerTrade * DOLLARS_PER_POINT;
+        if (maxSingleTradeLoss > configCheck.data.eval.trailingMaxDrawdown) continue;
 
         const result = runBacktest(configCheck.data, bars);
         const candidate: Candidate = {
