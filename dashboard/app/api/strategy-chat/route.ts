@@ -124,11 +124,21 @@ export async function POST(req: NextRequest) {
       model: "claude-opus-4-8",
       max_tokens: 4096,
       thinking: { type: "adaptive" },
-      system:
-        SYSTEM_PROMPT +
-        `\n\nData source: ${source === "supabase" ? "real imported historical bars" : "SYNTHETIC sample data — warn the trader that patterns here are meaningless until real data is imported"}.` +
-        `\n\nWeekly digest (first + last trading day of each week, oldest first):\n${digest}` +
-        `\n\nReference config (JJ's default strategy):\n${JSON.stringify(JJ_DEFAULT_STRATEGY)}`,
+      // Identical on every turn of a conversation (digest/reference config
+      // only change when historical data is reimported) — mark cacheable
+      // so repeat turns within the cache TTL bill ~10% of input cost for
+      // this block instead of full price on every message.
+      system: [
+        {
+          type: "text",
+          text:
+            SYSTEM_PROMPT +
+            `\n\nData source: ${source === "supabase" ? "real imported historical bars" : "SYNTHETIC sample data — warn the trader that patterns here are meaningless until real data is imported"}.` +
+            `\n\nWeekly digest (first + last trading day of each week, oldest first):\n${digest}` +
+            `\n\nReference config (JJ's default strategy):\n${JSON.stringify(JJ_DEFAULT_STRATEGY)}`,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
       output_config: {
         format: { type: "json_schema", schema: CHAT_JSON_SCHEMA },
       },
