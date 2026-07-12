@@ -58,6 +58,11 @@ SUPABASE_SERVICE_ROLE_KEY=...
 BOT_API_HOST=0.0.0.0
 BOT_API_PORT=8787
 BOT_API_CORS_ORIGINS=https://your-dashboard.vercel.app
+
+# Crash alert email (optional, but recommended for an unattended worker)
+SMTP_USER=you@gmail.com
+SMTP_PASSWORD=<Gmail App Password from myaccount.google.com/apppasswords>
+ALERT_EMAIL_TO=you@gmail.com
 ```
 
 Or, once you've funded a live Tradovate account and bought API access:

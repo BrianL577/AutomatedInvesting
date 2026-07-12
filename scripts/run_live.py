@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from jj_bot.alerts import send_crash_alert_for_exception
 from jj_bot.config import load_config
 
 
@@ -48,4 +49,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
+    except SystemExit:
+        raise
+    except BaseException as exc:
+        send_crash_alert_for_exception("scripts/run_live.py main()", exc)
+        raise
