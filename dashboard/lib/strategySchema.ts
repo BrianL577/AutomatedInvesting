@@ -180,6 +180,109 @@ export const DOLLARS_PER_POINT = INSTRUMENT.tickValue / INSTRUMENT.tickSize; // 
  * schema's shape; numeric bounds are enforced by zod after parsing (the
  * structured-outputs grammar doesn't support min/max).
  */
+/** A proposed tweak on top of a base config, for the AI-guided optimizer
+ * (see app/api/optimize/route.ts). Only touches the parameters that affect
+ * signal quality (phases/entry/risk) — deliberately excludes session,
+ * eval, filters, and portfolio, which are account/rule-set decisions, not
+ * things a search should be free to drift on. All fields optional: only
+ * include what you're changing from the base. */
+export const StrategyVariantSchema = z
+  .object({
+    rationale: z.string().max(300),
+    phases: z
+      .object({
+        continuationEndMin: z.number().min(0).max(120).optional(),
+        reversionEndMin: z.number().min(0).max(360).optional(),
+        tradeContinuation: z.boolean().optional(),
+        tradeReversion: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    entry: z
+      .object({
+        displacementSizeRatio: z.number().min(0.5).max(5).optional(),
+        displacementPrevRatio: z.number().min(0).max(5).optional(),
+        maxWickRatio: z.number().min(0).max(1).optional(),
+        structureLookbackMin: z.number().min(2).max(240).optional(),
+        swingStrength: z.number().int().min(1).max(10).optional(),
+        breakBufferPoints: z.number().min(0).max(50).optional(),
+        minExtensionPoints: z.number().min(0).max(500).optional(),
+      })
+      .strict()
+      .optional(),
+    risk: z
+      .object({
+        stopPoints: z.number().min(1).max(500).optional(),
+        targetPoints: z.number().min(1).max(1000).optional(),
+        maxTradesPerDay: z.number().int().min(1).max(20).optional(),
+        stopAfterConsecutiveLosses: z.number().int().min(1).max(10).optional(),
+        contractsPerTrade: z.number().int().min(1).max(10).optional(),
+        dailyProfitCap: z.number().min(0).max(100000).optional(),
+        dailyLossCap: z.number().min(0).max(100000).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export type StrategyVariant = z.infer<typeof StrategyVariantSchema>;
+
+export const STRATEGY_VARIANT_BATCH_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    variants: {
+      type: "array",
+      description: "Proposed parameter tweaks to try next, each a partial diff on top of the current best config.",
+      items: {
+        type: "object",
+        properties: {
+          rationale: { type: "string", description: "One sentence: what this variant changes and why, given the results so far" },
+          phases: {
+            type: "object",
+            properties: {
+              continuationEndMin: { type: "number" },
+              reversionEndMin: { type: "number" },
+              tradeContinuation: { type: "boolean" },
+              tradeReversion: { type: "boolean" },
+            },
+            additionalProperties: false,
+          },
+          entry: {
+            type: "object",
+            properties: {
+              displacementSizeRatio: { type: "number" },
+              displacementPrevRatio: { type: "number" },
+              maxWickRatio: { type: "number" },
+              structureLookbackMin: { type: "number" },
+              swingStrength: { type: "integer" },
+              breakBufferPoints: { type: "number" },
+              minExtensionPoints: { type: "number" },
+            },
+            additionalProperties: false,
+          },
+          risk: {
+            type: "object",
+            properties: {
+              stopPoints: { type: "number" },
+              targetPoints: { type: "number" },
+              maxTradesPerDay: { type: "integer" },
+              stopAfterConsecutiveLosses: { type: "integer" },
+              contractsPerTrade: { type: "integer" },
+              dailyProfitCap: { type: "number" },
+              dailyLossCap: { type: "number" },
+            },
+            additionalProperties: false,
+          },
+        },
+        required: ["rationale"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["variants"],
+  additionalProperties: false,
+} as const;
+
 export const STRATEGY_JSON_SCHEMA = {
   type: "object",
   properties: {
