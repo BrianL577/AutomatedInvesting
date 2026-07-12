@@ -24,9 +24,33 @@ type OptimizeResponse = {
   error?: string;
 };
 
+type ChatMessage = { role: "user" | "assistant"; content: string; config?: StrategyConfig | null };
+
 function fmtMoney(n: number): string {
   const sign = n < 0 ? "-" : "";
   return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** One stat tile with a plain-English hover explanation (native tooltip). */
+function StatCard({
+  label,
+  hint,
+  value,
+  tone,
+}: {
+  label: string;
+  hint: string;
+  value: string;
+  tone?: "positive" | "negative" | "";
+}) {
+  return (
+    <div className="stat-card stat-card-hint" title={hint}>
+      <div className="label">
+        {label} <span className="hint-icon">ⓘ</span>
+      </div>
+      <div className={`value ${tone ?? ""}`}>{value}</div>
+    </div>
+  );
 }
 
 export default function StrategiesPage() {
@@ -34,8 +58,9 @@ export default function StrategiesPage() {
   const [selected, setSelected] = useState<SavedStrategy | null>(null);
   const [draft, setDraft] = useState<StrategyConfig | null>(null);
   const [draftPrompt, setDraftPrompt] = useState("");
-  const [prompt, setPrompt] = useState("");
-  const [busy, setBusy] = useState<"" | "generating" | "backtesting" | "saving" | "optimizing">("");
+  const [chat, setChat] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [busy, setBusy] = useState<"" | "chatting" | "backtesting" | "saving" | "optimizing">("");
   const [message, setMessage] = useState<{ kind: "error" | "ok"; text: string } | null>(null);
   const [result, setResult] = useState<BacktestResponse | null>(null);
   const [resultFor, setResultFor] = useState("");
@@ -57,26 +82,38 @@ export default function StrategiesPage() {
   const activeConfig: StrategyConfig | null = draft ?? selected?.config ?? null;
   const activeName = draft ? `${draft.name} (unsaved)` : selected?.config.name ?? "";
 
-  async function generate() {
-    setBusy("generating");
+  async function sendChat() {
+    const text = chatInput.trim();
+    if (!text || busy !== "") return;
+    // Keep the last ~20 turns so long conversations don't hit the API cap.
+    const nextChat: ChatMessage[] = [...chat, { role: "user" as const, content: text }].slice(-20);
+    setChat(nextChat);
+    setChatInput("");
+    setBusy("chatting");
     setMessage(null);
     try {
-      const res = await fetch("/api/generate-strategy", {
+      const res = await fetch("/api/strategy-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ messages: nextChat.map(({ role, content }) => ({ role, content })) }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Generation failed");
-      setDraft(data.config);
-      setDraftPrompt(prompt);
-      setResult(null);
-      setMessage({ kind: "ok", text: "Strategy generated. Review the rules below, then backtest or save it." });
+      if (!res.ok) throw new Error(data.error || "Chat failed");
+      setChat([...nextChat, { role: "assistant", content: data.reply, config: data.config ?? null }]);
     } catch (err: any) {
       setMessage({ kind: "error", text: err.message });
+      setChat(chat); // roll back the optimistic user turn so it can be retried
+      setChatInput(text);
     } finally {
       setBusy("");
     }
+  }
+
+  function loadChatConfig(config: StrategyConfig) {
+    setDraft(config);
+    setDraftPrompt("Designed in AI chat");
+    setResult(null);
+    setMessage({ kind: "ok", text: "Loaded as a draft — run a backtest to see how it actually performs, then save it if you like it." });
   }
 
   async function backtest() {
@@ -185,27 +222,59 @@ export default function StrategiesPage() {
 
       <div className="test-panel">
         <div className="test-panel-header">
-          <h2>Create a strategy with AI</h2>
+          <h2>Design a strategy with AI</h2>
           <p>
-            Your description is translated by Claude into parameters for the same rule engine that runs JJ&apos;s
-            default strategy (session anchor, displacement candles, break of structure, fixed R:R brackets, daily
-            caps). AI output is data, not code — every config is validated before it runs.
+            Have a conversation: ask what patterns show up in your real historical data (it sees a weekly digest —
+            the first and last trading day of every week), bounce ideas around, and when you&apos;ve agreed on
+            something concrete it attaches a ready-to-test strategy. AI output is data, not code — every config is
+            validated before it runs, and nothing counts until it survives a real backtest.
           </p>
         </div>
+        {chat.length > 0 && (
+          <div className="chat-box">
+            {chat.map((m, i) => (
+              <div key={i} className={`chat-msg ${m.role}`}>
+                <div className="chat-msg-role">{m.role === "user" ? "You" : "Claude"}</div>
+                <div className="chat-msg-text">{m.content}</div>
+                {m.config && (
+                  <button className="btn btn-primary chat-config-btn" onClick={() => loadChatConfig(m.config!)}>
+                    Load &quot;{m.config.name}&quot; as draft
+                  </button>
+                )}
+              </div>
+            ))}
+            {busy === "chatting" && <div className="chat-msg assistant"><div className="chat-msg-role">Claude</div><div className="chat-msg-text">Thinking…</div></div>}
+          </div>
+        )}
         <div className="test-panel-row">
           <textarea
             className="test-input strategy-prompt"
-            rows={3}
+            rows={2}
             maxLength={4000}
-            placeholder='e.g. "Trade only mean reversion between 30 and 90 minutes after the open, with a tight 15 point stop and 45 point target, max 2 trades a day, stop after 1 loss."'
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
+            placeholder={
+              chat.length === 0
+                ? 'e.g. "Looking at my data, do Mondays open differently than Fridays close? What would you try?"'
+                : "Reply…"
+            }
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendChat();
+              }
+            }}
           />
+          <button className="btn btn-primary" onClick={sendChat} disabled={busy !== "" || chatInput.trim().length === 0}>
+            {busy === "chatting" ? "…" : "Send"}
+          </button>
         </div>
         <div className="test-panel-row">
-          <button className="btn btn-primary" onClick={generate} disabled={busy !== "" || prompt.trim().length < 10}>
-            {busy === "generating" ? "Generating…" : "Generate Strategy"}
-          </button>
+          {chat.length > 0 && (
+            <button className="btn" onClick={() => { setChat([]); setMessage(null); }} disabled={busy !== ""}>
+              New Conversation
+            </button>
+          )}
           {draft && (
             <>
               <button className="btn" onClick={save} disabled={busy !== ""}>
@@ -318,55 +387,84 @@ export default function StrategiesPage() {
                         : "○ Synthetic sample data — import real NQ bars for meaningful results"}
                     </span>
                   </div>
-                  <p className="bt-explainer">
-                    Every trade below is real strategy output against real historical bars. But <strong>how</strong> those
-                    dollars translate into money in your pocket depends entirely on account rules — a $500 loss means
-                    something different if it&apos;s the trade that busts your eval vs. a normal down day once funded.
-                    The sections below split the same trades three different ways so each question gets an honest answer.
-                  </p>
-
                   <div className="bt-results-header">
-                    <h3>1. While Working Toward the Eval Target</h3>
-                    <span className="data-source-badge static">
-                      Only trades that happened before the account (chronologically) first hit the ${draft?.eval.profitTarget?.toLocaleString() ?? "3,000"} profit target
-                    </span>
+                    <h3 title="Trades made while the simulated account was still trying to hit the eval profit target">While in Eval <span className="hint-icon">ⓘ</span></h3>
                   </div>
                   <div className="stat-grid">
-                    <div className="stat-card"><div className="label">Success Rate</div><div className={`value ${result.evalStage.winRate >= 50 ? "positive" : "negative"}`}>{result.evalStage.winRate.toFixed(1)}%</div></div>
-                    <div className="stat-card"><div className="label">Net P&amp;L</div><div className={`value ${result.evalStage.netPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(result.evalStage.netPnl)}</div></div>
-                    <div className="stat-card"><div className="label">Total Gained</div><div className="value positive">{fmtMoney(result.evalStage.totalGained)}</div></div>
-                    <div className="stat-card"><div className="label">Total Lost</div><div className="value negative">{fmtMoney(-result.evalStage.totalLost)}</div></div>
-                    <div className="stat-card"><div className="label">Trades (W/L)</div><div className="value">{result.evalStage.trades} ({result.evalStage.wins}/{result.evalStage.losses})</div></div>
-                    <div className="stat-card"><div className="label">Trading Days</div><div className="value">{result.evalStage.tradingDays}</div></div>
+                    <StatCard
+                      label="Win Rate"
+                      hint="Of the trades taken during the eval stage, the percentage that hit the profit target instead of the stop-loss."
+                      value={`${result.evalStage.winRate.toFixed(1)}%`}
+                      tone={result.evalStage.winRate >= 50 ? "positive" : "negative"}
+                    />
+                    <StatCard
+                      label="Net P&L"
+                      hint="Dollars won minus dollars lost across all eval-stage trades. Virtual account money, not real cash."
+                      value={fmtMoney(result.evalStage.netPnl)}
+                      tone={result.evalStage.netPnl >= 0 ? "positive" : "negative"}
+                    />
+                    <StatCard
+                      label="Trades (W/L)"
+                      hint="Total eval-stage trades, and how many were wins vs losses."
+                      value={`${result.evalStage.trades} (${result.evalStage.wins}/${result.evalStage.losses})`}
+                    />
                   </div>
 
                   <div className="bt-results-header" style={{ marginTop: 20 }}>
-                    <h3>2. Once Funded</h3>
-                    <span className="data-source-badge static">
-                      Only trades that happened after reaching funded — this is the performance that actually determines real payouts
-                    </span>
+                    <h3 title="Trades made after the account reached funded status — this performance is what actually generates real payouts">Once Funded <span className="hint-icon">ⓘ</span></h3>
                   </div>
                   <div className="stat-grid">
-                    <div className="stat-card"><div className="label">Success Rate</div><div className={`value ${result.fundedStage.winRate >= 50 ? "positive" : "negative"}`}>{result.fundedStage.winRate.toFixed(1)}%</div></div>
-                    <div className="stat-card"><div className="label">Net P&amp;L</div><div className={`value ${result.fundedStage.netPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(result.fundedStage.netPnl)}</div></div>
-                    <div className="stat-card"><div className="label">Total Gained</div><div className="value positive">{fmtMoney(result.fundedStage.totalGained)}</div></div>
-                    <div className="stat-card"><div className="label">Total Lost</div><div className="value negative">{fmtMoney(-result.fundedStage.totalLost)}</div></div>
-                    <div className="stat-card"><div className="label">Trades (W/L)</div><div className="value">{result.fundedStage.trades} ({result.fundedStage.wins}/{result.fundedStage.losses})</div></div>
-                    <div className="stat-card"><div className="label">Trading Days</div><div className="value">{result.fundedStage.tradingDays}</div></div>
+                    <StatCard
+                      label="Win Rate"
+                      hint="Of the trades taken after reaching funded, the percentage that won."
+                      value={`${result.fundedStage.winRate.toFixed(1)}%`}
+                      tone={result.fundedStage.winRate >= 50 ? "positive" : "negative"}
+                    />
+                    <StatCard
+                      label="Net P&L"
+                      hint="Dollars won minus lost across funded-stage trades. Still account money — real cash only moves via payouts below."
+                      value={fmtMoney(result.fundedStage.netPnl)}
+                      tone={result.fundedStage.netPnl >= 0 ? "positive" : "negative"}
+                    />
+                    <StatCard
+                      label="Trades (W/L)"
+                      hint="Total funded-stage trades, and how many were wins vs losses."
+                      value={`${result.fundedStage.trades} (${result.fundedStage.wins}/${result.fundedStage.losses})`}
+                    />
                   </div>
 
                   <div className="bt-results-header" style={{ marginTop: 20 }}>
-                    <h3>3. Real Cash In / Out (fees paid, payouts received)</h3>
-                    <span className="data-source-badge static">
-                      Default $50 eval/reactivation fee, 50% funded payout share ($2,000 cap/event), 50% single-day consistency rule — verify against the actual firm&apos;s current rules
-                    </span>
+                    <h3 title="Actual money in and out of your pocket: $50 per eval/reactivation, payouts at 50% share ($2,000 cap per event, 50% single-day consistency rule). Verify these against the firm's current rules.">Real Money <span className="hint-icon">ⓘ</span></h3>
                   </div>
                   <div className="stat-grid">
-                    <div className="stat-card"><div className="label">Eval/Reactivation Fees Paid</div><div className="value negative">{fmtMoney(-result.realWorldFeesPaid)}</div></div>
-                    <div className="stat-card"><div className="label">Real Cash Payouts Received</div><div className="value positive">{fmtMoney(result.realWorldCashPayouts)}</div></div>
-                    <div className="stat-card"><div className="label">Real-World Net (payouts − fees)</div><div className={`value ${result.realWorldNetPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(result.realWorldNetPnl)}</div></div>
-                    <div className="stat-card"><div className="label">Accounts Bought (chronological)</div><div className="value">{result.chronologicalAttempts}</div></div>
-                    <div className="stat-card"><div className="label">Times Reached Funded</div><div className="value">{result.timesFunded}</div></div>
+                    <StatCard
+                      label="Bottom Line"
+                      hint="Payouts received minus fees paid — the actual cash result of running this strategy over the whole period. Positive = profitable."
+                      value={fmtMoney(result.realWorldNetPnl)}
+                      tone={result.realWorldNetPnl >= 0 ? "positive" : "negative"}
+                    />
+                    <StatCard
+                      label="Fees Paid"
+                      hint="Every $50 spent buying an eval or reactivating after busting an account."
+                      value={fmtMoney(-result.realWorldFeesPaid)}
+                      tone="negative"
+                    />
+                    <StatCard
+                      label="Payouts Received"
+                      hint="Real cash withdrawn from funded accounts (50% profit share, max $2,000 per payout, only when no single day made over half the profit)."
+                      value={fmtMoney(result.realWorldCashPayouts)}
+                      tone="positive"
+                    />
+                    <StatCard
+                      label="Accounts Bought"
+                      hint="How many evals were purchased in total — every bust means buying another."
+                      value={`${result.chronologicalAttempts}`}
+                    />
+                    <StatCard
+                      label="Reached Funded"
+                      hint="How many of those attempts made it through the eval to a funded account."
+                      value={`${result.timesFunded}`}
+                    />
                   </div>
 
                   <details className="bt-pooled-details">
@@ -436,9 +534,8 @@ export default function StrategiesPage() {
                 <div className="bt-results">
                   <p className="bt-explainer">
                     Claude proposed parameter tweaks each round based on how prior variants actually performed against
-                    your real historical data — it never saw raw price bars, only these result summaries. A config only
-                    counts as <strong>Profitable</strong> at a 60%+ overall win rate — that&apos;s the primary target,
-                    with real-world net P&amp;L (fees vs. funded payouts) as the tiebreaker.
+                    your real historical data. <strong>Profitable</strong> simply means the real-money bottom line
+                    (payouts minus fees) came out positive.
                   </p>
                   {optimizeResult.warning && (
                     <div className="test-status test-status-error">{optimizeResult.warning}</div>
@@ -447,7 +544,11 @@ export default function StrategiesPage() {
                     <table>
                       <thead>
                         <tr>
-                          <th>#</th><th>Round</th><th>Rationale</th><th>Win Rate</th><th>Eval Win%</th><th>Funded Win%</th><th>Real-World Net</th><th></th>
+                          <th>#</th>
+                          <th title="Claude's one-sentence hypothesis for why this variant might do better">What was tried</th>
+                          <th title="Percentage of all trades that won">Win Rate</th>
+                          <th title="Real cash: payouts received minus fees paid. Positive = profitable.">Bottom Line</th>
+                          <th></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -456,16 +557,13 @@ export default function StrategiesPage() {
                           .map((c, i) => (
                             <tr key={i}>
                               <td>{i === 0 ? "🏆" : i + 1}</td>
-                              <td>{c.round}</td>
                               <td>{c.rationale}</td>
+                              <td>{c.result.winRate.toFixed(1)}%</td>
                               <td>
-                                <span className={`badge ${c.result.winRate >= 60 ? "win" : "loss"}`}>
-                                  {c.result.winRate.toFixed(1)}% {c.result.winRate >= 60 ? "Profitable" : ""}
+                                <span className={`badge ${c.result.realWorldNetPnl > 0 ? "win" : "loss"}`}>
+                                  {fmtMoney(c.result.realWorldNetPnl)}{c.result.realWorldNetPnl > 0 ? " Profitable" : ""}
                                 </span>
                               </td>
-                              <td>{c.result.evalStage.winRate.toFixed(1)}%</td>
-                              <td>{c.result.fundedStage.winRate.toFixed(1)}%</td>
-                              <td className={c.result.realWorldNetPnl >= 0 ? "positive" : "negative"}>{fmtMoney(c.result.realWorldNetPnl)}</td>
                               <td>
                                 <button className="btn" onClick={() => useOptimizedConfig(c.config)}>
                                   Use This Config

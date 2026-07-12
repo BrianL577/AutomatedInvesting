@@ -31,20 +31,18 @@ export const maxDuration = 300; // several rounds of model calls + backtests
 const MAX_ROUNDS = 5;
 const MAX_BATCH_SIZE = 6;
 
-const PROFITABLE_WIN_RATE = 60; // a config only counts as "profitable" at >= this win rate
-
 const SYSTEM_PROMPT = `You are tuning the numeric parameters of a fixed rule-based NQ futures intraday strategy — you do not invent new mechanics, only propose tweaks to existing ones (session/phase timing already fixed, entry displacement/structure thresholds, and risk stop/target/caps).
 
-TARGET: a configuration only counts as "profitable" once its overall win rate reaches ${PROFITABLE_WIN_RATE}% or higher. This is the primary objective — prioritize variants likely to push win rate up (tighter displacement/structure filters for higher-quality signals, adjusted stop:target ratio, fewer low-conviction setups) over variants that only chase more total trades or a slightly better dollar P&L at a lower win rate.
+TARGET: a configuration counts as "profitable" when realWorldNetPnl is positive — actual dollars after eval/reactivation fees and funded payouts. That's the primary objective. Win rate and R:R are levers toward it, not goals in themselves: a 40% win rate at 1:2 R:R and a 65% win rate at 1:0.8 can both get there — search both directions.
 
 Each round you'll see the current best config and a leaderboard of every variant tried so far with its real-world results:
-- winRate: overall win rate across all trades — must reach ${PROFITABLE_WIN_RATE}%+ to count as profitable
+- winRate: overall win rate across all trades
 - evalStage: win rate & net P&L for trades while still working toward the eval profit target
 - fundedStage: win rate & net P&L for trades after reaching funded — this is what actually matters long-term
-- realWorldNetPnl: actual dollars (eval/reactivation fees vs. funded payouts) — the honest bottom line
+- realWorldNetPnl: actual dollars (fees vs. funded payouts) — the honest bottom line and the fitness metric
 - evalPassRate: probability of ever reaching funded at all
 
-Propose meaningfully different variants each round, not tiny noise — if recent variants haven't moved win rate closer to ${PROFITABLE_WIN_RATE}%, try a different direction. Each variant is a partial diff on top of the CURRENT BEST config — only include fields you're deliberately changing. Give one honest sentence per variant explaining the hypothesis, referencing what the leaderboard actually shows.`;
+Propose meaningfully different variants each round, not tiny noise — if recent variants haven't improved realWorldNetPnl, try a different direction (tighter displacement filters vs. looser, different stop:target ratios in both directions, fewer max trades/day). Each variant is a partial diff on top of the CURRENT BEST config — only include fields you're deliberately changing. Give one honest sentence per variant explaining the hypothesis, referencing what the leaderboard actually shows.`;
 
 type Candidate = {
   round: number;
@@ -65,13 +63,10 @@ function mergeVariant(base: StrategyConfig, diff: Omit<StrategyVariant, "rationa
 }
 
 function fitnessOf(result: BacktestResult): number {
-  // "Profitable" is defined as win rate >= PROFITABLE_WIN_RATE — that's the
-  // primary objective, so any candidate clearing it outranks every
-  // candidate that doesn't, regardless of dollar P&L. Among candidates on
-  // the same side of that line, real-world net P&L (fees vs. funded
-  // payouts) ranks first, eval pass rate breaks remaining ties.
-  const meetsThreshold = result.winRate >= PROFITABLE_WIN_RATE ? 1 : 0;
-  return meetsThreshold * 10_000_000 + result.realWorldNetPnl * 1000 + result.evalPassRate;
+  // "Profitable" simply means positive real-world net P&L (fees vs. funded
+  // payouts) — so that IS the fitness metric, with eval pass rate breaking
+  // ties between candidates with similar economics.
+  return result.realWorldNetPnl * 1000 + result.evalPassRate;
 }
 
 function summarizeForPrompt(candidates: Candidate[]): string {
@@ -81,7 +76,7 @@ function summarizeForPrompt(candidates: Candidate[]): string {
       return (
         `#${i + 1} (round ${c.round}) — ${c.rationale}\n` +
         `  diff: ${JSON.stringify(c.diff)}\n` +
-        `  overall winRate: ${r.winRate.toFixed(1)}% ${r.winRate >= PROFITABLE_WIN_RATE ? "(PROFITABLE)" : `(needs +${(PROFITABLE_WIN_RATE - r.winRate).toFixed(1)}pt)`}\n` +
+        `  overall winRate: ${r.winRate.toFixed(1)}%${r.realWorldNetPnl > 0 ? " (PROFITABLE — positive real-world net)" : ""}\n` +
         `  evalStage: ${r.evalStage.winRate.toFixed(1)}% win, $${r.evalStage.netPnl.toFixed(0)} net (${r.evalStage.trades} trades)\n` +
         `  fundedStage: ${r.fundedStage.winRate.toFixed(1)}% win, $${r.fundedStage.netPnl.toFixed(0)} net (${r.fundedStage.trades} trades)\n` +
         `  realWorldNetPnl: $${r.realWorldNetPnl.toFixed(0)}, evalPassRate: ${r.evalPassRate.toFixed(1)}%`
