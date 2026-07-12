@@ -482,10 +482,70 @@ tbody tr:hover {
 
 .stat-card-hint {
   cursor: help;
+  position: relative;
 }
 
 .stat-card-hint:hover {
   border-color: var(--accent, #4a9eff);
+}
+
+/* Themed hover tooltip (replaces the browser-native title bubble) */
+.hint-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.hint-pop {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 260px;
+  background: #1a2230;
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-transform: none;
+  letter-spacing: normal;
+  padding: 9px 11px;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+  z-index: 30;
+  white-space: normal;
+}
+
+.hint-pop::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: #1a2230;
+}
+
+.hint-wrap:hover .hint-pop,
+.hint-wrap:focus-within .hint-pop,
+.stat-card-hint:hover .hint-pop {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Cards near the left/right edge: keep the bubble inside the panel */
+.stat-card-hint .hint-pop {
+  left: 0;
+  transform: none;
+}
+
+.stat-card-hint .hint-pop::after {
+  left: 24px;
+  transform: none;
 }
 
 .chat-box {
