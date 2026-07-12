@@ -430,6 +430,60 @@ tbody tr:hover {
   margin-bottom: 3px;
 }
 
+.edit-form {
+  margin-bottom: 20px;
+}
+
+.edit-section-label {
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 18px 0 8px;
+}
+
+.edit-section-label:first-of-type {
+  margin-top: 0;
+}
+
+.edit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: #0f151d;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.edit-field-label {
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.edit-field .test-input {
+  width: 100%;
+}
+
+.edit-field-bool {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.edit-field-bool input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+
 .bt-results {
   border-top: 1px solid var(--panel-border);
   padding-top: 16px;

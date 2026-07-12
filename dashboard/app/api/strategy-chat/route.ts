@@ -21,6 +21,7 @@ import {
   JJ_DEFAULT_STRATEGY,
   STRATEGY_JSON_SCHEMA,
   StrategyConfigSchema,
+  survivabilityViolation,
 } from "../../../lib/strategySchema";
 
 export const dynamic = "force-dynamic";
@@ -65,6 +66,7 @@ The strategy engine is a fixed rule library — you tune parameters, you do not 
 Prop-firm principles (from JJ's own interview — treat these as the house philosophy when advising):
 - Optimize the EVAL and FUNDED stages for different things. Eval: maximize the chance of hitting the profit target before the trailing max drawdown. Funded: maximize expected payout value (chance of payout x payout size). A config that's great for one can be mediocre for the other; when a trade-off exists, say which stage it favors.
 - Match risk:reward to the account's own ratio. A $3,000 target / $2,000 trailing drawdown eval is a 1:1.5 game — so a ~1:1.5 R:R (e.g. $1,000 risk / $1,500 target) passes more evals than either scalpy 1:1 or lottery-style 1:5+, because of how the trailing drawdown moves. High R:R (1:5+) needs improbable streaks under the consistency rule; suggest R:R near the eval's own ratio unless the trader has a reason not to.
+- HARD CONSTRAINT, non-negotiable: risk.stopPoints x risk.contractsPerTrade x $20/point must never exceed eval.trailingMaxDrawdown — a single losing trade must never be able to bust the account outright, regardless of win rate. Configs violating this are withheld from the trader entirely. Check this arithmetic before attaching any config.
 - Static everything: fixed dollar stop, fixed dollar target, no runners, no partials, no breakeven moves. The prop-firm math rewards static risk; runners are punished by consistency rules and end-of-day trailing drawdown.
 - More sessions = more attempts. Every session open (8:30 news, 9:30 NY, 2pm NY PM, 8pm Asian) sets a fresh "fair price": one continuation off the opening move, then reversions back toward the open. Use additionalSessions to add windows when the trader wants more trade frequency.
 - The economics is a slot machine you can price: expected value = pass rate x payout rate x payout size vs. eval fees. It only needs a slight edge per trade repeated many times — not a high win rate, not home runs.
@@ -164,16 +166,25 @@ export async function POST(req: NextRequest) {
     }
 
     let config = null;
+    let finalReply = reply;
     if (parsed.config !== null && parsed.config !== undefined) {
       const check = StrategyConfigSchema.safeParse(parsed.config);
       if (check.success && (check.data.phases.tradeContinuation || check.data.phases.tradeReversion)) {
-        config = check.data;
+        const violation = survivabilityViolation(check.data);
+        if (violation) {
+          // Strip the config rather than fail the whole turn — the
+          // conversation continues and the trader can ask for an adjusted
+          // (safer) version.
+          finalReply += `\n\n⚠️ I generated a config, but withheld it: ${violation}`;
+        } else {
+          config = check.data;
+        }
       }
       // An invalid config silently degrades to reply-only — the conversation
       // continues and the trader can ask for it again.
     }
 
-    return NextResponse.json({ reply, config, dataSource: source });
+    return NextResponse.json({ reply: finalReply, config, dataSource: source });
   } catch (err: unknown) {
     if (err instanceof Anthropic.RateLimitError) {
       return NextResponse.json({ error: "AI is rate-limited right now — try again shortly." }, { status: 429 });

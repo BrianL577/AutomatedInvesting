@@ -18,10 +18,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { runBacktest, type BacktestResult } from "../../../lib/backtester";
 import { loadBars } from "../../../lib/bars";
 import {
-  DOLLARS_PER_POINT,
   STRATEGY_VARIANT_BATCH_JSON_SCHEMA,
   StrategyConfigSchema,
   StrategyVariantSchema,
+  survivabilityViolation,
   type StrategyConfig,
   type StrategyVariant,
 } from "../../../lib/strategySchema";
@@ -178,15 +178,14 @@ export async function POST(req: NextRequest) {
         const configCheck = StrategyConfigSchema.safeParse(candidateConfig);
         if (!configCheck.success) continue;
         if (!configCheck.data.phases.tradeContinuation && !configCheck.data.phases.tradeReversion) continue;
-        // Hard survivability floor: a single losing trade must never exceed
-        // the eval's own trailing drawdown limit ($2,000 by default), or the
-        // very first loss guarantee-busts the account regardless of the
-        // strategy's long-run edge. Reject outright — no exceptions, even
-        // if the model proposes one — rather than let a backtest-profitable
-        // but unsurvivable config ever reach the leaderboard.
-        const maxSingleTradeLoss =
-          configCheck.data.risk.stopPoints * configCheck.data.risk.contractsPerTrade * DOLLARS_PER_POINT;
-        if (maxSingleTradeLoss > configCheck.data.eval.trailingMaxDrawdown) continue;
+        // Hard survivability floor (shared with generate-strategy and
+        // strategy-chat): a single losing trade must never exceed the
+        // eval's own trailing drawdown limit, or the very first loss
+        // guarantee-busts the account regardless of the strategy's
+        // long-run edge. Reject outright — no exceptions, even if the
+        // model proposes one — rather than let a backtest-profitable but
+        // unsurvivable config ever reach the leaderboard.
+        if (survivabilityViolation(configCheck.data)) continue;
 
         const result = runBacktest(configCheck.data, bars);
         const candidate: Candidate = {

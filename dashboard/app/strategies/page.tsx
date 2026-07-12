@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { StrategyConfig, SavedStrategy } from "../../lib/strategySchema";
+import { survivabilityViolation, type StrategyConfig, type SavedStrategy } from "../../lib/strategySchema";
 import type { BacktestResult } from "../../lib/backtester";
 
 type BacktestResponse = BacktestResult & { dataSource: "supabase" | "sample"; error?: string };
@@ -76,6 +76,73 @@ function StatCard({
   );
 }
 
+/** Labeled number input for the manual strategy editor. */
+function NumField({
+  label,
+  hint,
+  value,
+  onChange,
+  step,
+  min,
+  max,
+}: {
+  label: string;
+  hint: string;
+  value: number;
+  onChange: (v: number) => void;
+  step?: number;
+  min?: number;
+  max?: number;
+}) {
+  return (
+    <label className="edit-field">
+      <span className="edit-field-label">
+        {label} <Hint text={hint} />
+      </span>
+      <input
+        type="number"
+        className="test-input"
+        value={value}
+        step={step ?? 1}
+        min={min}
+        max={max}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+    </label>
+  );
+}
+
+/** Labeled "HH:MM" time input for the manual strategy editor. */
+function TimeField({ label, hint, value, onChange }: { label: string; hint: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="edit-field">
+      <span className="edit-field-label">
+        {label} <Hint text={hint} />
+      </span>
+      <input
+        type="text"
+        className="test-input"
+        placeholder="HH:MM"
+        pattern="^([01]\d|2[0-3]):[0-5]\d$"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </label>
+  );
+}
+
+/** Labeled checkbox for the manual strategy editor. */
+function BoolField({ label, hint, value, onChange }: { label: string; hint: string; value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="edit-field edit-field-bool">
+      <input type="checkbox" checked={value} onChange={(e) => onChange(e.target.checked)} />
+      <span className="edit-field-label">
+        {label} <Hint text={hint} />
+      </span>
+    </label>
+  );
+}
+
 export default function StrategiesPage() {
   const [strategies, setStrategies] = useState<SavedStrategy[]>([]);
   const [selected, setSelected] = useState<SavedStrategy | null>(null);
@@ -89,6 +156,8 @@ export default function StrategiesPage() {
   const [resultFor, setResultFor] = useState("");
   const [optimizeRounds, setOptimizeRounds] = useState(3);
   const [optimizeResult, setOptimizeResult] = useState<OptimizeResponse | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState<StrategyConfig | null>(null);
 
   async function refresh() {
     const res = await fetch("/api/strategies");
@@ -217,6 +286,37 @@ export default function StrategiesPage() {
     setResult(null);
     setOptimizeResult(null);
     setMessage({ kind: "ok", text: "Loaded as a new draft. Review, then Save Strategy if you want to keep it." });
+  }
+
+  function startEditing() {
+    if (!activeConfig) return;
+    setEditForm(JSON.parse(JSON.stringify(activeConfig)));
+    setEditing(true);
+    setMessage(null);
+  }
+
+  function cancelEditing() {
+    setEditing(false);
+    setEditForm(null);
+  }
+
+  function applyEdits() {
+    if (!editForm) return;
+    setDraft(editForm);
+    setDraftPrompt(draft ? draftPrompt : `Manually edited from "${activeName}"`);
+    setEditing(false);
+    setEditForm(null);
+    setResult(null);
+    setMessage({ kind: "ok", text: "Applied as a draft — run a backtest to see how it performs, then Save Strategy if you want to keep it." });
+  }
+
+  /** Update one field of the in-progress edit form, e.g. setEditField("risk", "stopPoints", 30). */
+  function setEditField<G extends "session" | "phases" | "entry" | "risk" | "eval">(
+    group: G,
+    field: keyof StrategyConfig[G],
+    value: StrategyConfig[G][keyof StrategyConfig[G]]
+  ) {
+    setEditForm((prev) => (prev ? { ...prev, [group]: { ...prev[group], [field]: value } } : prev));
   }
 
   async function removeStrategy(id: string) {
@@ -394,39 +494,121 @@ export default function StrategiesPage() {
               <div className="strategy-detail-header">
                 <h2>{activeName}</h2>
                 <div className="test-panel-row" style={{ margin: 0 }}>
-                  <button className="btn btn-primary" onClick={backtest} disabled={busy !== ""}>
-                    {busy === "backtesting" ? "Simulating…" : "Run Backtest"}
-                  </button>
-                  <select
-                    className="test-input"
-                    style={{ width: 140 }}
-                    value={optimizeRounds}
-                    onChange={(e) => setOptimizeRounds(Number(e.target.value))}
-                    disabled={busy !== ""}
-                  >
-                    <option value={2}>2 rounds</option>
-                    <option value={3}>3 rounds</option>
-                    <option value={5}>5 rounds</option>
-                  </select>
-                  <button className="btn" onClick={optimize} disabled={busy !== ""}>
-                    {busy === "optimizing" ? "Optimizing…" : "AI-Optimize"}
-                  </button>
+                  {!editing && (
+                    <>
+                      <button className="btn btn-primary" onClick={backtest} disabled={busy !== ""}>
+                        {busy === "backtesting" ? "Simulating…" : "Run Backtest"}
+                      </button>
+                      <select
+                        className="test-input"
+                        style={{ width: 140 }}
+                        value={optimizeRounds}
+                        onChange={(e) => setOptimizeRounds(Number(e.target.value))}
+                        disabled={busy !== ""}
+                      >
+                        <option value={2}>2 rounds</option>
+                        <option value={3}>3 rounds</option>
+                        <option value={5}>5 rounds</option>
+                      </select>
+                      <button className="btn" onClick={optimize} disabled={busy !== ""}>
+                        {busy === "optimizing" ? "Optimizing…" : "AI-Optimize"}
+                      </button>
+                      <button className="btn" onClick={startEditing} disabled={busy !== ""}>
+                        Edit
+                      </button>
+                    </>
+                  )}
+                  {editing && (
+                    <>
+                      <button className="btn btn-primary" onClick={applyEdits}>
+                        Apply as Draft
+                      </button>
+                      <button className="btn" onClick={cancelEditing}>
+                        Cancel
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
-              <p className="strategy-desc">{activeConfig.description}</p>
-              <div className="rule-grid">
-                <div className="rule"><span>Session <Hint text="The time window when trading happens (ET). The candle at the open sets the day's 'fair price'; no new trades after the cutoff." /></span>{activeConfig.session.open}–{activeConfig.session.hardCutoff} ET</div>
-                <div className="rule"><span>Continuation <Hint text="Whether the strategy trades in the same direction as the opening move, and for how many minutes after the open." /></span>{activeConfig.phases.tradeContinuation ? `first ${activeConfig.phases.continuationEndMin} min` : "off"}</div>
-                <div className="rule"><span>Reversion <Hint text="Whether the strategy bets on price coming back toward the opening price after it has stretched far enough away, and until when." /></span>{activeConfig.phases.tradeReversion ? `until ${activeConfig.phases.reversionEndMin} min (≥${activeConfig.entry.minExtensionPoints} pts ext.)` : "off"}</div>
-                <div className="rule"><span>Stop / Target <Hint text="How many NQ points a trade loses before it's cut (stop) or gains before it's cashed in (target). On NQ, 1 point = $20 per contract." /></span>{activeConfig.risk.stopPoints} / {activeConfig.risk.targetPoints} pts</div>
-                <div className="rule"><span>Trade caps <Hint text="The most trades allowed per day, and an early quit rule after too many losses in a row." /></span>{activeConfig.risk.maxTradesPerDay}/day, stop after {activeConfig.risk.stopAfterConsecutiveLosses} losses</div>
-                <div className="rule"><span>Daily $ caps <Hint text="Stop trading for the day once profit reaches the + number or loss reaches the − number." /></span>+${activeConfig.risk.dailyProfitCap} / −${activeConfig.risk.dailyLossCap}</div>
-                <div className="rule"><span>Displacement <Hint text="How big and clean a price candle must be before the strategy treats it as a real move worth entering on (big body, small wicks)." /></span>≥{activeConfig.entry.displacementSizeRatio}× avg TR, wick ≤ {Math.round(activeConfig.entry.maxWickRatio * 100)}%</div>
-                <div className="rule"><span>Structure <Hint text="How far back it scans for recent highs/lows, and how far price must break past them to count as a genuine breakout." /></span>{activeConfig.entry.structureLookbackMin} min lookback, +{activeConfig.entry.breakBufferPoints} pt buffer</div>
-                <div className="rule"><span>Eval sim <Hint text="The simulated prop-firm account: its size, the profit needed to pass the eval, and the trailing drawdown that busts it." /></span>${activeConfig.eval.accountSize.toLocaleString()} acct, +${activeConfig.eval.profitTarget.toLocaleString()} target, ${activeConfig.eval.trailingMaxDrawdown.toLocaleString()} trailing DD</div>
-              </div>
 
-              {result && (
+              {!editing && (
+                <>
+                  <p className="strategy-desc">{activeConfig.description}</p>
+                  <div className="rule-grid">
+                    <div className="rule"><span>Session <Hint text="The time window when trading happens (ET). The candle at the open sets the day's 'fair price'; no new trades after the cutoff." /></span>{activeConfig.session.open}–{activeConfig.session.hardCutoff} ET</div>
+                    <div className="rule"><span>Continuation <Hint text="Whether the strategy trades in the same direction as the opening move, and for how many minutes after the open." /></span>{activeConfig.phases.tradeContinuation ? `first ${activeConfig.phases.continuationEndMin} min` : "off"}</div>
+                    <div className="rule"><span>Reversion <Hint text="Whether the strategy bets on price coming back toward the opening price after it has stretched far enough away, and until when." /></span>{activeConfig.phases.tradeReversion ? `until ${activeConfig.phases.reversionEndMin} min (≥${activeConfig.entry.minExtensionPoints} pts ext.)` : "off"}</div>
+                    <div className="rule"><span>Stop / Target <Hint text="How many NQ points a trade loses before it's cut (stop) or gains before it's cashed in (target). On NQ, 1 point = $20 per contract." /></span>{activeConfig.risk.stopPoints} / {activeConfig.risk.targetPoints} pts</div>
+                    <div className="rule"><span>Trade caps <Hint text="The most trades allowed per day, and an early quit rule after too many losses in a row." /></span>{activeConfig.risk.maxTradesPerDay}/day, stop after {activeConfig.risk.stopAfterConsecutiveLosses} losses</div>
+                    <div className="rule"><span>Daily $ caps <Hint text="Stop trading for the day once profit reaches the + number or loss reaches the − number." /></span>+${activeConfig.risk.dailyProfitCap} / −${activeConfig.risk.dailyLossCap}</div>
+                    <div className="rule"><span>Displacement <Hint text="How big and clean a price candle must be before the strategy treats it as a real move worth entering on (big body, small wicks)." /></span>≥{activeConfig.entry.displacementSizeRatio}× avg TR, wick ≤ {Math.round(activeConfig.entry.maxWickRatio * 100)}%</div>
+                    <div className="rule"><span>Structure <Hint text="How far back it scans for recent highs/lows, and how far price must break past them to count as a genuine breakout." /></span>{activeConfig.entry.structureLookbackMin} min lookback, +{activeConfig.entry.breakBufferPoints} pt buffer</div>
+                    <div className="rule"><span>Eval sim <Hint text="The simulated prop-firm account: its size, the profit needed to pass the eval, and the trailing drawdown that busts it." /></span>${activeConfig.eval.accountSize.toLocaleString()} acct, +${activeConfig.eval.profitTarget.toLocaleString()} target, ${activeConfig.eval.trailingMaxDrawdown.toLocaleString()} trailing DD</div>
+                  </div>
+                </>
+              )}
+
+              {editing && editForm && (
+                <div className="edit-form">
+                  {survivabilityViolation(editForm) && (
+                    <div className="test-status test-status-error">⚠️ {survivabilityViolation(editForm)}</div>
+                  )}
+                  <label className="edit-field" style={{ marginBottom: 12 }}>
+                    <span className="edit-field-label">Name</span>
+                    <input
+                      type="text"
+                      className="test-input"
+                      value={editForm.name}
+                      onChange={(e) => setEditForm((prev) => (prev ? { ...prev, name: e.target.value } : prev))}
+                    />
+                  </label>
+
+                  <p className="edit-section-label">Session</p>
+                  <div className="edit-grid">
+                    <TimeField label="Open" hint="ET time the session-anchor candle fires." value={editForm.session.open} onChange={(v) => setEditField("session", "open", v)} />
+                    <TimeField label="Hard cutoff" hint="No new entries after this ET time." value={editForm.session.hardCutoff} onChange={(v) => setEditField("session", "hardCutoff", v)} />
+                  </div>
+
+                  <p className="edit-section-label">Phases</p>
+                  <div className="edit-grid">
+                    <BoolField label="Trade continuation" hint="Enter in the opening candle's direction." value={editForm.phases.tradeContinuation} onChange={(v) => setEditField("phases", "tradeContinuation", v)} />
+                    <NumField label="Continuation end (min)" hint="Minutes after open the continuation window stays valid." value={editForm.phases.continuationEndMin} onChange={(v) => setEditField("phases", "continuationEndMin", v)} min={0} max={120} />
+                    <BoolField label="Trade reversion" hint="Enter back toward the open price after it has extended far enough." value={editForm.phases.tradeReversion} onChange={(v) => setEditField("phases", "tradeReversion", v)} />
+                    <NumField label="Reversion end (min)" hint="Minutes after open the reversion window stays valid." value={editForm.phases.reversionEndMin} onChange={(v) => setEditField("phases", "reversionEndMin", v)} min={0} max={360} />
+                  </div>
+
+                  <p className="edit-section-label">Entry filters</p>
+                  <div className="edit-grid">
+                    <NumField label="Displacement size ratio" hint="Candle true range must be at least this x the ~10-bar average." value={editForm.entry.displacementSizeRatio} onChange={(v) => setEditField("entry", "displacementSizeRatio", v)} step={0.05} min={0.5} max={5} />
+                    <NumField label="Displacement prev ratio" hint="Candle true range must be at least this x the previous bar's." value={editForm.entry.displacementPrevRatio} onChange={(v) => setEditField("entry", "displacementPrevRatio", v)} step={0.05} min={0} max={5} />
+                    <NumField label="Max wick ratio" hint="Total wick / range must be under this to count as a clean displacement (0-1)." value={editForm.entry.maxWickRatio} onChange={(v) => setEditField("entry", "maxWickRatio", v)} step={0.05} min={0} max={1} />
+                    <NumField label="Structure lookback (min)" hint="How far back it scans for swing highs/lows." value={editForm.entry.structureLookbackMin} onChange={(v) => setEditField("entry", "structureLookbackMin", v)} min={2} max={240} />
+                    <NumField label="Swing strength" hint="Bars required on each side to confirm a pivot." value={editForm.entry.swingStrength} onChange={(v) => setEditField("entry", "swingStrength", v)} min={1} max={10} />
+                    <NumField label="Break buffer (pts)" hint="Price must clear structure by this many points to count as a real break." value={editForm.entry.breakBufferPoints} onChange={(v) => setEditField("entry", "breakBufferPoints", v)} step={0.25} min={0} max={50} />
+                    <NumField label="Min extension (pts)" hint="Minimum move away from the open before a reversion trade is valid." value={editForm.entry.minExtensionPoints} onChange={(v) => setEditField("entry", "minExtensionPoints", v)} min={0} max={500} />
+                  </div>
+
+                  <p className="edit-section-label">Risk</p>
+                  <div className="edit-grid">
+                    <NumField label="Stop (pts)" hint="Points of adverse move before the trade is cut." value={editForm.risk.stopPoints} onChange={(v) => setEditField("risk", "stopPoints", v)} min={1} max={500} />
+                    <NumField label="Target (pts)" hint="Points of favorable move before the trade is cashed in." value={editForm.risk.targetPoints} onChange={(v) => setEditField("risk", "targetPoints", v)} min={1} max={1000} />
+                    <NumField label="Contracts per trade" hint="How many contracts each trade uses — multiplies the dollar stop/target directly." value={editForm.risk.contractsPerTrade} onChange={(v) => setEditField("risk", "contractsPerTrade", v)} min={1} max={10} />
+                    <NumField label="Max trades/day" hint="Hard cap on entries per day." value={editForm.risk.maxTradesPerDay} onChange={(v) => setEditField("risk", "maxTradesPerDay", v)} min={1} max={20} />
+                    <NumField label="Stop after N losses" hint="Quit for the day after this many consecutive losses." value={editForm.risk.stopAfterConsecutiveLosses} onChange={(v) => setEditField("risk", "stopAfterConsecutiveLosses", v)} min={1} max={10} />
+                    <NumField label="Daily profit cap ($)" hint="Stop trading for the day once profit reaches this." value={editForm.risk.dailyProfitCap} onChange={(v) => setEditField("risk", "dailyProfitCap", v)} min={0} max={100000} />
+                    <NumField label="Daily loss cap ($)" hint="Stop trading for the day once loss reaches this." value={editForm.risk.dailyLossCap} onChange={(v) => setEditField("risk", "dailyLossCap", v)} min={0} max={100000} />
+                  </div>
+
+                  <p className="edit-section-label">Eval simulation</p>
+                  <div className="edit-grid">
+                    <NumField label="Account size ($)" hint="Simulated prop-firm account starting balance." value={editForm.eval.accountSize} onChange={(v) => setEditField("eval", "accountSize", v)} step={1000} min={1000} max={1000000} />
+                    <NumField label="Profit target ($)" hint="Profit needed to pass the eval." value={editForm.eval.profitTarget} onChange={(v) => setEditField("eval", "profitTarget", v)} step={100} min={100} max={100000} />
+                    <NumField label="Trailing max drawdown ($)" hint="Balance drop from peak that busts the account — a single trade's max loss must stay under this." value={editForm.eval.trailingMaxDrawdown} onChange={(v) => setEditField("eval", "trailingMaxDrawdown", v)} step={100} min={100} max={100000} />
+                  </div>
+                </div>
+              )}
+
+              {result && !editing && (
                 <div className="bt-results">
                   <div className="bt-results-header">
                     <h3>Simulation — {resultFor}</h3>
