@@ -193,6 +193,25 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
 export const INSTRUMENT = { symbol: "NQ", tickSize: 0.25, tickValue: 5.0 };
 export const DOLLARS_PER_POINT = INSTRUMENT.tickValue / INSTRUMENT.tickSize; // $20/pt on NQ
 
+/** Hard survivability floor, shared by every path that can produce or save a
+ * config (AI-Optimize, generate-strategy, strategy-chat, manual edits): a
+ * single losing trade must never be able to exceed the eval's own trailing
+ * drawdown limit, or the very first loss can bust the account outright
+ * regardless of the strategy's long-run edge. Returns null if safe, or an
+ * explanation string if not. */
+export function survivabilityViolation(cfg: Pick<StrategyConfig, "risk" | "eval">): string | null {
+  const maxSingleTradeLoss = cfg.risk.stopPoints * cfg.risk.contractsPerTrade * DOLLARS_PER_POINT;
+  if (maxSingleTradeLoss > cfg.eval.trailingMaxDrawdown) {
+    return (
+      `A single losing trade (${cfg.risk.stopPoints}pt stop x ${cfg.risk.contractsPerTrade} contracts x ` +
+      `$${DOLLARS_PER_POINT}/pt = $${maxSingleTradeLoss.toLocaleString()}) exceeds the eval's trailing ` +
+      `drawdown limit ($${cfg.eval.trailingMaxDrawdown.toLocaleString()}) — one bad trade would bust the ` +
+      `account outright, regardless of the strategy's win rate.`
+    );
+  }
+  return null;
+}
+
 /**
  * JSON Schema handed to Claude's structured-output format. Mirrors the zod
  * schema's shape; numeric bounds are enforced by zod after parsing (the
