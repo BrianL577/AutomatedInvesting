@@ -129,17 +129,33 @@ export type SavedStrategy = {
   created_at: string;
 };
 
-/** JJ's strategy, exactly as encoded in the Python bot's config.yaml. */
+/** JJ's strategy: the Python bot's config.yaml rules, updated with the
+ * session structure he described in his interview — every session open
+ * (8:30 news, 9:30 NY AM, 2pm NY PM, 8pm Asian) is treated as a new "fair
+ * price" anchor: one continuation trade off the opening move, then
+ * reversions back toward the open. Static stops/targets, no runners, no
+ * breakeven — per the interview, static risk is what the prop-firm math
+ * rewards. */
 export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
   name: "JJ NY-Session Strategy (Default)",
   description:
-    "High-timeframe mean reversion, low-timeframe continuation anchored to the 9:30 ET open. " +
-    "Continuation trades in the opening candle's direction for the first 10 minutes, then mean " +
-    "reversion back toward the opening price until 90 minutes in. Entries require a displacement " +
-    "candle (large true range, small wicks) that breaks and closes through recent swing structure. " +
-    "Fixed 50pt stop / 64.5pt target ($1,000 / $1,290 on NQ), max 4 trades/day, stop after 2 consecutive losses, " +
-    "$1,520 daily profit cap / $1,000 daily loss cap.",
-  session: { open: "09:30", hardCutoff: "11:00" },
+    "Session-anchored continuation + mean reversion, per JJ's interview. Each session open sets a 'fair " +
+    "price': continuation trades in the opening candle's direction for the first 10 minutes, then mean " +
+    "reversion back toward the opening price until 90 minutes in. Trades the 8:30 ET news window, the " +
+    "9:30 NY open, the 2:00pm NY PM session, and the 8:00pm Asian open — more sessions means more " +
+    "attempts per day. Entries require a displacement candle (large true range, small wicks) that breaks " +
+    "and closes through recent swing structure. Static bracket exits, never moved: 50pt stop / 64.5pt " +
+    "target ($1,000 / $1,290 on NQ), max 8 trades/day, stop after 2 consecutive losses, " +
+    "$1,520 daily profit cap / $1,000 daily loss cap spanning all sessions.",
+  session: {
+    open: "09:30",
+    hardCutoff: "11:00",
+    additionalSessions: [
+      { open: "08:30", hardCutoff: "09:15" }, // news continuation + reversions
+      { open: "14:00", hardCutoff: "15:30" }, // NY PM session
+      { open: "20:00", hardCutoff: "21:30" }, // Asian session open
+    ],
+  },
   phases: {
     continuationEndMin: 10,
     reversionEndMin: 90,
@@ -158,7 +174,7 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
   risk: {
     stopPoints: 50,
     targetPoints: 64.5,
-    maxTradesPerDay: 4,
+    maxTradesPerDay: 8,
     stopAfterConsecutiveLosses: 2,
     contractsPerTrade: 1,
     dailyProfitCap: 1520,
