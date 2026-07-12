@@ -137,7 +137,7 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
     "Continuation trades in the opening candle's direction for the first 10 minutes, then mean " +
     "reversion back toward the opening price until 90 minutes in. Entries require a displacement " +
     "candle (large true range, small wicks) that breaks and closes through recent swing structure. " +
-    "Fixed 25pt stop / 38pt target (1:1.5 R:R), max 4 trades/day, stop after 2 consecutive losses, " +
+    "Fixed 50pt stop / 64.5pt target ($1,000 / $1,290 on NQ), max 4 trades/day, stop after 2 consecutive losses, " +
     "$1,520 daily profit cap / $1,000 daily loss cap.",
   session: { open: "09:30", hardCutoff: "11:00" },
   phases: {
@@ -156,8 +156,8 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
     minExtensionPoints: 12,
   },
   risk: {
-    stopPoints: 25,
-    targetPoints: 38,
+    stopPoints: 50,
+    targetPoints: 64.5,
     maxTradesPerDay: 4,
     stopAfterConsecutiveLosses: 2,
     contractsPerTrade: 1,

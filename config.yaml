@@ -15,8 +15,8 @@ strategy:
   break_buffer_points: 1.0       # close must clear structure by this much to avoid noise breaks
 
 risk:
-  stop_points: 25
-  target_points: 38              # ~1:1.5 R:R as in the video
+  stop_points: 50                # 50pt stop = $1,000 on NQ ($20/pt)
+  target_points: 64.5            # 64.5pt target = $1,290 on NQ ($20/pt), ~1:1.29 R:R
   max_trades_per_day: 4
   stop_after_consecutive_losses: 2
   contracts_per_trade: 1
