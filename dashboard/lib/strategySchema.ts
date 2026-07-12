@@ -21,8 +21,52 @@ export const StrategyConfigSchema = z
         // Wall-clock ET times, "HH:MM" 24h
         open: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
         hardCutoff: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+        // Extra session windows traded the same way (own open-candle anchor,
+        // own phase windows relative to that open). Daily trade caps, loss
+        // caps, and consecutive-loss stops span ALL sessions in the day.
+        // e.g. London open 03:00-04:30 ET alongside the NY 09:30 session.
+        additionalSessions: z
+          .array(
+            z
+              .object({
+                open: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+                hardCutoff: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+              })
+              .strict()
+          )
+          .max(3)
+          .optional(),
       })
       .strict(),
+    // Day-level filters. News/red-folder day handling: there is no reliable
+    // offline economic calendar, so verified news dates must be supplied
+    // explicitly (from ForexFactory/CME calendar etc.) — days listed in
+    // excludeDates are skipped entirely, exactly like JJ's "don't trade
+    // red-folder days without the pre-news anchor" guidance simplified to
+    // its safe form (skip the day).
+    filters: z
+      .object({
+        excludeDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(500).optional(),
+      })
+      .strict()
+      .optional(),
+    // Portfolio-of-accounts simulation (how prop traders actually scale:
+    // several accounts run in parallel, often one trade per account per
+    // day, staggered so they don't all bust/pass in lockstep).
+    portfolio: z
+      .object({
+        accountCount: z.number().int().min(1).max(20),
+        // Account i starts its eval i*staggerDays trading days later.
+        // 0 = all accounts identical (they bust/pass together — the same
+        // daily P&L stream hits every account, so stagger is what actually
+        // diversifies outcomes).
+        staggerDays: z.number().int().min(0).max(30),
+        // Restrict each account to only the first trade of each day
+        // (overrides risk.maxTradesPerDay for the portfolio simulation).
+        oneTradePerDay: z.boolean(),
+      })
+      .strict()
+      .optional(),
     phases: z
       .object({
         continuationEndMin: z.number().min(0).max(120),
@@ -146,8 +190,49 @@ export const STRATEGY_JSON_SCHEMA = {
       properties: {
         open: { type: "string", description: 'Session anchor time in ET, 24h "HH:MM", e.g. "09:30"' },
         hardCutoff: { type: "string", description: 'No new entries after this ET time, 24h "HH:MM"' },
+        additionalSessions: {
+          type: "array",
+          maxItems: 3,
+          description:
+            "Optional extra session windows traded the same way with their own open-candle anchor (e.g. London open 03:00-04:30 ET). Daily trade/loss caps span all sessions. Omit unless the user asks for extra sessions.",
+          items: {
+            type: "object",
+            properties: {
+              open: { type: "string", description: 'ET "HH:MM"' },
+              hardCutoff: { type: "string", description: 'ET "HH:MM"' },
+            },
+            required: ["open", "hardCutoff"],
+            additionalProperties: false,
+          },
+        },
       },
       required: ["open", "hardCutoff"],
+      additionalProperties: false,
+    },
+    filters: {
+      type: "object",
+      description:
+        "Optional day-level filters. Only include if the user supplies specific dates — never invent news dates.",
+      properties: {
+        excludeDates: {
+          type: "array",
+          maxItems: 500,
+          description: 'Dates to skip entirely (red-folder news days etc.), "YYYY-MM-DD". Only use dates the user explicitly provided.',
+          items: { type: "string" },
+        },
+      },
+      additionalProperties: false,
+    },
+    portfolio: {
+      type: "object",
+      description:
+        "Optional portfolio-of-accounts simulation: N accounts run in parallel with staggered eval start dates, optionally one trade per account per day. Include only if the user describes running multiple accounts.",
+      properties: {
+        accountCount: { type: "integer", description: "Number of accounts run in parallel (1-20)" },
+        staggerDays: { type: "integer", description: "Account i starts its eval i*staggerDays trading days later (0-30). 0 means all accounts move in lockstep." },
+        oneTradePerDay: { type: "boolean", description: "Restrict each account to only the first trade of each day" },
+      },
+      required: ["accountCount", "staggerDays", "oneTradePerDay"],
       additionalProperties: false,
     },
     phases: {

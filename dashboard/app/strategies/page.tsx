@@ -278,6 +278,24 @@ export default function StrategiesPage() {
                     <div className="stat-card"><div className="label">Times Reached Funded</div><div className="value">{result.timesFunded}</div></div>
                   </div>
 
+                  {result.portfolio && (
+                    <>
+                      <div className="bt-results-header" style={{ marginTop: 20 }}>
+                        <h3>Portfolio — {result.portfolio.accountCount} Accounts</h3>
+                        <span className="data-source-badge static">
+                          {result.portfolio.oneTradePerDay ? "One trade per account per day" : "Full daily trading per account"}, starts staggered {result.portfolio.staggerDays} day(s) apart
+                        </span>
+                      </div>
+                      <div className="stat-grid">
+                        <div className="stat-card"><div className="label">Total Fees Paid</div><div className="value negative">{fmtMoney(-result.portfolio.feesPaid)}</div></div>
+                        <div className="stat-card"><div className="label">Total Cash Payouts</div><div className="value positive">{fmtMoney(result.portfolio.cashPayouts)}</div></div>
+                        <div className="stat-card"><div className="label">Portfolio Net (payouts − fees)</div><div className={`value ${result.portfolio.netPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(result.portfolio.netPnl)}</div></div>
+                        <div className="stat-card"><div className="label">Evals Bought (all accounts)</div><div className="value">{result.portfolio.attemptsBought}</div></div>
+                        <div className="stat-card"><div className="label">Times Reached Funded</div><div className="value">{result.portfolio.timesFunded}</div></div>
+                      </div>
+                    </>
+                  )}
+
                   {result.trades.length > 0 && (
                     <div className="table-wrap">
                       <table>
