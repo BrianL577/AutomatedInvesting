@@ -531,7 +531,15 @@ export default function StrategiesPage() {
                       <div className="stat-card"><div className="label">Best / Worst Day</div><div className="value">{fmtMoney(result.bestDay)} / {fmtMoney(result.worstDay)}</div></div>
                       <div className="stat-card"><div className="label">Cap Hits (+/−)</div><div className="value">{result.daysHitProfitCap} / {result.daysHitLossCap}</div></div>
                       <div className="stat-card"><div className="label">Avg Days to Eval Result</div><div className="value">{result.avgDaysToEvalResult}</div></div>
+                      {result.incompleteTrades > 0 && (
+                        <div className="stat-card"><div className="label">Excluded (unresolved)</div><div className="value">{result.incompleteTrades}</div></div>
+                      )}
                     </div>
+                    {result.incompleteTrades > 0 && (
+                      <p style={{ marginTop: 8, opacity: 0.7, fontSize: "0.85em" }}>
+                        {result.incompleteTrades} trade(s) never hit their stop or target before the available bar data ran out and were excluded from every stat above — the bracket is never flattened early or faked with a made-up exit price.
+                      </p>
+                    )}
                   </details>
 
                   {result.portfolio && (
