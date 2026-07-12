@@ -26,6 +26,18 @@ type OptimizeResponse = {
 
 type ChatMessage = { role: "user" | "assistant"; content: string; config?: StrategyConfig | null };
 
+/** Parse a fetch response as JSON, surfacing plain-text errors (e.g. Vercel
+ * timeout pages) as a readable message instead of "Unexpected token ... is
+ * not valid JSON". */
+async function readJson(res: Response): Promise<any> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: text.trim().slice(0, 200) || `Request failed with status ${res.status}` };
+  }
+}
+
 function fmtMoney(n: number): string {
   const sign = n < 0 ? "-" : "";
   return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -80,7 +92,7 @@ export default function StrategiesPage() {
 
   async function refresh() {
     const res = await fetch("/api/strategies");
-    const data = await res.json();
+    const data = await readJson(res);
     setStrategies(data.strategies ?? []);
     if (!selected && data.strategies?.length) setSelected(data.strategies[0]);
   }
@@ -108,7 +120,7 @@ export default function StrategiesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: nextChat.map(({ role, content }) => ({ role, content })) }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Chat failed");
       const withReply: ChatMessage[] = [...nextChat, { role: "assistant", content: data.reply, config: data.config ?? null }];
       setChat(withReply);
@@ -123,7 +135,7 @@ export default function StrategiesPage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ config: data.config }),
           });
-          const bt = await btRes.json();
+          const bt = await readJson(btRes);
           if (btRes.ok) {
             const summary =
               `Backtest of "${data.config.name}" against ${bt.dataSource === "supabase" ? "real historical" : "synthetic sample"} data:\n` +
@@ -163,7 +175,7 @@ export default function StrategiesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ config: activeConfig }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Backtest failed");
       setResult(data);
       setResultFor(activeName);
@@ -185,7 +197,7 @@ export default function StrategiesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ baseConfig: activeConfig, rounds: optimizeRounds, batchSize: 4 }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Optimization failed");
       setOptimizeResult(data);
       setMessage({
@@ -212,7 +224,7 @@ export default function StrategiesPage() {
     setMessage(null);
     try {
       const res = await fetch(`/api/strategies?id=${encodeURIComponent(id)}`, { method: "DELETE" });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Delete failed");
       if (selected?.id === id) setSelected(null);
       await refresh();
@@ -233,7 +245,7 @@ export default function StrategiesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ config: draft, source: "ai", prompt: draftPrompt }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Save failed");
       setMessage({ kind: "ok", text: "Strategy saved." });
       setDraft(null);

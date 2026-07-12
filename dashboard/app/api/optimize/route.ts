@@ -42,6 +42,8 @@ Each round you'll see the current best config and a leaderboard of every variant
 - realWorldNetPnl: actual dollars (fees vs. funded payouts) — the honest bottom line and the fitness metric
 - evalPassRate: probability of ever reaching funded at all
 
+Search heuristics from prop-firm math (JJ's approach): the eval stage is a "hit +$3,000 before the $2,000 trailing drawdown" game, so risk:reward near the account's own ratio (1:1.5, e.g. 50pt stop / 75pt target) tends to maximize pass rate — test that region early. Eval and funded stages reward different configs: watch evalStage vs fundedStage results separately and say which stage a variant is aimed at. Static bracket exits are a given (the engine only does static); prefer variants that change trade frequency (phase windows, displacement looseness) and stop:target geometry over exotic filter tweaks.
+
 Propose meaningfully different variants each round, not tiny noise — if recent variants haven't improved realWorldNetPnl, try a different direction (tighter displacement filters vs. looser, different stop:target ratios in both directions, fewer max trades/day). Each variant is a partial diff on top of the CURRENT BEST config — only include fields you're deliberately changing. Give one honest sentence per variant explaining the hypothesis, referencing what the leaderboard actually shows.`;
 
 type Candidate = {
