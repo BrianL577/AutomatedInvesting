@@ -264,6 +264,20 @@ export default function StrategiesPage() {
                     <div className="stat-card"><div className="label">Avg Days to Eval Result</div><div className="value">{result.avgDaysToEvalResult}</div></div>
                   </div>
 
+                  <div className="bt-results-header" style={{ marginTop: 20 }}>
+                    <h3>Real-World Prop-Firm Economics</h3>
+                    <span className="data-source-badge static">
+                      Uses default $50 eval/reactivation fees, 50% funded payout share ($2,000 cap) — verify against the actual firm&apos;s current rules
+                    </span>
+                  </div>
+                  <div className="stat-grid">
+                    <div className="stat-card"><div className="label">Eval/Reactivation Fees Paid</div><div className="value negative">{fmtMoney(-result.realWorldFeesPaid)}</div></div>
+                    <div className="stat-card"><div className="label">Real Cash Payouts Received</div><div className="value positive">{fmtMoney(result.realWorldCashPayouts)}</div></div>
+                    <div className="stat-card"><div className="label">Real-World Net (payouts − fees)</div><div className={`value ${result.realWorldNetPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(result.realWorldNetPnl)}</div></div>
+                    <div className="stat-card"><div className="label">Accounts Bought (chronological)</div><div className="value">{result.chronologicalAttempts}</div></div>
+                    <div className="stat-card"><div className="label">Times Reached Funded</div><div className="value">{result.timesFunded}</div></div>
+                  </div>
+
                   {result.trades.length > 0 && (
                     <div className="table-wrap">
                       <table>
