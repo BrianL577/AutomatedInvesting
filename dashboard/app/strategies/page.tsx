@@ -6,6 +6,24 @@ import type { BacktestResult } from "../../lib/backtester";
 
 type BacktestResponse = BacktestResult & { dataSource: "supabase" | "sample"; error?: string };
 
+type OptimizeCandidate = {
+  round: number;
+  rationale: string;
+  diff: unknown;
+  fitness: number;
+  result: BacktestResult;
+  config: StrategyConfig;
+};
+
+type OptimizeResponse = {
+  bestConfig: StrategyConfig;
+  bestResult: BacktestResult;
+  history: OptimizeCandidate[];
+  dataSource: "supabase" | "sample";
+  warning?: string;
+  error?: string;
+};
+
 function fmtMoney(n: number): string {
   const sign = n < 0 ? "-" : "";
   return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -17,10 +35,12 @@ export default function StrategiesPage() {
   const [draft, setDraft] = useState<StrategyConfig | null>(null);
   const [draftPrompt, setDraftPrompt] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [busy, setBusy] = useState<"" | "generating" | "backtesting" | "saving">("");
+  const [busy, setBusy] = useState<"" | "generating" | "backtesting" | "saving" | "optimizing">("");
   const [message, setMessage] = useState<{ kind: "error" | "ok"; text: string } | null>(null);
   const [result, setResult] = useState<BacktestResponse | null>(null);
   const [resultFor, setResultFor] = useState("");
+  const [optimizeRounds, setOptimizeRounds] = useState(3);
+  const [optimizeResult, setOptimizeResult] = useState<OptimizeResponse | null>(null);
 
   async function refresh() {
     const res = await fetch("/api/strategies");
@@ -78,6 +98,39 @@ export default function StrategiesPage() {
     } finally {
       setBusy("");
     }
+  }
+
+  async function optimize() {
+    if (!activeConfig) return;
+    setBusy("optimizing");
+    setMessage(null);
+    setOptimizeResult(null);
+    try {
+      const res = await fetch("/api/optimize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseConfig: activeConfig, rounds: optimizeRounds, batchSize: 4 }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Optimization failed");
+      setOptimizeResult(data);
+      setMessage({
+        kind: "ok",
+        text: `Tried ${data.history.length} variant(s) across ${optimizeRounds} round(s). Review the leaderboard below, then "Use This Config" on the best one to load it as a draft.`,
+      });
+    } catch (err: any) {
+      setMessage({ kind: "error", text: err.message });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function useOptimizedConfig(config: StrategyConfig) {
+    setDraft(config);
+    setDraftPrompt(`Optimized from "${activeName}"`);
+    setResult(null);
+    setOptimizeResult(null);
+    setMessage({ kind: "ok", text: "Loaded as a new draft. Review, then Save Strategy if you want to keep it." });
   }
 
   async function removeStrategy(id: string) {
@@ -222,9 +275,25 @@ export default function StrategiesPage() {
             <>
               <div className="strategy-detail-header">
                 <h2>{activeName}</h2>
-                <button className="btn btn-primary" onClick={backtest} disabled={busy !== ""}>
-                  {busy === "backtesting" ? "Simulating…" : "Run Backtest"}
-                </button>
+                <div className="test-panel-row" style={{ margin: 0 }}>
+                  <button className="btn btn-primary" onClick={backtest} disabled={busy !== ""}>
+                    {busy === "backtesting" ? "Simulating…" : "Run Backtest"}
+                  </button>
+                  <select
+                    className="test-input"
+                    style={{ width: 140 }}
+                    value={optimizeRounds}
+                    onChange={(e) => setOptimizeRounds(Number(e.target.value))}
+                    disabled={busy !== ""}
+                  >
+                    <option value={2}>2 rounds</option>
+                    <option value={3}>3 rounds</option>
+                    <option value={5}>5 rounds</option>
+                  </select>
+                  <button className="btn" onClick={optimize} disabled={busy !== ""}>
+                    {busy === "optimizing" ? "Optimizing…" : "AI-Optimize"}
+                  </button>
+                </div>
               </div>
               <p className="strategy-desc">{activeConfig.description}</p>
               <div className="rule-grid">
@@ -360,6 +429,47 @@ export default function StrategiesPage() {
                       </table>
                     </div>
                   )}
+                </div>
+              )}
+
+              {optimizeResult && (
+                <div className="bt-results">
+                  <p className="bt-explainer">
+                    Claude proposed parameter tweaks each round based on how prior variants actually performed against
+                    your real historical data — it never saw raw price bars, only these result summaries. Ranked by
+                    real-world net P&amp;L (fees vs. funded payouts), best first.
+                  </p>
+                  {optimizeResult.warning && (
+                    <div className="test-status test-status-error">{optimizeResult.warning}</div>
+                  )}
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>#</th><th>Round</th><th>Rationale</th><th>Eval Win%</th><th>Funded Win%</th><th>Real-World Net</th><th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...optimizeResult.history]
+                          .sort((a, b) => b.fitness - a.fitness)
+                          .map((c, i) => (
+                            <tr key={i}>
+                              <td>{i === 0 ? "🏆" : i + 1}</td>
+                              <td>{c.round}</td>
+                              <td>{c.rationale}</td>
+                              <td>{c.result.evalStage.winRate.toFixed(1)}%</td>
+                              <td>{c.result.fundedStage.winRate.toFixed(1)}%</td>
+                              <td className={c.result.realWorldNetPnl >= 0 ? "positive" : "negative"}>{fmtMoney(c.result.realWorldNetPnl)}</td>
+                              <td>
+                                <button className="btn" onClick={() => useOptimizedConfig(c.config)}>
+                                  Use This Config
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </>
