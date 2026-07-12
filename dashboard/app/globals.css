@@ -474,6 +474,69 @@ tbody tr:hover {
   color: var(--text);
 }
 
+.hint-icon {
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: help;
+}
+
+.stat-card-hint {
+  cursor: help;
+}
+
+.stat-card-hint:hover {
+  border-color: var(--accent, #4a9eff);
+}
+
+.chat-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.chat-msg {
+  padding: 10px 12px;
+  border-radius: 8px;
+  max-width: 90%;
+}
+
+.chat-msg.user {
+  align-self: flex-end;
+  background: rgba(74, 158, 255, 0.12);
+}
+
+.chat-msg.assistant {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.chat-msg-role {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.chat-msg-text {
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.chat-config-btn {
+  margin-top: 10px;
+  font-size: 12px;
+}
+
 .strategy-item-delete {
   background: transparent;
   border: none;
