@@ -5,21 +5,32 @@ import type { Trade } from "./types";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
+const MAX_TRADES = 50_000;
+
 async function loadTradesFromSupabase(): Promise<Trade[] | null> {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
   try {
-    const res = await fetch(
-      `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/trades?select=*&order=timestamp.asc`,
-      {
-        headers: {
-          apikey: SUPABASE_ANON_KEY,
-          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        },
-        cache: "no-store",
-      }
-    );
-    if (!res.ok) return null;
-    return (await res.json()) as Trade[];
+    const all: Trade[] = [];
+    // Supabase's PostgREST API caps every request at 1000 rows regardless of
+    // the requested `limit`, so this must page in matching 1000-row chunks.
+    const pageSize = 1_000;
+    for (let offset = 0; offset < MAX_TRADES; offset += pageSize) {
+      const res = await fetch(
+        `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/trades?select=*&order=timestamp.asc&limit=${pageSize}&offset=${offset}`,
+        {
+          headers: {
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+          },
+          cache: "no-store",
+        }
+      );
+      if (!res.ok) return null;
+      const page = (await res.json()) as Trade[];
+      all.push(...page);
+      if (page.length < pageSize) break;
+    }
+    return all;
   } catch {
     return null;
   }

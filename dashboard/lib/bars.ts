@@ -22,7 +22,10 @@ async function loadBarsFromSupabase(): Promise<Bar[] | null> {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
   try {
     const all: Bar[] = [];
-    const pageSize = 10_000;
+    // Supabase's PostgREST API caps every request at 1000 rows regardless of
+    // the requested `limit`, so pageSize must match that or pagination stops
+    // after the first (silently truncated) page.
+    const pageSize = 1_000;
     for (let offset = 0; offset < MAX_BARS; offset += pageSize) {
       const res = await fetch(
         `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/bars?select=t,o,h,l,c,v&order=t.asc&limit=${pageSize}&offset=${offset}`,
