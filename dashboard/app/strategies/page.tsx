@@ -11,13 +11,16 @@ function fmtMoney(n: number): string {
   return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+type ChatMessage = { role: "user" | "assistant"; content: string };
+
 export default function StrategiesPage() {
   const [strategies, setStrategies] = useState<SavedStrategy[]>([]);
   const [selected, setSelected] = useState<SavedStrategy | null>(null);
   const [draft, setDraft] = useState<StrategyConfig | null>(null);
   const [draftPrompt, setDraftPrompt] = useState("");
-  const [prompt, setPrompt] = useState("");
-  const [busy, setBusy] = useState<"" | "generating" | "backtesting" | "saving">("");
+  const [chat, setChat] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [busy, setBusy] = useState<"" | "chatting" | "backtesting" | "saving">("");
   const [message, setMessage] = useState<{ kind: "error" | "ok"; text: string } | null>(null);
   const [result, setResult] = useState<BacktestResponse | null>(null);
   const [resultFor, setResultFor] = useState("");
@@ -37,26 +40,40 @@ export default function StrategiesPage() {
   const activeConfig: StrategyConfig | null = draft ?? selected?.config ?? null;
   const activeName = draft ? `${draft.name} (unsaved)` : selected?.config.name ?? "";
 
-  async function generate() {
-    setBusy("generating");
+  async function sendChat(text: string) {
+    const trimmed = text.trim();
+    if (trimmed.length < 2) return;
+    const nextChat = [...chat, { role: "user" as const, content: trimmed }];
+    setChat(nextChat);
+    setChatInput("");
+    setBusy("chatting");
     setMessage(null);
     try {
-      const res = await fetch("/api/generate-strategy", {
+      const res = await fetch("/api/strategy-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ messages: nextChat, config: draft ?? selected?.config }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Generation failed");
-      setDraft(data.config);
-      setDraftPrompt(prompt);
-      setResult(null);
-      setMessage({ kind: "ok", text: "Strategy generated. Review the rules below, then backtest or save it." });
+      if (!res.ok) throw new Error(data.error || "Chat failed");
+      setChat([...nextChat, { role: "assistant", content: data.reply || "(no reply)" }]);
+      if (data.config) {
+        setDraft(data.config);
+        setDraftPrompt(trimmed);
+        setResult(null);
+      }
+      if (data.configError) setMessage({ kind: "error", text: data.configError });
     } catch (err: any) {
       setMessage({ kind: "error", text: err.message });
     } finally {
       setBusy("");
     }
+  }
+
+  function startOver() {
+    setChat([]);
+    setChatInput("");
+    setMessage(null);
   }
 
   async function backtest() {
@@ -133,26 +150,64 @@ export default function StrategiesPage() {
       <div className="test-panel">
         <div className="test-panel-header">
           <h2>Create a strategy with AI</h2>
-          <p>
-            Your description is translated by Claude into parameters for the same rule engine that runs JJ&apos;s
-            default strategy (session anchor, displacement candles, break of structure, fixed R:R brackets, daily
-            caps). AI output is data, not code — every config is validated before it runs.
+          <p
+            title="Chat back and forth with Claude to design a strategy. It looks at how the current draft (or JJ's default) actually performed on each weekday historically before suggesting changes, and only aims to be profitable overall — not to hit any fixed win-rate number."
+          >
+            Talk it through with the AI — it can see how the strategy performs on different days historically and
+            will suggest changes based on real patterns, not a fixed win-rate target.
           </p>
         </div>
+
+        {chat.length === 0 ? (
+          <div className="test-panel-row">
+            <button
+              className="btn btn-primary"
+              onClick={() => sendChat("Look at the historical weekday patterns and generate the strategy you think will be most profitable. Explain your reasoning.")}
+              disabled={busy !== ""}
+              title="Skip the back-and-forth — AI analyzes historical patterns and proposes a strategy on its own."
+            >
+              {busy === "chatting" ? "Thinking…" : "Generate Strategy For Me"}
+            </button>
+          </div>
+        ) : (
+          <div className="chat-thread">
+            {chat.map((m, i) => (
+              <div key={i} className={`chat-msg chat-msg-${m.role}`}>
+                <span className="chat-msg-role">{m.role === "user" ? "You" : "AI"}</span>
+                <span className="chat-msg-text">{m.content}</span>
+              </div>
+            ))}
+            {busy === "chatting" && <div className="chat-msg chat-msg-assistant"><span className="chat-msg-role">AI</span><span className="chat-msg-text">Thinking…</span></div>}
+          </div>
+        )}
+
         <div className="test-panel-row">
           <textarea
             className="test-input strategy-prompt"
-            rows={3}
+            rows={2}
             maxLength={4000}
-            placeholder='e.g. "Trade only mean reversion between 30 and 90 minutes after the open, with a tight 15 point stop and 45 point target, max 2 trades a day, stop after 1 loss."'
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
+            placeholder={chat.length === 0
+              ? 'e.g. "Trade only mean reversion between 30 and 90 minutes after the open, with a tight 15 point stop and 45 point target."'
+              : "Reply to the AI…"}
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendChat(chatInput);
+              }
+            }}
           />
         </div>
         <div className="test-panel-row">
-          <button className="btn btn-primary" onClick={generate} disabled={busy !== "" || prompt.trim().length < 10}>
-            {busy === "generating" ? "Generating…" : "Generate Strategy"}
+          <button className="btn btn-primary" onClick={() => sendChat(chatInput)} disabled={busy !== "" || chatInput.trim().length < 2}>
+            {busy === "chatting" ? "Thinking…" : chat.length === 0 ? "Send" : "Send Reply"}
           </button>
+          {chat.length > 0 && (
+            <button className="btn" onClick={startOver} disabled={busy !== ""}>
+              Start Over
+            </button>
+          )}
           {draft && (
             <>
               <button className="btn" onClick={save} disabled={busy !== ""}>
@@ -228,15 +283,15 @@ export default function StrategiesPage() {
               </div>
               <p className="strategy-desc">{activeConfig.description}</p>
               <div className="rule-grid">
-                <div className="rule"><span>Session</span>{activeConfig.session.open}–{activeConfig.session.hardCutoff} ET</div>
-                <div className="rule"><span>Continuation</span>{activeConfig.phases.tradeContinuation ? `first ${activeConfig.phases.continuationEndMin} min` : "off"}</div>
-                <div className="rule"><span>Reversion</span>{activeConfig.phases.tradeReversion ? `until ${activeConfig.phases.reversionEndMin} min (≥${activeConfig.entry.minExtensionPoints} pts ext.)` : "off"}</div>
-                <div className="rule"><span>Stop / Target</span>{activeConfig.risk.stopPoints} / {activeConfig.risk.targetPoints} pts</div>
-                <div className="rule"><span>Trade caps</span>{activeConfig.risk.maxTradesPerDay}/day, stop after {activeConfig.risk.stopAfterConsecutiveLosses} losses</div>
-                <div className="rule"><span>Daily $ caps</span>+${activeConfig.risk.dailyProfitCap} / −${activeConfig.risk.dailyLossCap}</div>
-                <div className="rule"><span>Displacement</span>≥{activeConfig.entry.displacementSizeRatio}× avg TR, wick ≤ {Math.round(activeConfig.entry.maxWickRatio * 100)}%</div>
-                <div className="rule"><span>Structure</span>{activeConfig.entry.structureLookbackMin} min lookback, +{activeConfig.entry.breakBufferPoints} pt buffer</div>
-                <div className="rule"><span>Eval sim</span>${activeConfig.eval.accountSize.toLocaleString()} acct, +${activeConfig.eval.profitTarget.toLocaleString()} target, ${activeConfig.eval.trailingMaxDrawdown.toLocaleString()} trailing DD</div>
+                <div className="rule" title="What time the trading window opens and the latest time it will start a new trade."><span>Session</span>{activeConfig.session.open}–{activeConfig.session.hardCutoff} ET</div>
+                <div className="rule" title="Whether the strategy trades in the same direction as the opening move, and for how long after the open."><span>Continuation</span>{activeConfig.phases.tradeContinuation ? `first ${activeConfig.phases.continuationEndMin} min` : "off"}</div>
+                <div className="rule" title="Whether the strategy trades back toward the opening price once it has moved far enough away, and until when."><span>Reversion</span>{activeConfig.phases.tradeReversion ? `until ${activeConfig.phases.reversionEndMin} min (≥${activeConfig.entry.minExtensionPoints} pts ext.)` : "off"}</div>
+                <div className="rule" title="How many points price must move against you before it exits a loser (Stop) or a winner (Target)."><span>Stop / Target</span>{activeConfig.risk.stopPoints} / {activeConfig.risk.targetPoints} pts</div>
+                <div className="rule" title="How many trades it will take per day, and when it stops early after consecutive losses."><span>Trade caps</span>{activeConfig.risk.maxTradesPerDay}/day, stop after {activeConfig.risk.stopAfterConsecutiveLosses} losses</div>
+                <div className="rule" title="Stops trading for the day once profit or loss reaches these dollar amounts."><span>Daily $ caps</span>+${activeConfig.risk.dailyProfitCap} / −${activeConfig.risk.dailyLossCap}</div>
+                <div className="rule" title="How large and clean a price candle must be before the strategy treats it as a real breakout worth trading."><span>Displacement</span>≥{activeConfig.entry.displacementSizeRatio}× avg TR, wick ≤ {Math.round(activeConfig.entry.maxWickRatio * 100)}%</div>
+                <div className="rule" title="How far back it looks for recent price highs/lows, and how far price must clear them to count as a breakout."><span>Structure</span>{activeConfig.entry.structureLookbackMin} min lookback, +{activeConfig.entry.breakBufferPoints} pt buffer</div>
+                <div className="rule" title="Settings for simulating a funded prop-firm account: starting size, profit target, and max allowed drawdown."><span>Eval sim</span>${activeConfig.eval.accountSize.toLocaleString()} acct, +${activeConfig.eval.profitTarget.toLocaleString()} target, ${activeConfig.eval.trailingMaxDrawdown.toLocaleString()} trailing DD</div>
               </div>
 
               {result && (
@@ -249,20 +304,41 @@ export default function StrategiesPage() {
                         : "○ Synthetic sample data — import real NQ bars for meaningful results"}
                     </span>
                   </div>
-                  <div className="stat-grid">
-                    <div className="stat-card"><div className="label">Success Rate</div><div className={`value ${result.winRate >= 50 ? "positive" : "negative"}`}>{result.winRate.toFixed(1)}%</div></div>
-                    <div className="stat-card"><div className="label">Net P&amp;L</div><div className={`value ${result.netPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(result.netPnl)}</div></div>
-                    <div className="stat-card"><div className="label">Return %</div><div className={`value ${result.netPnlPct >= 0 ? "positive" : "negative"}`}>{result.netPnlPct.toFixed(2)}%</div></div>
-                    <div className="stat-card"><div className="label">Total Gained</div><div className="value positive">{fmtMoney(result.totalGained)}</div></div>
-                    <div className="stat-card"><div className="label">Total Lost</div><div className="value negative">{fmtMoney(-result.totalLost)}</div></div>
-                    <div className="stat-card"><div className="label">Trades (W/L)</div><div className="value">{result.totalTrades} ({result.wins}/{result.losses})</div></div>
-                    <div className="stat-card"><div className="label">Eval Pass Rate</div><div className={`value ${result.evalPassRate >= 33 ? "positive" : "negative"}`}>{result.evalPassRate.toFixed(1)}%</div></div>
-                    <div className="stat-card"><div className="label">Max Drawdown</div><div className="value negative">{fmtMoney(-result.maxDrawdown)}</div></div>
-                    <div className="stat-card"><div className="label">Days (profitable)</div><div className="value">{result.tradingDays} ({result.profitableDays})</div></div>
-                    <div className="stat-card"><div className="label">Best / Worst Day</div><div className="value">{fmtMoney(result.bestDay)} / {fmtMoney(result.worstDay)}</div></div>
-                    <div className="stat-card"><div className="label">Cap Hits (+/−)</div><div className="value">{result.daysHitProfitCap} / {result.daysHitLossCap}</div></div>
-                    <div className="stat-card"><div className="label">Avg Days to Eval Result</div><div className="value">{result.avgDaysToEvalResult}</div></div>
+                  <div className="stat-grid stat-grid-primary">
+                    <div className="stat-card" title="Whether this strategy made or lost money overall, and by how much.">
+                      <div className="label">Profitable?</div>
+                      <div className={`value ${result.netPnl >= 0 ? "positive" : "negative"}`}>{result.netPnl >= 0 ? "Yes" : "No"} ({fmtMoney(result.netPnl)})</div>
+                    </div>
+                    <div className="stat-card" title="Net profit or loss as a percentage of the simulated account size — the main number to compare strategies by.">
+                      <div className="label">Return %</div>
+                      <div className={`value ${result.netPnlPct >= 0 ? "positive" : "negative"}`}>{result.netPnlPct.toFixed(2)}%</div>
+                    </div>
+                    <div className="stat-card" title="Percent of trades that hit the profit target instead of the stop. A lower win rate can still be very profitable if winners are bigger than losers.">
+                      <div className="label">Win Rate</div>
+                      <div className="value">{result.winRate.toFixed(1)}%</div>
+                    </div>
+                    <div className="stat-card" title="The worst peak-to-trough dip in account value during the test. Smaller is safer.">
+                      <div className="label">Max Drawdown</div>
+                      <div className="value negative">{fmtMoney(-result.maxDrawdown)}</div>
+                    </div>
+                    <div className="stat-card" title="How many trades this strategy took over the whole test period.">
+                      <div className="label">Trades</div>
+                      <div className="value">{result.totalTrades} ({result.wins}W / {result.losses}L)</div>
+                    </div>
                   </div>
+
+                  <details className="stat-grid-advanced">
+                    <summary title="More detailed numbers behind the headline stats above.">More details</summary>
+                    <div className="stat-grid">
+                      <div className="stat-card" title="Total dollars made on winning trades only."><div className="label">Total Gained</div><div className="value positive">{fmtMoney(result.totalGained)}</div></div>
+                      <div className="stat-card" title="Total dollars lost on losing trades only."><div className="label">Total Lost</div><div className="value negative">{fmtMoney(-result.totalLost)}</div></div>
+                      <div className="stat-card" title="Percent of simulated prop-firm evaluation attempts (a common way funded trading accounts are tested) that this strategy would have passed."><div className="label">Eval Pass Rate</div><div className={`value ${result.evalPassRate >= 33 ? "positive" : "negative"}`}>{result.evalPassRate.toFixed(1)}%</div></div>
+                      <div className="stat-card" title="Number of days the strategy traded, and how many of those days ended profitable."><div className="label">Days (profitable)</div><div className="value">{result.tradingDays} ({result.profitableDays})</div></div>
+                      <div className="stat-card" title="The single best and single worst day of P&L in the test."><div className="label">Best / Worst Day</div><div className="value">{fmtMoney(result.bestDay)} / {fmtMoney(result.worstDay)}</div></div>
+                      <div className="stat-card" title="How many days the strategy hit its daily profit cap vs. its daily loss cap and stopped trading for the day."><div className="label">Cap Hits (+/−)</div><div className="value">{result.daysHitProfitCap} / {result.daysHitLossCap}</div></div>
+                      <div className="stat-card" title="Average number of days it took a simulated prop-firm eval attempt to resolve (pass or fail)."><div className="label">Avg Days to Eval Result</div><div className="value">{result.avgDaysToEvalResult}</div></div>
+                    </div>
+                  </details>
 
                   {result.trades.length > 0 && (
                     <div className="table-wrap">
