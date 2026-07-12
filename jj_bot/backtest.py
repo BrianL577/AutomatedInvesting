@@ -47,7 +47,14 @@ def group_by_day(bars: list[Bar]) -> dict[date, list[Bar]]:
 
 
 def _simulate_trade_exit(entry_idx: int, day_bars: list[Bar], direction: Direction, stop: float, target: float):
-    """Walk forward bars after entry, return (exit_price, exit_ts, win). Flattens at day close if untouched."""
+    """Walk forward bars after entry, return (exit_price, exit_ts, win), or None if
+    neither the stop nor target is hit before the day's bars run out.
+
+    Per JJ's rule, the bracket is never moved and only ends by hitting its
+    full stop or full target — never an end-of-day flatten. Returning None
+    lets the caller exclude an unresolved trade from results instead of
+    faking an exit at whatever price the data happens to end on.
+    """
     for bar in day_bars[entry_idx + 1:]:
         if direction == Direction.LONG:
             hit_stop = bar.low <= stop
@@ -62,26 +69,34 @@ def _simulate_trade_exit(entry_idx: int, day_bars: list[Bar], direction: Directi
             return stop, bar.timestamp, False
         if hit_target:
             return target, bar.timestamp, True
-    last = day_bars[-1]
-    win = (last.close > day_bars[entry_idx].close) == (direction == Direction.LONG)
-    return last.close, last.timestamp, win
+    return None
 
 
-def run_strategy_on_day(day_bars: list[Bar], engine: StrategyEngine) -> list[TradeResult]:
+def run_strategy_on_day(day_bars: list[Bar], engine: StrategyEngine) -> tuple[list[TradeResult], int]:
+    """Returns (completed trades, count of trades excluded because the day's
+    bars ran out before the bracket resolved)."""
     engine.reset_day()
     results: list[TradeResult] = []
+    incomplete = 0
     for i, bar in enumerate(day_bars):
         signal = engine.on_bar(bar)
         if signal is None:
             continue
-        exit_price, exit_ts, win = _simulate_trade_exit(i, day_bars, signal.direction, signal.stop_price, signal.target_price)
+        outcome = _simulate_trade_exit(i, day_bars, signal.direction, signal.stop_price, signal.target_price)
+        if outcome is None:
+            # Unresolved — exclude rather than fake an exit; no further
+            # trades can be evaluated this day since this one is still open
+            # as far as we know.
+            incomplete += 1
+            break
+        exit_price, exit_ts, win = outcome
         pnl_points = (
             exit_price - signal.entry_price if signal.direction == Direction.LONG
             else signal.entry_price - exit_price
         )
         results.append(TradeResult(signal=signal, exit_price=exit_price, exit_timestamp=exit_ts, win=win, pnl_points=pnl_points))
         engine.record_trade_result(win, pnl_points=pnl_points)
-    return results
+    return results, incomplete
 
 
 @dataclass
@@ -92,6 +107,7 @@ class BacktestReport:
     attempts: int
     passes: int
     avg_days_to_result: float
+    incomplete_trades: int = 0
 
 
 def run_backtest(cfg: AppConfig, bars: list[Bar], log_trades: bool = True) -> BacktestReport:
@@ -106,8 +122,10 @@ def run_backtest(cfg: AppConfig, bars: list[Bar], log_trades: bool = True) -> Ba
 
     all_trades: list[TradeResult] = []
     daily_pnl: dict[date, float] = {}
+    incomplete_trades = 0
     for d, day_bars in by_day.items():
-        trades = run_strategy_on_day(day_bars, engine)
+        trades, day_incomplete = run_strategy_on_day(day_bars, engine)
+        incomplete_trades += day_incomplete
         all_trades.extend(trades)
         daily_pnl[d] = sum(t.pnl_points for t in trades)
         if logger:
@@ -142,6 +160,7 @@ def run_backtest(cfg: AppConfig, bars: list[Bar], log_trades: bool = True) -> Ba
         attempts=attempts,
         passes=passes,
         avg_days_to_result=avg_days,
+        incomplete_trades=incomplete_trades,
     )
 
 
@@ -158,6 +177,8 @@ def print_report(report: BacktestReport, cfg: AppConfig) -> None:
     print(f"Win rate:             {win_rate:.1%}")
     print(f"Total points:         {total_points:+.2f}")
     print(f"Trading days:         {len(report.daily_pnl_points)}")
+    if report.incomplete_trades:
+        print(f"Excluded (unresolved at data end): {report.incomplete_trades}")
     print("-" * 60)
     print(f"Prop-firm eval sim ({cfg.topstep_eval.account_size:.0f} acct,"
           f" +{cfg.topstep_eval.profit_target:.0f} target,"

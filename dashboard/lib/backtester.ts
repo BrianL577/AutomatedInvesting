@@ -50,6 +50,11 @@ export type StageSummary = {
 
 export type BacktestResult = {
   trades: SimTrade[];
+  // Trades where the bar data ran out before the bracket hit its stop or
+  // target — excluded from every stat below rather than force-closed at a
+  // made-up price, since the strategy's rule is stop-or-target-only, never
+  // an early/discretionary exit.
+  incompleteTrades: number;
   totalTrades: number;
   wins: number;
   losses: number;
@@ -152,7 +157,7 @@ type Pivot = { minutes: number; price: number };
  * loss in the London window still counts against the NY window. */
 type DayRiskState = { tradesCount: number; consecutiveLosses: number; dayPnlDollars: number };
 
-function simulateDay(dayBars: Bar[], cfg: StrategyConfig): SimTrade[] {
+function simulateDay(dayBars: Bar[], cfg: StrategyConfig): { trades: SimTrade[]; incompleteTrades: number } {
   const windows = [
     { open: cfg.session.open, hardCutoff: cfg.session.hardCutoff },
     ...(cfg.session.additionalSessions ?? []),
@@ -160,10 +165,13 @@ function simulateDay(dayBars: Bar[], cfg: StrategyConfig): SimTrade[] {
 
   const state: DayRiskState = { tradesCount: 0, consecutiveLosses: 0, dayPnlDollars: 0 };
   const trades: SimTrade[] = [];
+  let incompleteTrades = 0;
   for (const w of windows) {
-    trades.push(...simulateSession(dayBars, cfg, hhmmToMinutes(w.open), hhmmToMinutes(w.hardCutoff), state));
+    const result = simulateSession(dayBars, cfg, hhmmToMinutes(w.open), hhmmToMinutes(w.hardCutoff), state);
+    trades.push(...result.trades);
+    incompleteTrades += result.incompleteTrades;
   }
-  return trades;
+  return { trades, incompleteTrades };
 }
 
 function simulateSession(
@@ -172,8 +180,9 @@ function simulateSession(
   openMin: number,
   cutoffMin: number,
   state: DayRiskState
-): SimTrade[] {
+): { trades: SimTrade[]; incompleteTrades: number } {
   const trades: SimTrade[] = [];
+  let incompleteTrades = 0;
 
   let openPrice: number | null = null;
   let continuationDir: "long" | "short" | null = null;
@@ -225,7 +234,18 @@ function simulateSession(
     return bar.c > level + buffer ? level : null;
   };
 
-  const simulateExit = (entryIdx: number, dir: "long" | "short", stop: number, target: number) => {
+  // Per JJ's rule: the bracket is never moved, and a trade only ends by
+  // hitting its full stop or full target — never a discretionary or
+  // end-of-day flatten. If the data runs out before either is touched, the
+  // trade is unresolved: it is excluded from results rather than faked with
+  // a made-up exit price, exactly as a real bracket order would just stay
+  // open past the bars we have.
+  const simulateExit = (
+    entryIdx: number,
+    dir: "long" | "short",
+    stop: number,
+    target: number
+  ): { exit: number; exitTime: string; exitIdx: number; win: boolean } | null => {
     for (let j = entryIdx + 1; j < dayBars.length; j++) {
       const b = dayBars[j];
       const hitStop = dir === "long" ? b.l <= stop : b.h >= stop;
@@ -234,10 +254,7 @@ function simulateSession(
       if (hitStop) return { exit: stop, exitTime: b.t, exitIdx: j, win: false };
       if (hitTarget) return { exit: target, exitTime: b.t, exitIdx: j, win: true };
     }
-    const last = dayBars[dayBars.length - 1];
-    const entry = dayBars[entryIdx].c;
-    const win = dir === "long" ? last.c > entry : last.c < entry;
-    return { exit: last.c, exitTime: last.t, exitIdx: dayBars.length - 1, win };
+    return null;
   };
 
   for (let i = 0; i < dayBars.length; i++) {
@@ -289,7 +306,15 @@ function simulateSession(
     const entry = bar.c;
     const stop = dir === "long" ? entry - cfg.risk.stopPoints : entry + cfg.risk.stopPoints;
     const target = dir === "long" ? entry + cfg.risk.targetPoints : entry - cfg.risk.targetPoints;
-    const { exit, exitTime, exitIdx, win } = simulateExit(i, dir, stop, target);
+    const resolved = simulateExit(i, dir, stop, target);
+    if (resolved === null) {
+      // Ran out of bars before the bracket resolved — exclude, don't fake
+      // an exit. No further trades can be evaluated this day/session since
+      // this one is still open as far as we know.
+      incompleteTrades++;
+      break;
+    }
+    const { exit, exitTime, exitIdx, win } = resolved;
     const pnlPoints = dir === "long" ? exit - entry : entry - exit;
     const pnlDollars = pnlPoints * DOLLARS_PER_POINT * cfg.risk.contractsPerTrade;
 
@@ -314,7 +339,7 @@ function simulateSession(
     inTradeUntilIdx = exitIdx;
   }
 
-  return trades;
+  return { trades, incompleteTrades };
 }
 
 // ---------- full backtest + prop-firm eval simulation ----------
@@ -341,10 +366,12 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
   const dailyPnlFirstTradeOnly: number[] = [];
   let daysHitProfitCap = 0;
   let daysHitLossCap = 0;
+  let incompleteTrades = 0;
 
   for (const day of days) {
     const dayBars = byDay.get(day)!.sort((a, b) => a.t.localeCompare(b.t));
-    const trades = simulateDay(dayBars, cfg);
+    const { trades, incompleteTrades: dayIncomplete } = simulateDay(dayBars, cfg);
+    incompleteTrades += dayIncomplete;
     allTrades.push(...trades);
     const dayPnl = trades.reduce((s, t) => s + t.pnlDollars, 0);
     dailyPnl.push(dayPnl);
@@ -552,6 +579,7 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
 
   return {
     trades: allTrades,
+    incompleteTrades,
     totalTrades: allTrades.length,
     wins: wins.length,
     losses: losses.length,
