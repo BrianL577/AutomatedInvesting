@@ -66,7 +66,10 @@ export async function POST(req: NextRequest) {
       model: "claude-opus-4-8",
       max_tokens: 4096,
       thinking: { type: "adaptive" },
-      system: SYSTEM_PROMPT,
+      // Static across every call — mark cacheable so repeat requests within
+      // the cache TTL bill ~10% of input cost for this block instead of
+      // full price. Same exact prompt, no change in what the model sees.
+      system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
       output_config: {
         format: { type: "json_schema", schema: STRATEGY_JSON_SCHEMA },
       },
