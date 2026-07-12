@@ -436,8 +436,9 @@ export default function StrategiesPage() {
                 <div className="bt-results">
                   <p className="bt-explainer">
                     Claude proposed parameter tweaks each round based on how prior variants actually performed against
-                    your real historical data — it never saw raw price bars, only these result summaries. Ranked by
-                    real-world net P&amp;L (fees vs. funded payouts), best first.
+                    your real historical data — it never saw raw price bars, only these result summaries. A config only
+                    counts as <strong>Profitable</strong> at a 60%+ overall win rate — that&apos;s the primary target,
+                    with real-world net P&amp;L (fees vs. funded payouts) as the tiebreaker.
                   </p>
                   {optimizeResult.warning && (
                     <div className="test-status test-status-error">{optimizeResult.warning}</div>
@@ -446,7 +447,7 @@ export default function StrategiesPage() {
                     <table>
                       <thead>
                         <tr>
-                          <th>#</th><th>Round</th><th>Rationale</th><th>Eval Win%</th><th>Funded Win%</th><th>Real-World Net</th><th></th>
+                          <th>#</th><th>Round</th><th>Rationale</th><th>Win Rate</th><th>Eval Win%</th><th>Funded Win%</th><th>Real-World Net</th><th></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -457,6 +458,11 @@ export default function StrategiesPage() {
                               <td>{i === 0 ? "🏆" : i + 1}</td>
                               <td>{c.round}</td>
                               <td>{c.rationale}</td>
+                              <td>
+                                <span className={`badge ${c.result.winRate >= 60 ? "win" : "loss"}`}>
+                                  {c.result.winRate.toFixed(1)}% {c.result.winRate >= 60 ? "Profitable" : ""}
+                                </span>
+                              </td>
                               <td>{c.result.evalStage.winRate.toFixed(1)}%</td>
                               <td>{c.result.fundedStage.winRate.toFixed(1)}%</td>
                               <td className={c.result.realWorldNetPnl >= 0 ? "positive" : "negative"}>{fmtMoney(c.result.realWorldNetPnl)}</td>
