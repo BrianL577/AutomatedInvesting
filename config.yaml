@@ -17,9 +17,9 @@ strategy:
 risk:
   stop_points: 25
   target_points: 38              # ~1:1.5 R:R as in the video
-  max_trades_per_day: 4
+  max_trades_per_day: 1          # one trade per account per day, per user instruction
   stop_after_consecutive_losses: 2
-  contracts_per_trade: 1
+  contracts_per_trade: 2         # 25pts=-$1000, 38pts=+$1520 at $20/point
   # Daily rate limiter: stop trading for the day once running P&L touches
   # either cap. Not stated in the transcript — set per user instruction.
   daily_profit_cap: 1520
