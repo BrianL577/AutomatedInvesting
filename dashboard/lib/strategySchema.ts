@@ -144,9 +144,9 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
     "reversion back toward the opening price until 90 minutes in. Trades the 8:30 ET news window, the " +
     "9:30 NY open, the 2:00pm NY PM session, and the 8:00pm Asian open — more sessions means more " +
     "attempts per day. Entries require a displacement candle (large true range, small wicks) that breaks " +
-    "and closes through recent swing structure. Static bracket exits, never moved: 50pt stop / 64.5pt " +
-    "target ($1,000 / $1,290 on NQ), max 8 trades/day, stop after 2 consecutive losses, " +
-    "$1,520 daily profit cap / $1,000 daily loss cap spanning all sessions.",
+    "and closes through recent swing structure. Static bracket exits, never moved: 25pt stop / 38pt " +
+    "target on 2 contracts ($1,000 / $1,520 on NQ), one trade per account per day — the trade runs to " +
+    "either the full stop or the full target, no early exits.",
   session: {
     open: "09:30",
     hardCutoff: "11:00",
@@ -172,11 +172,11 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
     minExtensionPoints: 12,
   },
   risk: {
-    stopPoints: 50,
-    targetPoints: 64.5,
-    maxTradesPerDay: 8,
+    stopPoints: 25,
+    targetPoints: 38,
+    maxTradesPerDay: 1,
     stopAfterConsecutiveLosses: 2,
-    contractsPerTrade: 1,
+    contractsPerTrade: 2,
     dailyProfitCap: 1520,
     dailyLossCap: 1000,
   },
