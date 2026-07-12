@@ -267,7 +267,7 @@ export default function StrategiesPage() {
                   <div className="bt-results-header" style={{ marginTop: 20 }}>
                     <h3>Real-World Prop-Firm Economics</h3>
                     <span className="data-source-badge static">
-                      Uses default $50 eval/reactivation fees, 50% funded payout share ($2,000 cap) — verify against the actual firm&apos;s current rules
+                      Uses default $50 eval/reactivation fees, 50% funded payout share ($2,000 cap), 50% single-day consistency rule for payouts — verify against the actual firm&apos;s current rules
                     </span>
                   </div>
                   <div className="stat-grid">
