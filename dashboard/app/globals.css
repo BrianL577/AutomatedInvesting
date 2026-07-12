@@ -449,6 +449,31 @@ tbody tr:hover {
   margin: 0;
 }
 
+.bt-explainer {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin: 0 0 18px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--panel-border);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.bt-pooled-details {
+  margin-top: 20px;
+}
+
+.bt-pooled-details summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-dim);
+  padding: 8px 0;
+}
+
+.bt-pooled-details summary:hover {
+  color: var(--text);
+}
+
 .strategy-item-delete {
   background: transparent;
   border: none;

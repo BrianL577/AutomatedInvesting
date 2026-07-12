@@ -37,6 +37,17 @@ export type SimTrade = {
   reason: string;
 };
 
+export type StageSummary = {
+  trades: number;
+  wins: number;
+  losses: number;
+  winRate: number; // 0-100
+  totalGained: number; // $
+  totalLost: number; // $ (positive number)
+  netPnl: number; // $
+  tradingDays: number;
+};
+
 export type BacktestResult = {
   trades: SimTrade[];
   totalTrades: number;
@@ -69,6 +80,13 @@ export type BacktestResult = {
   realWorldNetPnl: number; // $ (payouts - fees; the actual money that changed hands)
   chronologicalAttempts: number; // how many eval attempts were actually bought, in order
   timesFunded: number; // how many times an attempt reached the funded stage
+  // Trading performance split by account phase (using the single
+  // non-portfolio account's chronological timeline) — NOT pooled across
+  // account resets like totalGained/totalLost/netPnl above. This answers
+  // "how did the strategy actually perform while still in eval" vs "how did
+  // it perform once funded" as two separate simulations.
+  evalStage: StageSummary;
+  fundedStage: StageSummary;
   // Portfolio-of-accounts economics (null unless the strategy config sets
   // portfolio.accountCount > 1): N staggered accounts, each with its own
   // eval lifecycle, optionally restricted to one trade per day.
@@ -335,6 +353,8 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
     if (cfg.risk.dailyLossCap > 0 && dayPnl <= -cfg.risk.dailyLossCap) daysHitLossCap++;
   }
 
+  const round2 = (x: number) => Math.round(x * 100) / 100;
+
   // Prop-firm eval simulation: start a fresh attempt on each day and play
   // forward with end-of-day trailing drawdown until pass or bust.
   let attempts = 0;
@@ -386,6 +406,12 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
     let cashPayouts = 0;
     let attemptsBought = 0;
     let fundedCount = 0;
+    // Per-day phase for THIS account's timeline, index-aligned to `series`:
+    // "eval" = this day's P&L happened while still working toward the
+    // profit target; "funded" = after reaching it. Days before startDay (for
+    // staggered portfolio accounts) or after the account permanently busts
+    // with no more attempts are left "none".
+    const dayPhase: ("eval" | "funded" | "none")[] = new Array(series.length).fill("none");
     let d = Math.min(startDay, series.length);
     let firstAttempt = true;
     while (d < series.length) {
@@ -402,6 +428,9 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
       let busted = false;
 
       for (; d < series.length; d++) {
+        // Phase this day's P&L is attributed to = the account's state at
+        // the START of the day (before today's trades resolve).
+        dayPhase[d] = funded ? "funded" : "eval";
         balance += series[d];
         if (funded) fundedWindowDailyPnls.push(series[d]);
         if (balance <= floor) {
@@ -438,7 +467,7 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
       }
       if (!busted) break; // ran out of data mid-attempt, nothing more to simulate
     }
-    return { feesPaid, cashPayouts, attemptsBought, fundedCount };
+    return { feesPaid, cashPayouts, attemptsBought, fundedCount, dayPhase };
   };
 
   const single = walkAccountEconomics(dailyPnl, 0);
@@ -446,6 +475,37 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
   const cashPayouts = single.cashPayouts;
   const chronologicalAttempts = single.attemptsBought;
   const timesFunded = single.fundedCount;
+
+  // Split every trade into eval-stage vs funded-stage using the single
+  // account's chronological day phases, so "Success Rate"/"Net P&L"/etc can
+  // be reported separately for each — not pooled across account resets.
+  const dayIndexByDate = new Map(days.map((day, i) => [day, i]));
+  const evalTrades: SimTrade[] = [];
+  const fundedTrades: SimTrade[] = [];
+  for (const t of allTrades) {
+    const idx = dayIndexByDate.get(etParts(t.entryTime).dateKey);
+    const phase = idx === undefined ? "eval" : single.dayPhase[idx];
+    (phase === "funded" ? fundedTrades : evalTrades).push(t);
+  }
+  const summarizeStage = (stageTrades: SimTrade[]) => {
+    const w = stageTrades.filter((t) => t.win);
+    const l = stageTrades.filter((t) => !t.win);
+    const gained = w.reduce((s, t) => s + t.pnlDollars, 0);
+    const lost = Math.abs(l.reduce((s, t) => s + t.pnlDollars, 0));
+    const stageDays = new Set(stageTrades.map((t) => etParts(t.entryTime).dateKey)).size;
+    return {
+      trades: stageTrades.length,
+      wins: w.length,
+      losses: l.length,
+      winRate: stageTrades.length ? round2((w.length / stageTrades.length) * 100) : 0,
+      totalGained: round2(gained),
+      totalLost: round2(lost),
+      netPnl: round2(gained - lost),
+      tradingDays: stageDays,
+    };
+  };
+  const evalStage = summarizeStage(evalTrades);
+  const fundedStage = summarizeStage(fundedTrades);
 
   // Portfolio of accounts, staggered starts, optionally one trade/day each —
   // how prop traders actually scale (more accounts, not more size per trade).
@@ -490,7 +550,6 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
     maxDrawdown = Math.max(maxDrawdown, peak - equity);
   }
 
-  const round2 = (x: number) => Math.round(x * 100) / 100;
   return {
     trades: allTrades,
     totalTrades: allTrades.length,
@@ -520,6 +579,8 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
     realWorldNetPnl: round2(cashPayouts - feesPaid),
     chronologicalAttempts,
     timesFunded,
+    evalStage,
+    fundedStage,
     portfolio,
   };
 }
