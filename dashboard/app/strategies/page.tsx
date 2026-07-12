@@ -249,25 +249,47 @@ export default function StrategiesPage() {
                         : "○ Synthetic sample data — import real NQ bars for meaningful results"}
                     </span>
                   </div>
+                  <p className="bt-explainer">
+                    Every trade below is real strategy output against real historical bars. But <strong>how</strong> those
+                    dollars translate into money in your pocket depends entirely on account rules — a $500 loss means
+                    something different if it&apos;s the trade that busts your eval vs. a normal down day once funded.
+                    The sections below split the same trades three different ways so each question gets an honest answer.
+                  </p>
+
+                  <div className="bt-results-header">
+                    <h3>1. While Working Toward the Eval Target</h3>
+                    <span className="data-source-badge static">
+                      Only trades that happened before the account (chronologically) first hit the ${draft?.eval.profitTarget?.toLocaleString() ?? "3,000"} profit target
+                    </span>
+                  </div>
                   <div className="stat-grid">
-                    <div className="stat-card"><div className="label">Success Rate</div><div className={`value ${result.winRate >= 50 ? "positive" : "negative"}`}>{result.winRate.toFixed(1)}%</div></div>
-                    <div className="stat-card"><div className="label">Net P&amp;L</div><div className={`value ${result.netPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(result.netPnl)}</div></div>
-                    <div className="stat-card"><div className="label">Return %</div><div className={`value ${result.netPnlPct >= 0 ? "positive" : "negative"}`}>{result.netPnlPct.toFixed(2)}%</div></div>
-                    <div className="stat-card"><div className="label">Total Gained</div><div className="value positive">{fmtMoney(result.totalGained)}</div></div>
-                    <div className="stat-card"><div className="label">Total Lost</div><div className="value negative">{fmtMoney(-result.totalLost)}</div></div>
-                    <div className="stat-card"><div className="label">Trades (W/L)</div><div className="value">{result.totalTrades} ({result.wins}/{result.losses})</div></div>
-                    <div className="stat-card"><div className="label">Eval Pass Rate</div><div className={`value ${result.evalPassRate >= 33 ? "positive" : "negative"}`}>{result.evalPassRate.toFixed(1)}%</div></div>
-                    <div className="stat-card"><div className="label">Max Drawdown</div><div className="value negative">{fmtMoney(-result.maxDrawdown)}</div></div>
-                    <div className="stat-card"><div className="label">Days (profitable)</div><div className="value">{result.tradingDays} ({result.profitableDays})</div></div>
-                    <div className="stat-card"><div className="label">Best / Worst Day</div><div className="value">{fmtMoney(result.bestDay)} / {fmtMoney(result.worstDay)}</div></div>
-                    <div className="stat-card"><div className="label">Cap Hits (+/−)</div><div className="value">{result.daysHitProfitCap} / {result.daysHitLossCap}</div></div>
-                    <div className="stat-card"><div className="label">Avg Days to Eval Result</div><div className="value">{result.avgDaysToEvalResult}</div></div>
+                    <div className="stat-card"><div className="label">Success Rate</div><div className={`value ${result.evalStage.winRate >= 50 ? "positive" : "negative"}`}>{result.evalStage.winRate.toFixed(1)}%</div></div>
+                    <div className="stat-card"><div className="label">Net P&amp;L</div><div className={`value ${result.evalStage.netPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(result.evalStage.netPnl)}</div></div>
+                    <div className="stat-card"><div className="label">Total Gained</div><div className="value positive">{fmtMoney(result.evalStage.totalGained)}</div></div>
+                    <div className="stat-card"><div className="label">Total Lost</div><div className="value negative">{fmtMoney(-result.evalStage.totalLost)}</div></div>
+                    <div className="stat-card"><div className="label">Trades (W/L)</div><div className="value">{result.evalStage.trades} ({result.evalStage.wins}/{result.evalStage.losses})</div></div>
+                    <div className="stat-card"><div className="label">Trading Days</div><div className="value">{result.evalStage.tradingDays}</div></div>
                   </div>
 
                   <div className="bt-results-header" style={{ marginTop: 20 }}>
-                    <h3>Real-World Prop-Firm Economics</h3>
+                    <h3>2. Once Funded</h3>
                     <span className="data-source-badge static">
-                      Uses default $50 eval/reactivation fees, 50% funded payout share ($2,000 cap), 50% single-day consistency rule for payouts — verify against the actual firm&apos;s current rules
+                      Only trades that happened after reaching funded — this is the performance that actually determines real payouts
+                    </span>
+                  </div>
+                  <div className="stat-grid">
+                    <div className="stat-card"><div className="label">Success Rate</div><div className={`value ${result.fundedStage.winRate >= 50 ? "positive" : "negative"}`}>{result.fundedStage.winRate.toFixed(1)}%</div></div>
+                    <div className="stat-card"><div className="label">Net P&amp;L</div><div className={`value ${result.fundedStage.netPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(result.fundedStage.netPnl)}</div></div>
+                    <div className="stat-card"><div className="label">Total Gained</div><div className="value positive">{fmtMoney(result.fundedStage.totalGained)}</div></div>
+                    <div className="stat-card"><div className="label">Total Lost</div><div className="value negative">{fmtMoney(-result.fundedStage.totalLost)}</div></div>
+                    <div className="stat-card"><div className="label">Trades (W/L)</div><div className="value">{result.fundedStage.trades} ({result.fundedStage.wins}/{result.fundedStage.losses})</div></div>
+                    <div className="stat-card"><div className="label">Trading Days</div><div className="value">{result.fundedStage.tradingDays}</div></div>
+                  </div>
+
+                  <div className="bt-results-header" style={{ marginTop: 20 }}>
+                    <h3>3. Real Cash In / Out (fees paid, payouts received)</h3>
+                    <span className="data-source-badge static">
+                      Default $50 eval/reactivation fee, 50% funded payout share ($2,000 cap/event), 50% single-day consistency rule — verify against the actual firm&apos;s current rules
                     </span>
                   </div>
                   <div className="stat-grid">
@@ -277,6 +299,24 @@ export default function StrategiesPage() {
                     <div className="stat-card"><div className="label">Accounts Bought (chronological)</div><div className="value">{result.chronologicalAttempts}</div></div>
                     <div className="stat-card"><div className="label">Times Reached Funded</div><div className="value">{result.timesFunded}</div></div>
                   </div>
+
+                  <details className="bt-pooled-details">
+                    <summary>Pooled stats (all {result.totalTrades} trades on one never-resetting account — not real economics, kept for reference)</summary>
+                    <div className="stat-grid" style={{ marginTop: 12 }}>
+                      <div className="stat-card"><div className="label">Success Rate</div><div className={`value ${result.winRate >= 50 ? "positive" : "negative"}`}>{result.winRate.toFixed(1)}%</div></div>
+                      <div className="stat-card"><div className="label">Net P&amp;L</div><div className={`value ${result.netPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(result.netPnl)}</div></div>
+                      <div className="stat-card"><div className="label">Return %</div><div className={`value ${result.netPnlPct >= 0 ? "positive" : "negative"}`}>{result.netPnlPct.toFixed(2)}%</div></div>
+                      <div className="stat-card"><div className="label">Total Gained</div><div className="value positive">{fmtMoney(result.totalGained)}</div></div>
+                      <div className="stat-card"><div className="label">Total Lost</div><div className="value negative">{fmtMoney(-result.totalLost)}</div></div>
+                      <div className="stat-card"><div className="label">Trades (W/L)</div><div className="value">{result.totalTrades} ({result.wins}/{result.losses})</div></div>
+                      <div className="stat-card"><div className="label">Eval Pass Rate</div><div className={`value ${result.evalPassRate >= 33 ? "positive" : "negative"}`}>{result.evalPassRate.toFixed(1)}%</div></div>
+                      <div className="stat-card"><div className="label">Max Drawdown</div><div className="value negative">{fmtMoney(-result.maxDrawdown)}</div></div>
+                      <div className="stat-card"><div className="label">Days (profitable)</div><div className="value">{result.tradingDays} ({result.profitableDays})</div></div>
+                      <div className="stat-card"><div className="label">Best / Worst Day</div><div className="value">{fmtMoney(result.bestDay)} / {fmtMoney(result.worstDay)}</div></div>
+                      <div className="stat-card"><div className="label">Cap Hits (+/−)</div><div className="value">{result.daysHitProfitCap} / {result.daysHitLossCap}</div></div>
+                      <div className="stat-card"><div className="label">Avg Days to Eval Result</div><div className="value">{result.avgDaysToEvalResult}</div></div>
+                    </div>
+                  </details>
 
                   {result.portfolio && (
                     <>
