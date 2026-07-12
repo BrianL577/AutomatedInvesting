@@ -5,13 +5,20 @@
  * Why not "give Claude the 484k bars and ask it to find patterns": LLMs are
  * poor at large-scale numerical pattern-mining directly — that's what the
  * deterministic backtester already does, cheaply and exactly. Instead: each
- * round, Claude proposes a batch of parameter tweaks (phases/entry/risk
- * only — never session/eval/filters/portfolio) given the previous round's
+ * round, Claude proposes a batch of parameter tweaks (phases/entry only —
+ * risk is locked to the base config's exact values, never
+ * session/eval/filters/portfolio either) given the previous round's
  * results; every proposal is validated, backtested against the real
  * historical dataset (free, instant, deterministic), and only the
  * aggregated result summary — not raw bars — goes back to Claude for the
  * next round. Hill-climbs toward better real-world economics, it does not
  * guarantee a profitable strategy exists within this rule library.
+ *
+ * Risk sizing (stop/target/contracts/trade-caps/$ caps) is the user's own
+ * locked trading rule, not a search dimension: every variant inherits the
+ * base config's risk block byte-for-byte. The optimizer can only change
+ * WHICH trades get taken (entry selectivity, phase windows), never what a
+ * trade costs or pays.
  */
 import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
@@ -32,22 +39,22 @@ export const maxDuration = 300; // several rounds of model calls + backtests
 const MAX_ROUNDS = 5;
 const MAX_BATCH_SIZE = 6;
 
-const SYSTEM_PROMPT = `You are tuning the numeric parameters of a fixed rule-based NQ futures intraday strategy — you do not invent new mechanics, only propose tweaks to existing ones (session/phase timing already fixed, entry displacement/structure thresholds, and risk stop/target/caps).
+const SYSTEM_PROMPT = `You are tuning which trades get taken by a fixed rule-based NQ futures intraday strategy — you do not invent new mechanics, only propose tweaks to session/phase timing and entry displacement/structure thresholds.
 
-TARGET: a configuration counts as "profitable" when realWorldNetPnl is positive — actual dollars after eval/reactivation fees and funded payouts. That's the primary objective. Win rate and R:R are levers toward it, not goals in themselves: a 40% win rate at 1:2 R:R and a 65% win rate at 1:0.8 can both get there — search both directions.
+RISK IS LOCKED, NOT A SEARCH DIMENSION: the trader has a fixed, non-negotiable position-sizing rule (exact stop points, target points, contracts per trade, trade caps, and $ caps) that every variant inherits unchanged from the base config. You cannot propose risk changes — there is no risk field in your output schema. Your only levers are: which sessions/phases trade (phases.*) and how selective entries are (entry.*). This means win rate is your ONLY lever toward profitability — you cannot change R:R to compensate for a low win rate, so focus entirely on making the entry signal more (or deliberately less, to test both directions) selective.
+
+TARGET: a configuration counts as "profitable" when realWorldNetPnl is positive — actual dollars after eval/reactivation fees and funded payouts. That's the primary objective.
 
 Each round you'll see the current best config and a leaderboard of every variant tried so far with its real-world results:
-- winRate: overall win rate across all trades
+- winRate: overall win rate across all trades — since R:R is fixed, this is the entire game
 - evalStage: win rate & net P&L for trades while still working toward the eval profit target
 - fundedStage: win rate & net P&L for trades after reaching funded — this is what actually matters long-term
 - realWorldNetPnl: actual dollars (fees vs. funded payouts) — the honest bottom line and the fitness metric
 - evalPassRate: probability of ever reaching funded at all
 
-Search heuristics from prop-firm math (JJ's approach): the eval stage is a "hit +$3,000 before the $2,000 trailing drawdown" game, so risk:reward near the account's own ratio (1:1.5, e.g. 50pt stop / 75pt target) tends to maximize pass rate — test that region early. Eval and funded stages reward different configs: watch evalStage vs fundedStage results separately and say which stage a variant is aimed at. Static bracket exits are a given (the engine only does static); prefer variants that change trade frequency (phase windows, displacement looseness) and stop:target geometry over exotic filter tweaks.
+Search heuristics: tighten displacement/structure thresholds for fewer, higher-conviction entries when win rate is below breakeven; loosen them (or widen phase windows, add trade frequency) when a stricter filter already proved a win-rate lift but starved trade volume too much. Eval and funded stages can reward different selectivity — watch evalStage vs fundedStage results separately and say which stage a variant is aimed at.
 
-HARD SURVIVABILITY CONSTRAINT — non-negotiable, applies to every variant you propose: risk.stopPoints x risk.contractsPerTrade x $20/point MUST NOT exceed eval.trailingMaxDrawdown (a single losing trade must never be able to bust the account outright — the $2,000 limit is a real, fixed rule of the actual account, not a target to optimize against). Any variant that violates this is discarded automatically before backtesting, wasting your proposal — so check this arithmetic yourself before proposing a stopPoints/contractsPerTrade combination.
-
-Propose meaningfully different variants each round, not tiny noise — if recent variants haven't improved realWorldNetPnl, try a different direction (tighter displacement filters vs. looser, different stop:target ratios in both directions, fewer max trades/day). Each variant is a partial diff on top of the CURRENT BEST config — only include fields you're deliberately changing. Give one honest sentence per variant explaining the hypothesis, referencing what the leaderboard actually shows.`;
+Propose meaningfully different variants each round, not tiny noise — if recent variants haven't improved realWorldNetPnl, try a different direction (tighter vs. looser displacement/structure filters, different phase windows). Each variant is a partial diff on top of the CURRENT BEST config, touching only phases and/or entry — only include fields you're deliberately changing. Give one honest sentence per variant explaining the hypothesis, referencing what the leaderboard actually shows.`;
 
 type Candidate = {
   round: number;
@@ -63,7 +70,9 @@ function mergeVariant(base: StrategyConfig, diff: Omit<StrategyVariant, "rationa
     ...base,
     phases: { ...base.phases, ...diff.phases },
     entry: { ...base.entry, ...diff.entry },
-    risk: { ...base.risk, ...diff.risk },
+    // risk is intentionally never merged from the diff — it isn't a search
+    // dimension (see StrategyVariantSchema), every variant keeps the base
+    // config's risk block exactly.
   };
 }
 

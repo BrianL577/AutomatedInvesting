@@ -87,6 +87,49 @@ create policy "Users can delete their own strategies"
 -- No anon policy at all: signed-out visitors see only the built-in default.
 
 -- ---------------------------------------------------------------------------
+-- Strategy Creator: saved AI-Optimize runs (PRIVATE per user)
+-- ---------------------------------------------------------------------------
+-- Each AI-Optimize call costs real tokens (system prompt + leaderboard per
+-- round). Without persistence, the resulting leaderboard vanished on
+-- refresh, forcing a full re-run (and re-spend) just to look at it again.
+-- Saving the whole run — base config, every variant tried, and the winner —
+-- lets a user revisit or reuse past results for free.
+
+create table if not exists public.optimizations (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  base_config jsonb not null,
+  base_config_name text not null,
+  rounds integer not null,
+  data_source text not null,
+  history jsonb not null,
+  best_config jsonb not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists optimizations_user_id_idx on public.optimizations (user_id, created_at desc);
+
+alter table public.optimizations enable row level security;
+
+create policy "Users can read their own optimizations"
+  on public.optimizations
+  for select
+  to authenticated
+  using (auth.uid() = user_id);
+
+create policy "Users can insert their own optimizations"
+  on public.optimizations
+  for insert
+  to authenticated
+  with check (auth.uid() = user_id);
+
+create policy "Users can delete their own optimizations"
+  on public.optimizations
+  for delete
+  to authenticated
+  using (auth.uid() = user_id);
+
+-- ---------------------------------------------------------------------------
 -- Strategy Creator / live bot: saved Tradovate account names (PRIVATE per user)
 -- ---------------------------------------------------------------------------
 -- Lets each user enter and manage the Tradovate account name(s) they trade,
