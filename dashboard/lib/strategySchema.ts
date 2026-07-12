@@ -295,7 +295,7 @@ export const STRATEGY_JSON_SCHEMA = {
         hardCutoff: { type: "string", description: 'No new entries after this ET time, 24h "HH:MM"' },
         additionalSessions: {
           type: "array",
-          maxItems: 3,
+          // no maxItems: the structured-outputs grammar rejects it; zod's .max(3) enforces the cap after parsing
           description:
             "Optional extra session windows traded the same way with their own open-candle anchor (e.g. London open 03:00-04:30 ET). Daily trade/loss caps span all sessions. Omit unless the user asks for extra sessions.",
           items: {
@@ -319,7 +319,7 @@ export const STRATEGY_JSON_SCHEMA = {
       properties: {
         excludeDates: {
           type: "array",
-          maxItems: 500,
+          // no maxItems: the structured-outputs grammar rejects it; zod's .max(500) enforces the cap after parsing
           description: 'Dates to skip entirely (red-folder news days etc.), "YYYY-MM-DD". Only use dates the user explicitly provided.',
           items: { type: "string" },
         },

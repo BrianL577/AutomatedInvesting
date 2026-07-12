@@ -31,7 +31,17 @@ function fmtMoney(n: number): string {
   return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-/** One stat tile with a plain-English hover explanation (native tooltip). */
+/** ⓘ icon with a themed tooltip bubble shown on hover. */
+function Hint({ text }: { text: string }) {
+  return (
+    <span className="hint-wrap">
+      <span className="hint-icon" tabIndex={0}>ⓘ</span>
+      <span className="hint-pop" role="tooltip">{text}</span>
+    </span>
+  );
+}
+
+/** One stat tile with a plain-English hover explanation. */
 function StatCard({
   label,
   hint,
@@ -44,11 +54,12 @@ function StatCard({
   tone?: "positive" | "negative" | "";
 }) {
   return (
-    <div className="stat-card stat-card-hint" title={hint}>
+    <div className="stat-card stat-card-hint">
       <div className="label">
         {label} <span className="hint-icon">ⓘ</span>
       </div>
       <div className={`value ${tone ?? ""}`}>{value}</div>
+      <span className="hint-pop" role="tooltip">{hint}</span>
     </div>
   );
 }
@@ -99,7 +110,33 @@ export default function StrategiesPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Chat failed");
-      setChat([...nextChat, { role: "assistant", content: data.reply, config: data.config ?? null }]);
+      const withReply: ChatMessage[] = [...nextChat, { role: "assistant", content: data.reply, config: data.config ?? null }];
+      setChat(withReply);
+      // If Claude attached a concrete config, immediately test it against the
+      // historical data and post the numbers back into the conversation —
+      // "what happens if I do X" gets a real answer, not a hypothesis.
+      if (data.config) {
+        setBusy("backtesting");
+        try {
+          const btRes = await fetch("/api/backtest", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ config: data.config }),
+          });
+          const bt = await btRes.json();
+          if (btRes.ok) {
+            const summary =
+              `Backtest of "${data.config.name}" against ${bt.dataSource === "supabase" ? "real historical" : "synthetic sample"} data:\n` +
+              `• Real-money bottom line: ${fmtMoney(bt.realWorldNetPnl)} (${fmtMoney(bt.realWorldCashPayouts)} in payouts − ${fmtMoney(bt.realWorldFeesPaid)} in fees)\n` +
+              `• ${bt.chronologicalAttempts} account(s) bought, ${bt.timesFunded} reached funded\n` +
+              `• Win rate ${bt.winRate.toFixed(1)}% over ${bt.totalTrades} trades\n` +
+              `Load it as a draft below to see the full breakdown, or keep refining it here.`;
+            setChat([...withReply, { role: "assistant", content: summary, config: null }]);
+          }
+        } catch {
+          // Auto-backtest is best-effort; the config button still works.
+        }
+      }
     } catch (err: any) {
       setMessage({ kind: "error", text: err.message });
       setChat(chat); // roll back the optimistic user turn so it can be retried
@@ -366,15 +403,15 @@ export default function StrategiesPage() {
               </div>
               <p className="strategy-desc">{activeConfig.description}</p>
               <div className="rule-grid">
-                <div className="rule"><span>Session</span>{activeConfig.session.open}–{activeConfig.session.hardCutoff} ET</div>
-                <div className="rule"><span>Continuation</span>{activeConfig.phases.tradeContinuation ? `first ${activeConfig.phases.continuationEndMin} min` : "off"}</div>
-                <div className="rule"><span>Reversion</span>{activeConfig.phases.tradeReversion ? `until ${activeConfig.phases.reversionEndMin} min (≥${activeConfig.entry.minExtensionPoints} pts ext.)` : "off"}</div>
-                <div className="rule"><span>Stop / Target</span>{activeConfig.risk.stopPoints} / {activeConfig.risk.targetPoints} pts</div>
-                <div className="rule"><span>Trade caps</span>{activeConfig.risk.maxTradesPerDay}/day, stop after {activeConfig.risk.stopAfterConsecutiveLosses} losses</div>
-                <div className="rule"><span>Daily $ caps</span>+${activeConfig.risk.dailyProfitCap} / −${activeConfig.risk.dailyLossCap}</div>
-                <div className="rule"><span>Displacement</span>≥{activeConfig.entry.displacementSizeRatio}× avg TR, wick ≤ {Math.round(activeConfig.entry.maxWickRatio * 100)}%</div>
-                <div className="rule"><span>Structure</span>{activeConfig.entry.structureLookbackMin} min lookback, +{activeConfig.entry.breakBufferPoints} pt buffer</div>
-                <div className="rule"><span>Eval sim</span>${activeConfig.eval.accountSize.toLocaleString()} acct, +${activeConfig.eval.profitTarget.toLocaleString()} target, ${activeConfig.eval.trailingMaxDrawdown.toLocaleString()} trailing DD</div>
+                <div className="rule"><span>Session <Hint text="The time window when trading happens (ET). The candle at the open sets the day's 'fair price'; no new trades after the cutoff." /></span>{activeConfig.session.open}–{activeConfig.session.hardCutoff} ET</div>
+                <div className="rule"><span>Continuation <Hint text="Whether the strategy trades in the same direction as the opening move, and for how many minutes after the open." /></span>{activeConfig.phases.tradeContinuation ? `first ${activeConfig.phases.continuationEndMin} min` : "off"}</div>
+                <div className="rule"><span>Reversion <Hint text="Whether the strategy bets on price coming back toward the opening price after it has stretched far enough away, and until when." /></span>{activeConfig.phases.tradeReversion ? `until ${activeConfig.phases.reversionEndMin} min (≥${activeConfig.entry.minExtensionPoints} pts ext.)` : "off"}</div>
+                <div className="rule"><span>Stop / Target <Hint text="How many NQ points a trade loses before it's cut (stop) or gains before it's cashed in (target). On NQ, 1 point = $20 per contract." /></span>{activeConfig.risk.stopPoints} / {activeConfig.risk.targetPoints} pts</div>
+                <div className="rule"><span>Trade caps <Hint text="The most trades allowed per day, and an early quit rule after too many losses in a row." /></span>{activeConfig.risk.maxTradesPerDay}/day, stop after {activeConfig.risk.stopAfterConsecutiveLosses} losses</div>
+                <div className="rule"><span>Daily $ caps <Hint text="Stop trading for the day once profit reaches the + number or loss reaches the − number." /></span>+${activeConfig.risk.dailyProfitCap} / −${activeConfig.risk.dailyLossCap}</div>
+                <div className="rule"><span>Displacement <Hint text="How big and clean a price candle must be before the strategy treats it as a real move worth entering on (big body, small wicks)." /></span>≥{activeConfig.entry.displacementSizeRatio}× avg TR, wick ≤ {Math.round(activeConfig.entry.maxWickRatio * 100)}%</div>
+                <div className="rule"><span>Structure <Hint text="How far back it scans for recent highs/lows, and how far price must break past them to count as a genuine breakout." /></span>{activeConfig.entry.structureLookbackMin} min lookback, +{activeConfig.entry.breakBufferPoints} pt buffer</div>
+                <div className="rule"><span>Eval sim <Hint text="The simulated prop-firm account: its size, the profit needed to pass the eval, and the trailing drawdown that busts it." /></span>${activeConfig.eval.accountSize.toLocaleString()} acct, +${activeConfig.eval.profitTarget.toLocaleString()} target, ${activeConfig.eval.trailingMaxDrawdown.toLocaleString()} trailing DD</div>
               </div>
 
               {result && (
@@ -388,7 +425,7 @@ export default function StrategiesPage() {
                     </span>
                   </div>
                   <div className="bt-results-header">
-                    <h3 title="Trades made while the simulated account was still trying to hit the eval profit target">While in Eval <span className="hint-icon">ⓘ</span></h3>
+                    <h3>While in Eval <Hint text="Trades made while the simulated account was still trying to hit the eval profit target." /></h3>
                   </div>
                   <div className="stat-grid">
                     <StatCard
@@ -411,7 +448,7 @@ export default function StrategiesPage() {
                   </div>
 
                   <div className="bt-results-header" style={{ marginTop: 20 }}>
-                    <h3 title="Trades made after the account reached funded status — this performance is what actually generates real payouts">Once Funded <span className="hint-icon">ⓘ</span></h3>
+                    <h3>Once Funded <Hint text="Trades made after the account reached funded status — this performance is what actually generates real payouts." /></h3>
                   </div>
                   <div className="stat-grid">
                     <StatCard
@@ -434,7 +471,7 @@ export default function StrategiesPage() {
                   </div>
 
                   <div className="bt-results-header" style={{ marginTop: 20 }}>
-                    <h3 title="Actual money in and out of your pocket: $50 per eval/reactivation, payouts at 50% share ($2,000 cap per event, 50% single-day consistency rule). Verify these against the firm's current rules.">Real Money <span className="hint-icon">ⓘ</span></h3>
+                    <h3>Real Money <Hint text="Actual money in and out of your pocket: $50 per eval/reactivation, payouts at 50% share ($2,000 cap per event, 50% single-day consistency rule). Verify these against the firm's current rules." /></h3>
                   </div>
                   <div className="stat-grid">
                     <StatCard
@@ -451,7 +488,7 @@ export default function StrategiesPage() {
                     />
                     <StatCard
                       label="Payouts Received"
-                      hint="Real cash withdrawn from funded accounts (50% profit share, max $2,000 per payout, only when no single day made over half the profit)."
+                      hint="Real cash withdrawn from funded accounts. Each payout is 50% of the funded profit at the moment it triggers, capped at $2,000 — so it's usually less than $2,000 (e.g. a payout triggering at $3,600 profit pays $1,800). It also only counts when no single day made over half the profit."
                       value={fmtMoney(result.realWorldCashPayouts)}
                       tone="positive"
                     />
@@ -545,9 +582,9 @@ export default function StrategiesPage() {
                       <thead>
                         <tr>
                           <th>#</th>
-                          <th title="Claude's one-sentence hypothesis for why this variant might do better">What was tried</th>
-                          <th title="Percentage of all trades that won">Win Rate</th>
-                          <th title="Real cash: payouts received minus fees paid. Positive = profitable.">Bottom Line</th>
+                          <th>What was tried <Hint text="Claude's one-sentence hypothesis for why this variant might do better." /></th>
+                          <th>Win Rate <Hint text="Percentage of all trades that won." /></th>
+                          <th>Bottom Line <Hint text="Real cash: payouts received minus fees paid. Positive = profitable." /></th>
                           <th></th>
                         </tr>
                       </thead>
