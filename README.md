@@ -32,7 +32,7 @@ account**. Three brokers are supported:
 4. **Entry trigger**: a "displacement" candle — range notably larger than the
    recent average / previous candle, with small wicks — that closes beyond a
    recent swing high/low (break of structure).
-5. **Risk**: fixed 1 : 1.5 R:R (default 25 pt stop / 38 pt target on NQ),
+5. **Risk**: fixed R:R (default 50 pt stop / 64.5 pt target on NQ — $1,000 / $1,290),
    configurable in `config.yaml`.
 6. **Trade caps**: max 3–4 trades/day, stop after 2 consecutive losses, no new
    entries after the configured session cutoff (default 11:00 AM ET).

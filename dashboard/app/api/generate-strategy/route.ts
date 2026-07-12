@@ -31,7 +31,7 @@ The engine's fixed rule library (you can only tune its parameters, not invent ne
 
 Guidelines:
 - Map the user's intent onto these parameters as faithfully as possible. If they describe a mechanic the engine cannot express (e.g. VWAP, order flow, news filters), approximate it with the closest available parameters and say so in the description field.
-- Use sensible defaults for anything unspecified (reference: stop 25 / target 38, max 4 trades/day, 09:30 open, 11:00 cutoff, $1520/$1000 daily caps, 50k eval with +3000 target and 2000 trailing drawdown).
+- Use sensible defaults for anything unspecified (reference: stop 50 / target 64.5 [$1,000/$1,290 on NQ], max 4 trades/day, 09:30 open, 11:00 cutoff, $1520/$1000 daily caps, 50k eval with +3000 target and 2000 trailing drawdown).
 - Keep values realistic for NQ 1-minute data: stops 5-100 points, targets 5-200 points, ratios near 1.
 - The description field must summarize, in plain English, the exact rules this config encodes — including any approximations you made.
 - Times are 24h ET "HH:MM". Never disable both tradeContinuation and tradeReversion.`;
