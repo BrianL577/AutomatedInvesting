@@ -348,10 +348,12 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
     let floor = balance - cfg.eval.trailingMaxDrawdown;
     let funded = false;
     let fundedHighWater = 0;
+    let fundedWindowDailyPnls: number[] = [];
     let busted = false;
 
     for (; d < days.length; d++) {
       balance += dailyPnl[d];
+      if (funded) fundedWindowDailyPnls.push(dailyPnl[d]);
       if (balance <= floor) {
         busted = true;
         d++;
@@ -365,13 +367,22 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
         funded = true;
         timesFunded++;
         fundedHighWater = balance;
+        fundedWindowDailyPnls = [];
       }
       if (funded) {
         const fundedProfit = balance - fundedHighWater;
         if (fundedProfit >= fundedThreshold) {
-          const payout = Math.min(maxPayout, fundedProfit * payoutShare);
-          cashPayouts += payout;
-          fundedHighWater = balance; // reset so further profit can trigger another payout
+          // 50% consistency rule: no single day in this funded window can
+          // account for more than half the window's total profit, or the
+          // payout doesn't qualify yet — keep accruing until it does.
+          const maxSingleDayProfit = Math.max(0, ...fundedWindowDailyPnls);
+          const consistent = maxSingleDayProfit <= fundedProfit * 0.5;
+          if (consistent) {
+            const payout = Math.min(maxPayout, fundedProfit * payoutShare);
+            cashPayouts += payout;
+            fundedHighWater = balance; // reset so further profit can trigger another payout
+            fundedWindowDailyPnls = [];
+          }
         }
       }
     }
