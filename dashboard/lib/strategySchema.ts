@@ -58,6 +58,18 @@ export const StrategyConfigSchema = z
         accountSize: z.number().min(1000).max(1000000),
         profitTarget: z.number().min(100).max(100000),
         trailingMaxDrawdown: z.number().min(100).max(100000),
+        // Real-world prop-firm economics — optional/backward-compatible so
+        // older saved strategies (and AI-generated configs that omit them)
+        // still validate; runBacktest() applies defaults when absent. These
+        // default to what the user described for TopStep-style firms, but
+        // exact current fees/thresholds vary by firm and change over time —
+        // verify against the actual firm's current rules before trusting
+        // the "real-world" dollar figures for a real decision.
+        evalFeeDollars: z.number().min(0).max(10000).optional(),
+        reactivationFeeDollars: z.number().min(0).max(10000).optional(),
+        fundedProfitThreshold: z.number().min(0).max(1000000).optional(),
+        payoutShareRatio: z.number().min(0).max(1).optional(),
+        maxPayoutPerEvent: z.number().min(0).max(1000000).optional(),
       })
       .strict(),
   })

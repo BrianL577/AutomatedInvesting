@@ -59,6 +59,16 @@ export type BacktestResult = {
   avgDaysToEvalResult: number;
   daysHitProfitCap: number;
   daysHitLossCap: number;
+  // Real-world prop-firm economics: a single chronological walk through the
+  // whole period (not the per-start-day probability sweep above), tracking
+  // actual eval/reactivation fees paid and actual funded-stage cash payouts
+  // received. See StrategyConfig.eval's fee/payout fields for the
+  // assumptions this uses — verify against the real firm's current rules.
+  realWorldFeesPaid: number; // $
+  realWorldCashPayouts: number; // $
+  realWorldNetPnl: number; // $ (payouts - fees; the actual money that changed hands)
+  chronologicalAttempts: number; // how many eval attempts were actually bought, in order
+  timesFunded: number; // how many times an attempt reached the funded stage
 };
 
 // ---------- time helpers (all wall-clock America/New_York) ----------
@@ -307,6 +317,67 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
     daysToResult.push(n);
   }
 
+  // Real-world economics: one chronological pass through the whole period.
+  // Buy an eval ($evalFeeDollars); on bust, pay $reactivationFeeDollars and
+  // start a new attempt the next day; on reaching the profit target, switch
+  // to "funded" and keep playing the same trailing-drawdown rule forward.
+  // Once funded cumulative profit crosses fundedProfitThreshold, take one
+  // payout of min(maxPayoutPerEvent, profit * payoutShareRatio) and reset
+  // the funded high-water mark to current balance (so further profit above
+  // that can trigger another payout later) — a simplification of real
+  // prop-firm payout windows/scaling, not an exact model of any one firm.
+  const evalFee = cfg.eval.evalFeeDollars ?? 50;
+  const reactivationFee = cfg.eval.reactivationFeeDollars ?? 50;
+  const fundedThreshold = cfg.eval.fundedProfitThreshold ?? 3500;
+  const payoutShare = cfg.eval.payoutShareRatio ?? 0.5;
+  const maxPayout = cfg.eval.maxPayoutPerEvent ?? 2000;
+
+  let feesPaid = 0;
+  let cashPayouts = 0;
+  let chronologicalAttempts = 0;
+  let timesFunded = 0;
+  let d = 0;
+  let firstAttempt = true;
+  while (d < days.length) {
+    chronologicalAttempts++;
+    feesPaid += firstAttempt ? evalFee : reactivationFee;
+    firstAttempt = false;
+
+    let balance = cfg.eval.accountSize;
+    let highWater = balance;
+    let floor = balance - cfg.eval.trailingMaxDrawdown;
+    let funded = false;
+    let fundedHighWater = 0;
+    let busted = false;
+
+    for (; d < days.length; d++) {
+      balance += dailyPnl[d];
+      if (balance <= floor) {
+        busted = true;
+        d++;
+        break;
+      }
+      if (balance > highWater) {
+        highWater = balance;
+        floor = Math.min(highWater - cfg.eval.trailingMaxDrawdown, cfg.eval.accountSize);
+      }
+      if (!funded && balance >= cfg.eval.accountSize + cfg.eval.profitTarget) {
+        funded = true;
+        timesFunded++;
+        fundedHighWater = balance;
+      }
+      if (funded) {
+        const fundedProfit = balance - fundedHighWater;
+        if (fundedProfit >= fundedThreshold) {
+          const payout = Math.min(maxPayout, fundedProfit * payoutShare);
+          cashPayouts += payout;
+          fundedHighWater = balance; // reset so further profit can trigger another payout
+        }
+      }
+    }
+    if (!busted) break; // ran out of data mid-attempt, nothing more to simulate
+  }
+
   const wins = allTrades.filter((t) => t.win);
   const losses = allTrades.filter((t) => !t.win);
   const totalGained = wins.reduce((s, t) => s + t.pnlDollars, 0);
@@ -347,5 +418,10 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
       : 0,
     daysHitProfitCap,
     daysHitLossCap,
+    realWorldFeesPaid: round2(feesPaid),
+    realWorldCashPayouts: round2(cashPayouts),
+    realWorldNetPnl: round2(cashPayouts - feesPaid),
+    chronologicalAttempts,
+    timesFunded,
   };
 }
