@@ -144,11 +144,11 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
     "reversion back toward the opening price until 90 minutes in. Trades the 8:30 ET news window, the " +
     "9:30 NY open, the 2:00pm NY PM session, and the 8:00pm Asian open — more sessions means more " +
     "attempts per day. Entries require a displacement candle (large true range, small wicks) that breaks " +
-    "and closes through recent swing structure. Static bracket exits, never moved: 45pt stop / 35pt " +
-    "target on 3 contracts ($2,700 / $2,100 on NQ, ~0.78 R:R), one trade per account per day — the " +
-    "trade runs to either the full stop or the full target, no early exits. Chosen via AI-Optimize for " +
-    "backtested real-money profit over the prior 1:1.5 geometry; NOTE the $2,700 max single-trade loss " +
-    "exceeds eval.trailingMaxDrawdown ($2,000) below, so one bad trade can bust the eval account outright.",
+    "and closes through recent swing structure. Static bracket exits, never moved: 25pt stop / 38pt " +
+    "target on 2 contracts ($1,000 / $1,520 on NQ), one trade per account per day — the trade runs to " +
+    "either the full stop or the full target, no early exits. Sized deliberately around the real " +
+    "Topstep account rules: $1,000 loss x 2 losing days = the $2,000 trailing drawdown limit exactly; " +
+    "$1,520 gain x 2 winning days = $3,040, clearing the $3,000 profit target with margin.",
   session: {
     open: "09:30",
     hardCutoff: "11:00",
@@ -174,13 +174,13 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
     minExtensionPoints: 12,
   },
   risk: {
-    stopPoints: 45,
-    targetPoints: 35,
+    stopPoints: 25,
+    targetPoints: 38,
     maxTradesPerDay: 1,
     stopAfterConsecutiveLosses: 2,
-    contractsPerTrade: 3,
-    dailyProfitCap: 2100,
-    dailyLossCap: 2700,
+    contractsPerTrade: 2,
+    dailyProfitCap: 1520,
+    dailyLossCap: 1000,
   },
   eval: {
     accountSize: 50000,
