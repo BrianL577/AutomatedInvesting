@@ -156,6 +156,8 @@ export default function StrategiesPage() {
   const [resultFor, setResultFor] = useState("");
   const [optimizeRounds, setOptimizeRounds] = useState(3);
   const [optimizeResult, setOptimizeResult] = useState<OptimizeResponse | null>(null);
+  const [optimizeBaseConfig, setOptimizeBaseConfig] = useState<StrategyConfig | null>(null);
+  const [optimizeSaved, setOptimizeSaved] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<StrategyConfig | null>(null);
 
@@ -260,6 +262,7 @@ export default function StrategiesPage() {
     setBusy("optimizing");
     setMessage(null);
     setOptimizeResult(null);
+    setOptimizeSaved(false);
     try {
       const res = await fetch("/api/optimize", {
         method: "POST",
@@ -269,10 +272,38 @@ export default function StrategiesPage() {
       const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Optimization failed");
       setOptimizeResult(data);
+      setOptimizeBaseConfig(activeConfig);
       setMessage({
         kind: "ok",
-        text: `Tried ${data.history.length} variant(s) across ${optimizeRounds} round(s). Review the leaderboard below, then "Use This Config" on the best one to load it as a draft.`,
+        text: `Tried ${data.history.length} variant(s) across ${optimizeRounds} round(s). Review the leaderboard below, then "Use This Config" on the best one to load it as a draft — or Save This Run so it's here next time without spending tokens again.`,
       });
+    } catch (err: any) {
+      setMessage({ kind: "error", text: err.message });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function saveOptimizationRun() {
+    if (!optimizeResult || !optimizeBaseConfig) return;
+    setBusy("saving");
+    setMessage(null);
+    try {
+      const res = await fetch("/api/optimizations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseConfig: optimizeBaseConfig,
+          rounds: optimizeRounds,
+          dataSource: optimizeResult.dataSource,
+          history: optimizeResult.history,
+          bestConfig: optimizeResult.bestConfig,
+        }),
+      });
+      const data = await readJson(res);
+      if (!res.ok) throw new Error(data.error || "Save failed");
+      setOptimizeSaved(true);
+      setMessage({ kind: "ok", text: "Optimization run saved — find it under the Optimizations tab anytime, no re-run needed." });
     } catch (err: any) {
       setMessage({ kind: "error", text: err.message });
     } finally {
@@ -604,6 +635,9 @@ export default function StrategiesPage() {
                     <NumField label="Account size ($)" hint="Simulated prop-firm account starting balance." value={editForm.eval.accountSize} onChange={(v) => setEditField("eval", "accountSize", v)} step={1000} min={1000} max={1000000} />
                     <NumField label="Profit target ($)" hint="Profit needed to pass the eval." value={editForm.eval.profitTarget} onChange={(v) => setEditField("eval", "profitTarget", v)} step={100} min={100} max={100000} />
                     <NumField label="Trailing max drawdown ($)" hint="Balance drop from peak that busts the account — a single trade's max loss must stay under this." value={editForm.eval.trailingMaxDrawdown} onChange={(v) => setEditField("eval", "trailingMaxDrawdown", v)} step={100} min={100} max={100000} />
+                    <NumField label="Funded payout threshold ($)" hint="Cumulative profit needed, once funded, before a cash payout unlocks." value={editForm.eval.fundedProfitThreshold ?? 4000} onChange={(v) => setEditField("eval", "fundedProfitThreshold", v)} step={100} min={0} max={1000000} />
+                    <NumField label="Payout share (0-1)" hint="Fraction of funded profit paid out when a payout triggers (e.g. 0.5 = 50%)." value={editForm.eval.payoutShareRatio ?? 0.5} onChange={(v) => setEditField("eval", "payoutShareRatio", v)} step={0.05} min={0} max={1} />
+                    <NumField label="Max payout per event ($)" hint="Hard cap on a single payout, regardless of the share calculation." value={editForm.eval.maxPayoutPerEvent ?? 2000} onChange={(v) => setEditField("eval", "maxPayoutPerEvent", v)} step={100} min={0} max={1000000} />
                   </div>
                 </div>
               )}
@@ -665,7 +699,7 @@ export default function StrategiesPage() {
                   </div>
 
                   <div className="bt-results-header" style={{ marginTop: 20 }}>
-                    <h3>Real Money <Hint text="Actual money in and out of your pocket: $50 per eval/reactivation, payouts at 50% share ($2,000 cap per event, 50% single-day consistency rule). Verify these against the firm's current rules." /></h3>
+                    <h3>Real Money <Hint text="Actual money in and out of your pocket: $50 per eval/reactivation, and once funded, $4,000 cumulative profit unlocks a payout at 50% share, capped at $2,000 per event (50% single-day consistency rule). Verify these against the firm's current rules." /></h3>
                   </div>
                   <div className="stat-grid">
                     <StatCard
@@ -801,11 +835,16 @@ export default function StrategiesPage() {
 
               {optimizeResult && (
                 <div className="bt-results">
-                  <p className="bt-explainer">
-                    Claude proposed parameter tweaks each round based on how prior variants actually performed against
-                    your real historical data. <strong>Profitable</strong> simply means the real-money bottom line
-                    (payouts minus fees) came out positive.
-                  </p>
+                  <div className="bt-results-header">
+                    <p className="bt-explainer" style={{ margin: 0 }}>
+                      Claude proposed parameter tweaks each round based on how prior variants actually performed against
+                      your real historical data. <strong>Profitable</strong> simply means the real-money bottom line
+                      (payouts minus fees) came out positive.
+                    </p>
+                    <button className="btn" onClick={saveOptimizationRun} disabled={busy !== "" || optimizeSaved}>
+                      {optimizeSaved ? "Saved ✓" : busy === "saving" ? "Saving…" : "Save This Run"}
+                    </button>
+                  </div>
                   {optimizeResult.warning && (
                     <div className="test-status test-status-error">{optimizeResult.warning}</div>
                   )}

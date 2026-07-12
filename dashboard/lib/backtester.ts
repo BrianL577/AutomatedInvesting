@@ -444,7 +444,9 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
   // prop-firm payout windows/scaling, not an exact model of any one firm.
   const evalFee = cfg.eval.evalFeeDollars ?? 50;
   const reactivationFee = cfg.eval.reactivationFeeDollars ?? 50;
-  const fundedThreshold = cfg.eval.fundedProfitThreshold ?? 3000;
+  // $4,000 funded profit unlocks a payout, capped at $2,000 (50% share) —
+  // per the user's real account rules.
+  const fundedThreshold = cfg.eval.fundedProfitThreshold ?? 4000;
   const payoutShare = cfg.eval.payoutShareRatio ?? 0.5;
   const maxPayout = cfg.eval.maxPayoutPerEvent ?? 2000;
 

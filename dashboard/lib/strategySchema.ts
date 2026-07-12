@@ -186,6 +186,11 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
     accountSize: 50000,
     profitTarget: 3000,
     trailingMaxDrawdown: 2000,
+    // Once funded, $4,000 cumulative profit unlocks a payout capped at
+    // $2,000 (50% share) — the user's real account's cash-out rule.
+    fundedProfitThreshold: 4000,
+    payoutShareRatio: 0.5,
+    maxPayoutPerEvent: 2000,
   },
 };
 
@@ -219,10 +224,13 @@ export function survivabilityViolation(cfg: Pick<StrategyConfig, "risk" | "eval"
  */
 /** A proposed tweak on top of a base config, for the AI-guided optimizer
  * (see app/api/optimize/route.ts). Only touches the parameters that affect
- * signal quality (phases/entry/risk) — deliberately excludes session,
- * eval, filters, and portfolio, which are account/rule-set decisions, not
- * things a search should be free to drift on. All fields optional: only
- * include what you're changing from the base. */
+ * WHICH trades get taken (phases/entry) — deliberately excludes risk
+ * (stop/target/contracts/trade-caps/$ caps), session, eval, filters, and
+ * portfolio. Risk sizing is the user's own locked rule (e.g. exactly 2
+ * contracts, 25pt stop / 38pt target, one trade/day), not a search
+ * dimension — the optimizer can only ever make the entry signal more or
+ * less selective, never change what a trade costs or pays. All fields
+ * optional: only include what you're changing from the base. */
 export const StrategyVariantSchema = z
   .object({
     rationale: z.string().max(300),
@@ -244,18 +252,6 @@ export const StrategyVariantSchema = z
         swingStrength: z.number().int().min(1).max(10).optional(),
         breakBufferPoints: z.number().min(0).max(50).optional(),
         minExtensionPoints: z.number().min(0).max(500).optional(),
-      })
-      .strict()
-      .optional(),
-    risk: z
-      .object({
-        stopPoints: z.number().min(1).max(500).optional(),
-        targetPoints: z.number().min(1).max(1000).optional(),
-        maxTradesPerDay: z.number().int().min(1).max(20).optional(),
-        stopAfterConsecutiveLosses: z.number().int().min(1).max(10).optional(),
-        contractsPerTrade: z.number().int().min(1).max(10).optional(),
-        dailyProfitCap: z.number().min(0).max(100000).optional(),
-        dailyLossCap: z.number().min(0).max(100000).optional(),
       })
       .strict()
       .optional(),
@@ -294,19 +290,6 @@ export const STRATEGY_VARIANT_BATCH_JSON_SCHEMA = {
               swingStrength: { type: "integer" },
               breakBufferPoints: { type: "number" },
               minExtensionPoints: { type: "number" },
-            },
-            additionalProperties: false,
-          },
-          risk: {
-            type: "object",
-            properties: {
-              stopPoints: { type: "number" },
-              targetPoints: { type: "number" },
-              maxTradesPerDay: { type: "integer" },
-              stopAfterConsecutiveLosses: { type: "integer" },
-              contractsPerTrade: { type: "integer" },
-              dailyProfitCap: { type: "number" },
-              dailyLossCap: { type: "number" },
             },
             additionalProperties: false,
           },
