@@ -542,6 +542,36 @@ export default function StrategiesPage() {
                     )}
                   </details>
 
+                  <details className="bt-pooled-details">
+                    <summary>Breakdown by phase &amp; session — spot which entries drag win rate down</summary>
+                    <div style={{ marginTop: 12 }}>
+                      <p style={{ opacity: 0.7, fontSize: "0.85em", marginBottom: 8 }}>By phase</p>
+                      <div className="stat-grid">
+                        {result.byPhase.map((g) => (
+                          <div className="stat-card" key={g.key}>
+                            <div className="label">{g.key}</div>
+                            <div className={`value ${g.winRate >= 50 ? "positive" : "negative"}`}>{g.winRate.toFixed(1)}%</div>
+                            <div style={{ fontSize: "0.8em", opacity: 0.7, marginTop: 4 }}>
+                              {g.trades} trades ({g.wins}/{g.losses}) · {fmtMoney(g.netPnl)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <p style={{ opacity: 0.7, fontSize: "0.85em", margin: "16px 0 8px" }}>By session open</p>
+                      <div className="stat-grid">
+                        {result.bySession.map((g) => (
+                          <div className="stat-card" key={g.key}>
+                            <div className="label">{g.key} ET</div>
+                            <div className={`value ${g.winRate >= 50 ? "positive" : "negative"}`}>{g.winRate.toFixed(1)}%</div>
+                            <div style={{ fontSize: "0.8em", opacity: 0.7, marginTop: 4 }}>
+                              {g.trades} trades ({g.wins}/{g.losses}) · {fmtMoney(g.netPnl)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </details>
+
                   {result.portfolio && (
                     <>
                       <div className="bt-results-header" style={{ marginTop: 20 }}>

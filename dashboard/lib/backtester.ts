@@ -26,6 +26,10 @@ export type SimTrade = {
   entryTime: string;
   exitTime: string;
   phase: "continuation" | "reversion";
+  // The "HH:MM" ET session-open anchor this trade belongs to (session.open,
+  // or one of session.additionalSessions) — lets results be broken down by
+  // which session window produced them.
+  sessionOpen: string;
   direction: "long" | "short";
   entry: number;
   exit: number;
@@ -35,6 +39,18 @@ export type SimTrade = {
   pnlPoints: number;
   pnlDollars: number;
   reason: string;
+};
+
+/** Win rate / P&L broken down by a grouping key (phase or session), so a
+ * caller can see e.g. "reversion trades are dragging win rate down" or
+ * "the 8pm Asian session is unprofitable" instead of only a pooled total. */
+export type GroupBreakdown = {
+  key: string;
+  trades: number;
+  wins: number;
+  losses: number;
+  winRate: number; // 0-100
+  netPnl: number; // $
 };
 
 export type StageSummary = {
@@ -92,6 +108,12 @@ export type BacktestResult = {
   // it perform once funded" as two separate simulations.
   evalStage: StageSummary;
   fundedStage: StageSummary;
+  // Win rate / P&L split by entry phase and by session-open anchor, computed
+  // over all pooled trades — helps identify e.g. "reversion trades are
+  // dragging win rate below breakeven" or "the 8pm session is unprofitable"
+  // without having to eyeball the raw trade list.
+  byPhase: GroupBreakdown[];
+  bySession: GroupBreakdown[];
   // Portfolio-of-accounts economics (null unless the strategy config sets
   // portfolio.accountCount > 1): N staggered accounts, each with its own
   // eval lifecycle, optionally restricted to one trade per day.
@@ -167,7 +189,7 @@ function simulateDay(dayBars: Bar[], cfg: StrategyConfig): { trades: SimTrade[];
   const trades: SimTrade[] = [];
   let incompleteTrades = 0;
   for (const w of windows) {
-    const result = simulateSession(dayBars, cfg, hhmmToMinutes(w.open), hhmmToMinutes(w.hardCutoff), state);
+    const result = simulateSession(dayBars, cfg, hhmmToMinutes(w.open), hhmmToMinutes(w.hardCutoff), state, w.open);
     trades.push(...result.trades);
     incompleteTrades += result.incompleteTrades;
   }
@@ -179,7 +201,8 @@ function simulateSession(
   cfg: StrategyConfig,
   openMin: number,
   cutoffMin: number,
-  state: DayRiskState
+  state: DayRiskState,
+  sessionOpen: string
 ): { trades: SimTrade[]; incompleteTrades: number } {
   const trades: SimTrade[] = [];
   let incompleteTrades = 0;
@@ -322,6 +345,7 @@ function simulateSession(
       entryTime: bar.t,
       exitTime,
       phase,
+      sessionOpen,
       direction: dir,
       entry,
       exit,
@@ -577,9 +601,35 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
     maxDrawdown = Math.max(maxDrawdown, peak - equity);
   }
 
+  const groupBy = (keyFn: (t: SimTrade) => string): GroupBreakdown[] => {
+    const groups = new Map<string, SimTrade[]>();
+    for (const t of allTrades) {
+      const k = keyFn(t);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k)!.push(t);
+    }
+    return [...groups.entries()]
+      .map(([key, ts]) => {
+        const w = ts.filter((t) => t.win).length;
+        return {
+          key,
+          trades: ts.length,
+          wins: w,
+          losses: ts.length - w,
+          winRate: ts.length ? round2((w / ts.length) * 100) : 0,
+          netPnl: round2(ts.reduce((s, t) => s + t.pnlDollars, 0)),
+        };
+      })
+      .sort((a, b) => b.trades - a.trades);
+  };
+  const byPhase = groupBy((t) => t.phase);
+  const bySession = groupBy((t) => t.sessionOpen);
+
   return {
     trades: allTrades,
     incompleteTrades,
+    byPhase,
+    bySession,
     totalTrades: allTrades.length,
     wins: wins.length,
     losses: losses.length,
