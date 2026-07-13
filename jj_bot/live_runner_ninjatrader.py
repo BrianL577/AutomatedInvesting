@@ -64,6 +64,8 @@ class NinjaTraderLiveRunner:
             reactivation_fee=te.reactivation_fee,
             monthly_fee=te.monthly_fee,
             activation_fee=te.activation_fee,
+            no_activation_fee_monthly_fee=te.no_activation_fee_monthly_fee,
+            pass_rate_switch_threshold=te.pass_rate_switch_threshold,
             payout_share=te.payout_share,
             max_payout_per_event=te.max_payout_per_event,
             max_payout_balance_share=te.max_payout_balance_share,

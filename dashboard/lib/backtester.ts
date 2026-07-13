@@ -432,9 +432,22 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
   //    busts and a new Combine is purchased.
   const evalFee = cfg.eval.evalFeeDollars ?? 49;
   const reactivationFee = cfg.eval.reactivationFeeDollars ?? 49;
-  const monthlyFee = cfg.eval.monthlyFeeDollars ?? 49;
-  const activationFee = cfg.eval.fundedActivationFeeDollars ?? 149;
   const TRADING_DAYS_PER_MONTH = 21;
+  // Topstep offers TWO pricing plans for the same account size: Standard
+  // ($49/mo, cheaper monthly, but a $149 activation fee if you pass) vs
+  // No-Activation-Fee ($95/mo, pricier monthly, but $0 extra if you pass).
+  // Standard is cheaper per-attempt while you're busting most evals (a
+  // beginner); No-Activation-Fee becomes cheaper once you're passing often
+  // enough that the $149 you'd repeatedly pay outweighs the monthly
+  // difference. Modeled here as: use Standard until your OWN empirical
+  // pass rate so far reaches passRateSwitchThreshold (default 33%), then
+  // switch to No-Activation-Fee for subsequent attempts — matching the
+  // standard trader advice (paper-trade until ~33% pass rate, then switch
+  // plans), not a fixed choice for the whole simulation.
+  const monthlyFeeStandard = cfg.eval.monthlyFeeDollars ?? 49;
+  const monthlyFeeNoActivation = cfg.eval.noActivationFeeMonthlyFeeDollars ?? 95;
+  const activationFeeStandard = cfg.eval.fundedActivationFeeDollars ?? 149;
+  const passRateSwitchThreshold = cfg.eval.passRateSwitchThreshold ?? 0.33;
   const payoutShare = cfg.eval.payoutShareRatio ?? 0.9;
   const maxPayout = cfg.eval.maxPayoutPerEvent ?? 2000;
   const maxPayoutBalanceShare = cfg.eval.maxPayoutBalanceShare ?? 0.5;
@@ -474,6 +487,14 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
       evalDaysSinceLastBill = TRADING_DAYS_PER_MONTH;
       needsFreshSubscription = false;
     }
+
+    // Which pricing plan applies to THIS attempt, based on the empirical
+    // pass rate from every attempt before it (not including this one).
+    const attemptsSoFarExcludingThis = attemptsBought - 1;
+    const empiricalPassRate = attemptsSoFarExcludingThis > 0 ? fundedCount / attemptsSoFarExcludingThis : 0;
+    const usingNoActivationPlan = empiricalPassRate >= passRateSwitchThreshold;
+    const monthlyFee = usingNoActivationPlan ? monthlyFeeNoActivation : monthlyFeeStandard;
+    const activationFee = usingNoActivationPlan ? 0 : activationFeeStandard;
 
     let balance = cfg.eval.accountSize;
     let highWater = balance;

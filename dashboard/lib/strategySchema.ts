@@ -118,8 +118,18 @@ export const StrategyConfigSchema = z
         // directly by the trader whose account this was checked against.
         monthlyFeeDollars: z.number().min(0).max(10000).optional(),
         // One-time fee charged once when you pass and activate the funded
-        // account (Topstep: Express Funded Account activation, $149).
+        // account, ONLY on the Standard plan (Topstep: $149). The
+        // No-Activation-Fee plan (below) charges $0 here instead.
         fundedActivationFeeDollars: z.number().min(0).max(10000).optional(),
+        // Topstep's alternate pricing plan: pricier monthly, but $0
+        // activation fee when you pass. The simulation switches from
+        // Standard to this plan once the empirical pass rate reaches
+        // passRateSwitchThreshold — standard beginner advice: use the
+        // cheap plan while still busting most evals, switch once passing
+        // consistently, since the activation fee saved outweighs the
+        // higher monthly cost at that point.
+        noActivationFeeMonthlyFeeDollars: z.number().min(0).max(10000).optional(),
+        passRateSwitchThreshold: z.number().min(0).max(1).optional(),
         // Per-attempt fee (initial purchase / each bust-reactivation) — see
         // monthlyFeeDollars above, these are additive, not either/or.
         evalFeeDollars: z.number().min(0).max(10000).optional(),

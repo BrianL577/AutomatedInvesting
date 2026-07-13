@@ -58,6 +58,12 @@ topstep_eval:                    # used by the backtester AND the live TopstepEv
   reactivation_fee: 49
   monthly_fee: 49
   activation_fee: 149
+  # Topstep's alternate pricing plan (pricier monthly, $0 activation fee) —
+  # the sim switches from Standard to this once your empirical pass rate
+  # reaches pass_rate_switch_threshold. Standard beginner advice: use the
+  # cheap plan until you're consistently passing, then switch.
+  no_activation_fee_monthly_fee: 95
+  pass_rate_switch_threshold: 0.33
   payout_share: 0.9
   max_payout_per_event: 2000
   max_payout_balance_share: 0.5

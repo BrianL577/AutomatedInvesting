@@ -23,6 +23,7 @@ _STATE_FIELDS = (
     "balance", "high_water", "floor", "funded", "best_day_so_far",
     "effective_profit_target", "winning_days_since_payout", "profit_since_payout",
     "days_since_payout", "best_day_since_payout",
+    "_current_monthly_fee", "_current_activation_fee",
 )
 
 
@@ -40,8 +41,17 @@ class TopstepEvalSimConfig:
     monthly_fee: float = 49
     trading_days_per_month: int = 21
     # One-time fee charged once when an attempt passes and activates the
-    # funded account.
+    # funded account — ONLY on the Standard plan. See no_activation_fee_*
+    # below for the alternate plan (pricier monthly, $0 here instead).
     activation_fee: float = 149
+    # Topstep's alternate pricing plan: pricier monthly, $0 activation fee.
+    # Switches from Standard to this plan once the empirical pass rate
+    # (funded / attempts so far) reaches pass_rate_switch_threshold —
+    # standard beginner advice: cheap plan while still busting most evals,
+    # switch once passing consistently since the activation fee saved then
+    # outweighs the higher monthly cost.
+    no_activation_fee_monthly_fee: float = 95
+    pass_rate_switch_threshold: float = 0.33
     # Funded-stage payout math.
     payout_share: float = 0.9
     max_payout_per_event: float = 2000
@@ -114,6 +124,14 @@ class TopstepEvalSimulator:
             self._eval_days_since_bill = self.cfg.trading_days_per_month
             self._needs_fresh_subscription = False
 
+        # Which pricing plan applies to THIS attempt, based on the
+        # empirical pass rate from every attempt before it.
+        attempts_before_this = self.attempts_bought - 1
+        empirical_pass_rate = self.funded_count / attempts_before_this if attempts_before_this > 0 else 0.0
+        using_no_activation_plan = empirical_pass_rate >= self.cfg.pass_rate_switch_threshold
+        self._current_monthly_fee = self.cfg.no_activation_fee_monthly_fee if using_no_activation_plan else self.cfg.monthly_fee
+        self._current_activation_fee = 0.0 if using_no_activation_plan else self.cfg.activation_fee
+
         self.balance = self.cfg.account_size
         self.high_water = self.balance
         self.floor = self.balance - self.cfg.trailing_max_drawdown
@@ -125,20 +143,23 @@ class TopstepEvalSimulator:
         self.days_since_payout = 0
         self.best_day_since_payout = float("-inf")
 
+        plan_name = "No-Activation-Fee" if self._current_activation_fee == 0 else "Standard"
         logger.info(
-            "%s Attempt #%d started: balance=$%.2f target=$%.2f floor=$%.2f (fees paid so far: $%.2f)",
-            self._tag(), self.attempts_bought, self.balance, self.cfg.profit_target, self.floor, self.fees_paid,
+            "%s Attempt #%d started (%s plan, $%.2f/mo + $%.2f activation): balance=$%.2f target=$%.2f "
+            "floor=$%.2f (fees paid so far: $%.2f)",
+            self._tag(), self.attempts_bought, plan_name, self._current_monthly_fee, self._current_activation_fee,
+            self.balance, self.cfg.profit_target, self.floor, self.fees_paid,
         )
 
     def record_day(self, day_pnl: float) -> None:
         if not self.funded:
             self._eval_days_since_bill += 1
             if self._eval_days_since_bill >= self.cfg.trading_days_per_month:
-                self.fees_paid += self.cfg.monthly_fee
+                self.fees_paid += self._current_monthly_fee
                 self._eval_days_since_bill = 0
                 logger.info(
                     "%s Monthly subscription charged: $%.2f (total fees paid: $%.2f)",
-                    self._tag(), self.cfg.monthly_fee, self.fees_paid,
+                    self._tag(), self._current_monthly_fee, self.fees_paid,
                 )
 
         self.balance += day_pnl
@@ -164,7 +185,7 @@ class TopstepEvalSimulator:
         if not self.funded and self.balance >= self.cfg.account_size + self.effective_profit_target:
             self.funded = True
             self.funded_count += 1
-            self.fees_paid += self.cfg.activation_fee
+            self.fees_paid += self._current_activation_fee
             self.winning_days_since_payout = 0
             self.profit_since_payout = 0.0
             self.days_since_payout = 0
