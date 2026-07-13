@@ -17,7 +17,6 @@ export default async function NavBar() {
             tabs={[
               { href: "/", label: "Dashboard" },
               { href: "/strategies", label: "Strategy Creator" },
-              { href: "/optimizations", label: "Optimizations" },
               { href: "/accounts", label: "My Accounts" },
             ]}
           />

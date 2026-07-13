@@ -347,6 +347,33 @@ tbody tr:hover {
   margin: 4px 4px 10px;
 }
 
+.list-tab-row {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 10px;
+  background: #0f151d;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.list-tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.list-tab-active {
+  background: var(--panel);
+  color: var(--text);
+}
+
 .strategy-item {
   display: flex;
   align-items: center;
