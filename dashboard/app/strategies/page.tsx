@@ -2,10 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { survivabilityViolation, type StrategyConfig, type SavedStrategy } from "../../lib/strategySchema";
-import type { BacktestResult } from "../../lib/backtester";
+import type { BacktestResult, SessionSplitResult } from "../../lib/backtester";
 import type { SavedOptimization } from "../../lib/optimizationStore";
 
-type BacktestResponse = BacktestResult & { dataSource: "supabase" | "sample"; error?: string };
+type BacktestResponse = BacktestResult & {
+  dataSource: "supabase" | "sample";
+  error?: string;
+  sessionSplit: SessionSplitResult | null;
+};
 
 type OptimizeCandidate = {
   round: number;
@@ -157,6 +161,7 @@ export default function StrategiesPage() {
   const [resultFor, setResultFor] = useState("");
   const [optimizeRounds, setOptimizeRounds] = useState(3);
   const [optimizeResult, setOptimizeResult] = useState<OptimizeResponse | null>(null);
+  const [accountCount, setAccountCount] = useState(1);
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<StrategyConfig | null>(null);
   const [listTab, setListTab] = useState<"strategies" | "optimizations">("strategies");
@@ -253,7 +258,7 @@ export default function StrategiesPage() {
       const res = await fetch("/api/backtest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config: activeConfig }),
+        body: JSON.stringify({ config: activeConfig, accountCount }),
       });
       const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Backtest failed");
@@ -673,6 +678,19 @@ export default function StrategiesPage() {
                       <button className="btn btn-primary" onClick={backtest} disabled={busy !== ""}>
                         {busy === "backtesting" ? "Simulating…" : "Run Backtest"}
                       </button>
+                      <label className="accounts-input" title="Accounts: round-robins one trade per session across this many independent accounts (account 1 = first session, account 2 = second, wrapping around).">
+                        <span>Accounts</span>
+                        <input
+                          type="number"
+                          className="test-input"
+                          style={{ width: 56 }}
+                          value={accountCount}
+                          min={1}
+                          max={20}
+                          onChange={(e) => setAccountCount(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
+                          disabled={busy !== ""}
+                        />
+                      </label>
                       <select
                         className="test-input"
                         style={{ width: 140 }}
@@ -972,6 +990,72 @@ export default function StrategiesPage() {
                         </tbody>
                       </table>
                     </div>
+                  )}
+
+                  {result.sessionSplit && (
+                    <>
+                      <div className="bt-results-header" style={{ marginTop: 20 }}>
+                        <h3>
+                          {result.sessionSplit.accountCount} Accounts, Session Round-Robin{" "}
+                          <Hint text="Each account trades exactly one of the strategy's sessions, cycling through them in order (account 1 = first session, account 2 = second, wrapping back around once every session has an account). Each account is its own independent eval/funded lifecycle — its own fees, payouts, busts." />
+                        </h3>
+                      </div>
+                      <div className="stat-grid">
+                        <StatCard
+                          label="Combined Bottom Line"
+                          hint="Total real cash across every account: all payouts received minus all fees paid."
+                          value={fmtMoney(result.sessionSplit.totalRealWorldNetPnl)}
+                          tone={result.sessionSplit.totalRealWorldNetPnl >= 0 ? "positive" : "negative"}
+                        />
+                        <StatCard
+                          label="Total Fees Paid"
+                          hint="Every $50 spent buying or re-buying an eval, summed across all accounts."
+                          value={fmtMoney(-result.sessionSplit.totalFeesPaid)}
+                          tone="negative"
+                        />
+                        <StatCard
+                          label="Total Payouts"
+                          hint="Real cash withdrawn, summed across all accounts."
+                          value={fmtMoney(result.sessionSplit.totalCashPayouts)}
+                          tone="positive"
+                        />
+                        <StatCard
+                          label="Total Trades"
+                          hint="Trades taken across every account combined."
+                          value={`${result.sessionSplit.totalTrades}`}
+                        />
+                      </div>
+                      <div className="table-wrap" style={{ marginTop: 12 }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Account</th>
+                              <th>Session</th>
+                              <th>Trades (W/L)</th>
+                              <th>Win Rate</th>
+                              <th>Fees</th>
+                              <th>Payouts</th>
+                              <th>Bottom Line</th>
+                              <th>Funded</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {result.sessionSplit.accounts.map((a) => (
+                              <tr key={a.accountIndex}>
+                                <td>#{a.accountIndex + 1}</td>
+                                <td>{a.sessionOpen} ET</td>
+                                <td>{a.trades} ({a.wins}/{a.losses})</td>
+                                <td className={a.winRate >= 50 ? "positive" : "negative"}>{a.winRate.toFixed(1)}%</td>
+                                <td className="negative">{fmtMoney(-a.feesPaid)}</td>
+                                <td className="positive">{fmtMoney(a.cashPayouts)}</td>
+                                <td className={a.realWorldNetPnl >= 0 ? "positive" : "negative"}>{fmtMoney(a.realWorldNetPnl)}</td>
+                                <td>{a.timesFunded}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
                   )}
                 </div>
               )}

@@ -179,11 +179,18 @@ type Pivot = { minutes: number; price: number };
  * loss in the London window still counts against the NY window. */
 type DayRiskState = { tradesCount: number; consecutiveLosses: number; dayPnlDollars: number };
 
-function simulateDay(dayBars: Bar[], cfg: StrategyConfig): { trades: SimTrade[]; incompleteTrades: number } {
-  const windows = [
+/** The strategy's session windows (main open + additionalSessions), in
+ * chronological order. Shared by simulateDay (all sessions, one account)
+ * and runSessionSplitBacktest (each account restricted to one window). */
+function getSessionWindows(cfg: StrategyConfig): { open: string; hardCutoff: string }[] {
+  return [
     { open: cfg.session.open, hardCutoff: cfg.session.hardCutoff },
     ...(cfg.session.additionalSessions ?? []),
   ].sort((a, b) => hhmmToMinutes(a.open) - hhmmToMinutes(b.open));
+}
+
+function simulateDay(dayBars: Bar[], cfg: StrategyConfig): { trades: SimTrade[]; incompleteTrades: number } {
+  const windows = getSessionWindows(cfg);
 
   const state: DayRiskState = { tradesCount: 0, consecutiveLosses: 0, dayPnlDollars: 0 };
   const trades: SimTrade[] = [];
@@ -368,11 +375,90 @@ function simulateSession(
 
 // ---------- full backtest + prop-firm eval simulation ----------
 
-export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
+/** One account's full chronological lifecycle over a daily P&L series: buy
+ * an eval, bust -> pay reactivation and restart next day, pass -> funded
+ * stage with payout share, per-event cap, and the 50% single-day
+ * consistency rule. `startDay` lets staggered/portfolio accounts begin
+ * partway through the series. Module-level (not a runBacktest closure) so
+ * it can be reused by session-split multi-account backtests too. */
+function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: number) {
+  const evalFee = cfg.eval.evalFeeDollars ?? 50;
+  const reactivationFee = cfg.eval.reactivationFeeDollars ?? 50;
+  const fundedThreshold = cfg.eval.fundedProfitThreshold ?? 4000;
+  const payoutShare = cfg.eval.payoutShareRatio ?? 0.5;
+  const maxPayout = cfg.eval.maxPayoutPerEvent ?? 2000;
+
+  let feesPaid = 0;
+  let cashPayouts = 0;
+  let attemptsBought = 0;
+  let fundedCount = 0;
+  // Per-day phase for THIS account's timeline, index-aligned to `series`:
+  // "eval" = this day's P&L happened while still working toward the profit
+  // target; "funded" = after reaching it. Days before startDay or after the
+  // account permanently busts with no more attempts are left "none".
+  const dayPhase: ("eval" | "funded" | "none")[] = new Array(series.length).fill("none");
+  let d = Math.min(startDay, series.length);
+  let firstAttempt = true;
+  while (d < series.length) {
+    attemptsBought++;
+    feesPaid += firstAttempt ? evalFee : reactivationFee;
+    firstAttempt = false;
+
+    let balance = cfg.eval.accountSize;
+    let highWater = balance;
+    let floor = balance - cfg.eval.trailingMaxDrawdown;
+    let funded = false;
+    let fundedHighWater = 0;
+    let fundedWindowDailyPnls: number[] = [];
+    let busted = false;
+
+    for (; d < series.length; d++) {
+      dayPhase[d] = funded ? "funded" : "eval";
+      balance += series[d];
+      if (funded) fundedWindowDailyPnls.push(series[d]);
+      if (balance <= floor) {
+        busted = true;
+        d++;
+        break;
+      }
+      if (balance > highWater) {
+        highWater = balance;
+        floor = Math.min(highWater - cfg.eval.trailingMaxDrawdown, cfg.eval.accountSize);
+      }
+      if (!funded && balance >= cfg.eval.accountSize + cfg.eval.profitTarget) {
+        funded = true;
+        fundedCount++;
+        fundedHighWater = balance;
+        fundedWindowDailyPnls = [];
+      }
+      if (funded) {
+        const fundedProfit = balance - fundedHighWater;
+        if (fundedProfit >= fundedThreshold) {
+          // 50% consistency rule: no single day in this funded window can
+          // account for more than half the window's total profit, or the
+          // payout doesn't qualify yet — keep accruing until it does.
+          const maxSingleDayProfit = Math.max(0, ...fundedWindowDailyPnls);
+          const consistent = maxSingleDayProfit <= fundedProfit * 0.5;
+          if (consistent) {
+            const payout = Math.min(maxPayout, fundedProfit * payoutShare);
+            cashPayouts += payout;
+            fundedHighWater = balance; // reset so further profit can trigger another payout
+            fundedWindowDailyPnls = [];
+          }
+        }
+      }
+    }
+    if (!busted) break; // ran out of data mid-attempt, nothing more to simulate
+  }
+  return { feesPaid, cashPayouts, attemptsBought, fundedCount, dayPhase };
+}
+
+/** Groups bars by ET calendar day, dropping any date in
+ * cfg.filters.excludeDates (no reliable offline economic calendar, so
+ * verified news dates must come from the user). Shared by runBacktest and
+ * runSessionSplitBacktest. */
+function groupBarsByDay(cfg: StrategyConfig, bars: Bar[]): { byDay: Map<string, Bar[]>; days: string[] } {
   const byDay = new Map<string, Bar[]>();
-  // News filter: skip user-supplied red-folder dates entirely (there is no
-  // reliable offline economic calendar, so verified dates must come from
-  // the user — see StrategyConfig.filters).
   const excluded = new Set(cfg.filters?.excludeDates ?? []);
   for (const b of bars) {
     const { dateKey } = etParts(b.t);
@@ -380,7 +466,11 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
     if (!byDay.has(dateKey)) byDay.set(dateKey, []);
     byDay.get(dateKey)!.push(b);
   }
-  const days = [...byDay.keys()].sort();
+  return { byDay, days: [...byDay.keys()].sort() };
+}
+
+export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
+  const { byDay, days } = groupBarsByDay(cfg, bars);
 
   const allTrades: SimTrade[] = [];
   const dailyPnl: number[] = [];
@@ -434,96 +524,8 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
   }
 
   // Real-world economics: one chronological pass through the whole period.
-  // Buy an eval ($evalFeeDollars); on bust, pay $reactivationFeeDollars and
-  // start a new attempt the next day; on reaching the profit target, switch
-  // to "funded" and keep playing the same trailing-drawdown rule forward.
-  // Once funded cumulative profit crosses fundedProfitThreshold, take one
-  // payout of min(maxPayoutPerEvent, profit * payoutShareRatio) and reset
-  // the funded high-water mark to current balance (so further profit above
-  // that can trigger another payout later) — a simplification of real
-  // prop-firm payout windows/scaling, not an exact model of any one firm.
-  const evalFee = cfg.eval.evalFeeDollars ?? 50;
-  const reactivationFee = cfg.eval.reactivationFeeDollars ?? 50;
-  // $4,000 funded profit unlocks a payout, capped at $2,000 (50% share) —
-  // per the user's real account rules.
-  const fundedThreshold = cfg.eval.fundedProfitThreshold ?? 4000;
-  const payoutShare = cfg.eval.payoutShareRatio ?? 0.5;
-  const maxPayout = cfg.eval.maxPayoutPerEvent ?? 2000;
-
-  /** One account's full chronological lifecycle over a daily P&L series:
-   * buy an eval, bust -> pay reactivation and restart next day, pass ->
-   * funded stage with payout share, per-event cap, and the 50% single-day
-   * consistency rule. `startDay` lets portfolio accounts begin staggered. */
-  const walkAccountEconomics = (series: number[], startDay: number) => {
-    let feesPaid = 0;
-    let cashPayouts = 0;
-    let attemptsBought = 0;
-    let fundedCount = 0;
-    // Per-day phase for THIS account's timeline, index-aligned to `series`:
-    // "eval" = this day's P&L happened while still working toward the
-    // profit target; "funded" = after reaching it. Days before startDay (for
-    // staggered portfolio accounts) or after the account permanently busts
-    // with no more attempts are left "none".
-    const dayPhase: ("eval" | "funded" | "none")[] = new Array(series.length).fill("none");
-    let d = Math.min(startDay, series.length);
-    let firstAttempt = true;
-    while (d < series.length) {
-      attemptsBought++;
-      feesPaid += firstAttempt ? evalFee : reactivationFee;
-      firstAttempt = false;
-
-      let balance = cfg.eval.accountSize;
-      let highWater = balance;
-      let floor = balance - cfg.eval.trailingMaxDrawdown;
-      let funded = false;
-      let fundedHighWater = 0;
-      let fundedWindowDailyPnls: number[] = [];
-      let busted = false;
-
-      for (; d < series.length; d++) {
-        // Phase this day's P&L is attributed to = the account's state at
-        // the START of the day (before today's trades resolve).
-        dayPhase[d] = funded ? "funded" : "eval";
-        balance += series[d];
-        if (funded) fundedWindowDailyPnls.push(series[d]);
-        if (balance <= floor) {
-          busted = true;
-          d++;
-          break;
-        }
-        if (balance > highWater) {
-          highWater = balance;
-          floor = Math.min(highWater - cfg.eval.trailingMaxDrawdown, cfg.eval.accountSize);
-        }
-        if (!funded && balance >= cfg.eval.accountSize + cfg.eval.profitTarget) {
-          funded = true;
-          fundedCount++;
-          fundedHighWater = balance;
-          fundedWindowDailyPnls = [];
-        }
-        if (funded) {
-          const fundedProfit = balance - fundedHighWater;
-          if (fundedProfit >= fundedThreshold) {
-            // 50% consistency rule: no single day in this funded window can
-            // account for more than half the window's total profit, or the
-            // payout doesn't qualify yet — keep accruing until it does.
-            const maxSingleDayProfit = Math.max(0, ...fundedWindowDailyPnls);
-            const consistent = maxSingleDayProfit <= fundedProfit * 0.5;
-            if (consistent) {
-              const payout = Math.min(maxPayout, fundedProfit * payoutShare);
-              cashPayouts += payout;
-              fundedHighWater = balance; // reset so further profit can trigger another payout
-              fundedWindowDailyPnls = [];
-            }
-          }
-        }
-      }
-      if (!busted) break; // ran out of data mid-attempt, nothing more to simulate
-    }
-    return { feesPaid, cashPayouts, attemptsBought, fundedCount, dayPhase };
-  };
-
-  const single = walkAccountEconomics(dailyPnl, 0);
+  // See walkAccountEconomics above for the fee/payout mechanics.
+  const single = walkAccountEconomics(cfg, dailyPnl, 0);
   const feesPaid = single.feesPaid;
   const cashPayouts = single.cashPayouts;
   const chronologicalAttempts = single.attemptsBought;
@@ -570,7 +572,7 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
     let pAttempts = 0;
     let pFunded = 0;
     for (let a = 0; a < cfg.portfolio.accountCount; a++) {
-      const w = walkAccountEconomics(series, a * cfg.portfolio.staggerDays);
+      const w = walkAccountEconomics(cfg, series, a * cfg.portfolio.staggerDays);
       pFees += w.feesPaid;
       pPayouts += w.cashPayouts;
       pAttempts += w.attemptsBought;
@@ -662,5 +664,117 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
     evalStage,
     fundedStage,
     portfolio,
+  };
+}
+
+/** One account's results in a session-split multi-account backtest — every
+ * stat here belongs to just this account's assigned session. */
+export type SessionSplitAccount = {
+  accountIndex: number;
+  sessionOpen: string; // which session window (e.g. "09:30") this account trades
+  trades: number;
+  wins: number;
+  losses: number;
+  winRate: number; // 0-100
+  pooledNetPnl: number; // $, raw sum of this account's trade P&L (not real economics)
+  feesPaid: number; // $
+  cashPayouts: number; // $
+  realWorldNetPnl: number; // $ (cashPayouts - feesPaid) — the actual money this account made
+  attemptsBought: number;
+  timesFunded: number;
+};
+
+export type SessionSplitResult = {
+  accountCount: number;
+  sessions: string[]; // the strategy's own session-open times, in order
+  accounts: SessionSplitAccount[];
+  totalFeesPaid: number;
+  totalCashPayouts: number;
+  totalRealWorldNetPnl: number;
+  totalTrades: number;
+  incompleteTrades: number;
+};
+
+/**
+ * Multi-account backtest where each account trades exactly one of the
+ * strategy's session windows, round-robin: account 0 gets the first
+ * session, account 1 the second, etc.; once every session has an account,
+ * it wraps back to the first session again (so N accounts on M sessions
+ * puts ceil(N/M) accounts on each session, as evenly as N/M divides —
+ * "equally proportionate" per the user's rule). Each account is its own
+ * independent eval/funded lifecycle (its own fees, payouts, bust/reset),
+ * exactly as if it were a separate real account — this is NOT the same as
+ * StrategyConfig.portfolio (staggered starts, every account trading every
+ * session); this is a per-request backtest parameter, not saved config.
+ */
+export function runSessionSplitBacktest(cfg: StrategyConfig, bars: Bar[], accountCount: number): SessionSplitResult {
+  const round2 = (x: number) => Math.round(x * 100) / 100;
+  const { byDay, days } = groupBarsByDay(cfg, bars);
+  const sessionWindows = getSessionWindows(cfg);
+  const M = sessionWindows.length;
+
+  const accounts: SessionSplitAccount[] = [];
+  let totalFeesPaid = 0;
+  let totalCashPayouts = 0;
+  let totalTrades = 0;
+  let incompleteTrades = 0;
+
+  for (let i = 0; i < accountCount; i++) {
+    const w = sessionWindows[i % M];
+    const dailyPnl: number[] = [];
+    const accountTrades: SimTrade[] = [];
+
+    for (const day of days) {
+      const dayBars = byDay.get(day)!.sort((a, b) => a.t.localeCompare(b.t));
+      // Fresh per-day risk state — this account only ever plays one
+      // session/day, so its own trade caps/loss caps apply within just
+      // that window, same as a single-session strategy would.
+      const state: DayRiskState = { tradesCount: 0, consecutiveLosses: 0, dayPnlDollars: 0 };
+      const { trades, incompleteTrades: dayIncomplete } = simulateSession(
+        dayBars,
+        cfg,
+        hhmmToMinutes(w.open),
+        hhmmToMinutes(w.hardCutoff),
+        state,
+        w.open
+      );
+      accountTrades.push(...trades);
+      incompleteTrades += dayIncomplete;
+      dailyPnl.push(trades.reduce((s, t) => s + t.pnlDollars, 0));
+    }
+
+    const econ = walkAccountEconomics(cfg, dailyPnl, 0);
+    const wins = accountTrades.filter((t) => t.win).length;
+    const pooledNetPnl = accountTrades.reduce((s, t) => s + t.pnlDollars, 0);
+
+    accounts.push({
+      accountIndex: i,
+      sessionOpen: w.open,
+      trades: accountTrades.length,
+      wins,
+      losses: accountTrades.length - wins,
+      winRate: accountTrades.length ? round2((wins / accountTrades.length) * 100) : 0,
+      pooledNetPnl: round2(pooledNetPnl),
+      feesPaid: round2(econ.feesPaid),
+      cashPayouts: round2(econ.cashPayouts),
+      realWorldNetPnl: round2(econ.cashPayouts - econ.feesPaid),
+      attemptsBought: econ.attemptsBought,
+      timesFunded: econ.fundedCount,
+    });
+
+    totalFeesPaid += econ.feesPaid;
+    totalCashPayouts += econ.cashPayouts;
+    totalTrades += accountTrades.length;
+  }
+
+  return {
+    accountCount,
+    sessions: sessionWindows.map((w) => w.open),
+    accounts,
+    totalFeesPaid: round2(totalFeesPaid),
+    totalCashPayouts: round2(totalCashPayouts),
+    totalRealWorldNetPnl: round2(totalCashPayouts - totalFeesPaid),
+    totalTrades,
+    incompleteTrades,
   };
 }
