@@ -463,6 +463,14 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
     let busted = false;
     let winningDaysSincePayout = 0;
     let profitSincePayout = 0;
+    // Topstep Consistency Target, exact formula confirmed by a Topstep
+    // trader: New Profit Target = Best Day / 0.5 (a full recalculation off
+    // the single best day so far this attempt, not a step/proportional
+    // buffer). Effectively forces total eval profit to be >= 2x your best
+    // day. Only escalates upward — a big single day raises the bar for the
+    // rest of THIS eval attempt, resets on a fresh attempt.
+    let bestDaySoFar = 0;
+    let effectiveProfitTarget = cfg.eval.profitTarget;
 
     for (; d < series.length; d++) {
       dayPhase[d] = funded ? "funded" : "eval";
@@ -484,7 +492,11 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
         highWater = balance;
         floor = Math.min(highWater - cfg.eval.trailingMaxDrawdown, cfg.eval.accountSize);
       }
-      if (!funded && balance >= cfg.eval.accountSize + cfg.eval.profitTarget) {
+      if (!funded && dayPnl > bestDaySoFar) {
+        bestDaySoFar = dayPnl;
+        effectiveProfitTarget = Math.max(cfg.eval.profitTarget, bestDaySoFar / 0.5);
+      }
+      if (!funded && balance >= cfg.eval.accountSize + effectiveProfitTarget) {
         funded = true;
         fundedCount++;
         feesPaid += activationFee;
