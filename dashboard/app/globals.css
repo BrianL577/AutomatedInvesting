@@ -67,6 +67,16 @@ body {
   color: var(--text-dim);
 }
 
+.bt-data-range {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin: 4px 0 16px;
+}
+
+.bt-data-range-warning {
+  color: var(--red);
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -511,6 +521,17 @@ tbody tr:hover {
 
 .edit-field .test-input {
   width: 100%;
+}
+
+.edit-field-warning {
+  grid-column: 1 / -1;
+  color: var(--red);
+  font-size: 12px;
+  background: rgba(248, 81, 73, 0.08);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 0;
 }
 
 .edit-field-bool {

@@ -81,6 +81,14 @@ export type BacktestResult = {
   netPnlPct: number; // % of eval account size
   totalPoints: number;
   tradingDays: number;
+  // The actual calendar span of historical data this backtest ran against
+  // (ET calendar dates of the first/last trading day with data) — every $
+  // figure above is total-over-this-period, NOT per-year, unless you divide
+  // by dataRangeYears yourself. null when there were 0 trading days.
+  dataRangeStart: string | null; // "YYYY-MM-DD"
+  dataRangeEnd: string | null; // "YYYY-MM-DD"
+  dataRangeCalendarDays: number; // end - start, inclusive
+  dataRangeYears: number; // dataRangeCalendarDays / 365.25, for framing $ totals
   profitableDays: number;
   bestDay: number; // $
   worstDay: number; // $
@@ -671,6 +679,16 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
     netPnlPct: round2((netPnl / cfg.eval.accountSize) * 100),
     totalPoints: round2(allTrades.reduce((s, t) => s + t.pnlPoints, 0)),
     tradingDays: days.length,
+    dataRangeStart: days.length ? days[0] : null,
+    dataRangeEnd: days.length ? days[days.length - 1] : null,
+    dataRangeCalendarDays: days.length
+      ? Math.round((new Date(days[days.length - 1]).getTime() - new Date(days[0]).getTime()) / 86400000) + 1
+      : 0,
+    dataRangeYears: days.length
+      ? round2(
+          ((new Date(days[days.length - 1]).getTime() - new Date(days[0]).getTime()) / 86400000 + 1) / 365.25
+        )
+      : 0,
     profitableDays: dailyPnl.filter((p) => p > 0).length,
     bestDay: dailyPnl.length ? round2(Math.max(...dailyPnl)) : 0,
     worstDay: dailyPnl.length ? round2(Math.min(...dailyPnl)) : 0,

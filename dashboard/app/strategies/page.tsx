@@ -380,6 +380,23 @@ export default function StrategiesPage() {
     setEditForm((prev) => (prev ? { ...prev, [group]: { ...prev[group], [field]: value } } : prev));
   }
 
+  const DEFAULT_PORTFOLIO = { accountCount: 2, staggerDays: 0, oneTradePerDay: false };
+
+  /** Portfolio is optional/absent by default (undefined = single account,
+   * no portfolio simulation) — unlike the other groups, so this can't reuse
+   * setEditField's always-present-object assumption. */
+  function setPortfolioField<F extends keyof typeof DEFAULT_PORTFOLIO>(field: F, value: (typeof DEFAULT_PORTFOLIO)[F]) {
+    setEditForm((prev) =>
+      prev ? { ...prev, portfolio: { ...(prev.portfolio ?? DEFAULT_PORTFOLIO), [field]: value } } : prev
+    );
+  }
+
+  function togglePortfolio(enabled: boolean) {
+    setEditForm((prev) =>
+      prev ? { ...prev, portfolio: enabled ? (prev.portfolio ?? DEFAULT_PORTFOLIO) : undefined } : prev
+    );
+  }
+
   async function removeStrategy(id: string) {
     setBusy("saving");
     setMessage(null);
@@ -828,6 +845,50 @@ export default function StrategiesPage() {
                     <NumField label="Daily loss cap ($)" hint="Stop trading for the day once loss reaches this." value={editForm.risk.dailyLossCap} onChange={(v) => setEditField("risk", "dailyLossCap", v)} min={0} max={100000} />
                   </div>
 
+                  <p className="edit-section-label">Portfolio (scaling across accounts)</p>
+                  <div className="edit-grid">
+                    <BoolField
+                      label="Simulate multiple accounts"
+                      hint="Runs N accounts of THIS SAME strategy (not session/phase-split like the 'Accounts' field above the backtest button). Every account trades identically unless staggered below."
+                      value={!!editForm.portfolio}
+                      onChange={togglePortfolio}
+                    />
+                    {editForm.portfolio && (
+                      <>
+                        <NumField
+                          label="Account count"
+                          hint="How many accounts to run in parallel."
+                          value={editForm.portfolio.accountCount}
+                          onChange={(v) => setPortfolioField("accountCount", v)}
+                          min={1}
+                          max={20}
+                        />
+                        <NumField
+                          label="Stagger (days)"
+                          hint="Offsets each account's start by this many days. 0 = every account trades the exact same days — they are fully correlated, not diversified: a bad losing stretch busts all of them together, same day, since it's the same instrument and signal. A nonzero stagger is the only thing in this simulation that represents real diversification (different accounts hit their eval/bust points on different days)."
+                          value={editForm.portfolio.staggerDays}
+                          onChange={(v) => setPortfolioField("staggerDays", v)}
+                          min={0}
+                          max={30}
+                        />
+                        <BoolField
+                          label="One trade per account per day"
+                          hint="Restricts each account to only its first trade of the day (ignores maxTradesPerDay above for this simulation)."
+                          value={editForm.portfolio.oneTradePerDay}
+                          onChange={(v) => setPortfolioField("oneTradePerDay", v)}
+                        />
+                        {editForm.portfolio.staggerDays === 0 && (
+                          <p className="edit-field-warning">
+                            ⚠️ Stagger is 0 — every account is fully correlated (same trades, same days). The
+                            "Portfolio" backtest total below is real dollars × account count, but it is NOT
+                            diversified risk: all accounts bust together in a bad stretch, same as running one
+                            account, just with more capital and more eval fees at stake simultaneously.
+                          </p>
+                        )}
+                      </>
+                    )}
+                  </div>
+
                   <p className="edit-section-label">Eval simulation</p>
                   <div className="edit-grid">
                     <NumField label="Account size ($)" hint="Simulated prop-firm account starting balance." value={editForm.eval.accountSize} onChange={(v) => setEditField("eval", "accountSize", v)} step={1000} min={1000} max={1000000} />
@@ -851,6 +912,25 @@ export default function StrategiesPage() {
                         : "○ Synthetic sample data — import real NQ bars for meaningful results"}
                     </span>
                   </div>
+                  <p className="bt-data-range">
+                    {result.dataRangeStart && result.dataRangeEnd ? (
+                      <>
+                        Backtest period: <strong>{result.dataRangeStart}</strong> to{" "}
+                        <strong>{result.dataRangeEnd}</strong> ({result.dataRangeYears.toFixed(1)} year
+                        {result.dataRangeYears !== 1 ? "s" : ""}, {result.tradingDays} trading days)
+                        {result.dataRangeYears < 1 && (
+                          <span className="bt-data-range-warning">
+                            {" "}
+                            — under a year of data. Every dollar figure below is a total over just this window, not
+                            an annual estimate. Treat these results as low-confidence until more history is
+                            available.
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      "No trading days in range."
+                    )}
+                  </p>
                   <div className="bt-results-header">
                     <h3>While in Eval <Hint text="Trades made while the simulated account was still trying to hit the eval profit target." /></h3>
                   </div>
@@ -917,6 +997,22 @@ export default function StrategiesPage() {
                       ? split.accounts.reduce((s, a) => s + a.timesFunded, 0)
                       : result.timesFunded;
                     const accountCountLabel = split ? split.accountCount : 1;
+                    // Accounts sharing the same session+phase trade IDENTICAL
+                    // signals on the identical instrument — fully correlated,
+                    // not diversified. Flag it when 2+ accounts land in the
+                    // same bucket (always true once accountCount exceeds the
+                    // number of distinct session/phase slots available).
+                    const correlatedGroupSize = split
+                      ? Math.max(
+                          ...Object.values(
+                            split.accounts.reduce<Record<string, number>>((acc, a) => {
+                              const key = `${a.sessionOpen}|${a.phaseFilter ?? "both"}`;
+                              acc[key] = (acc[key] ?? 0) + 1;
+                              return acc;
+                            }, {})
+                          )
+                        )
+                      : 1;
 
                     return (
                       <>
@@ -956,6 +1052,14 @@ export default function StrategiesPage() {
                             value={`${timesFunded}`}
                           />
                         </div>
+                        {correlatedGroupSize > 1 && (
+                          <p className="edit-field-warning" style={{ marginTop: 10 }}>
+                            ⚠️ {correlatedGroupSize} of these accounts share the same session/phase, meaning they
+                            trade identical signals on the identical instrument — fully correlated, not
+                            diversified. These totals are real dollars summed across accounts, but a bad losing
+                            stretch busts every account in that group on the same day.
+                          </p>
+                        )}
                       </>
                     );
                   })()}
@@ -1031,6 +1135,15 @@ export default function StrategiesPage() {
                         <div className="stat-card"><div className="label">Evals Bought (all accounts)</div><div className="value">{result.portfolio.attemptsBought}</div></div>
                         <div className="stat-card"><div className="label">Times Reached Funded</div><div className="value">{result.portfolio.timesFunded}</div></div>
                       </div>
+                      {result.portfolio.staggerDays === 0 && (
+                        <p className="edit-field-warning" style={{ marginTop: 10 }}>
+                          ⚠️ Stagger is 0 days — every account here trades identically and is fully correlated,
+                          not diversified. This total is real dollars × account count, but the risk is
+                          concentrated: a bad losing stretch busts all {result.portfolio.accountCount} accounts on
+                          the same day, exactly like running one account, just with {result.portfolio.accountCount}
+                          {" "}× the capital and eval fees on the line at once.
+                        </p>
+                      )}
                     </>
                   )}
 
