@@ -89,8 +89,11 @@ class NinjaTraderClient:
 
     def _write_command(self, fields: list[str]) -> None:
         # ATI reads one command per file, watches the folder, and deletes
-        # the file once processed. Unique filenames avoid collisions.
-        path = self.incoming_dir / f"jjbot_{uuid.uuid4().hex}.txt"
+        # the file once processed. The filename must start with "oif"
+        # (Order Interface File) — NinjaTrader identifies command files by
+        # this prefix, not by content, and silently rejects anything else
+        # with "Unknown OIF file type" in its Log tab.
+        path = self.incoming_dir / f"oif_{uuid.uuid4().hex}.txt"
         path.write_text(";".join(fields) + ";\n")
 
     def place_bracket_order(
