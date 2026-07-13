@@ -437,8 +437,14 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
   const TRADING_DAYS_PER_MONTH = 21;
   const payoutShare = cfg.eval.payoutShareRatio ?? 0.9;
   const maxPayout = cfg.eval.maxPayoutPerEvent ?? 2000;
+  const maxPayoutBalanceShare = cfg.eval.maxPayoutBalanceShare ?? 0.5;
+  // Two independent funded-stage payout paths, confirmed by Topstep
+  // support — NOT the same Consistency Target as the Combine/eval stage
+  // (that one is profitTarget-based and does not apply once funded).
   const minWinningDaysForPayout = cfg.eval.minWinningDaysForPayout ?? 5;
   const minWinningDayProfit = cfg.eval.minWinningDayProfit ?? 150;
+  const consistencyPathMinDays = cfg.eval.consistencyPathMinDays ?? 3;
+  const consistencyPathMaxBestDayShare = cfg.eval.consistencyPathMaxBestDayShare ?? 0.4;
 
   let feesPaid = 0;
   let cashPayouts = 0;
@@ -476,12 +482,18 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
     let busted = false;
     let winningDaysSincePayout = 0;
     let profitSincePayout = 0;
+    let daysSincePayout = 0;
+    let bestDaySincePayout = -Infinity;
     // Topstep Consistency Target, exact formula confirmed by a Topstep
     // trader: New Profit Target = Best Day / 0.5 (a full recalculation off
     // the single best day so far this attempt, not a step/proportional
     // buffer). Effectively forces total eval profit to be >= 2x your best
     // day. Only escalates upward — a big single day raises the bar for the
-    // rest of THIS eval attempt, resets on a fresh attempt.
+    // rest of THIS eval attempt, resets on a fresh attempt. CONFIRMED (by
+    // Topstep support) this applies ONLY to the Combine/eval stage — a
+    // funded account has no profit target at all, so this never applies
+    // once `funded` is true; funded payout eligibility uses the entirely
+    // separate Standard/Consistency paths below instead.
     let bestDaySoFar = 0;
     let effectiveProfitTarget = cfg.eval.profitTarget;
 
@@ -518,9 +530,25 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
       }
       if (funded) {
         profitSincePayout += dayPnl;
+        daysSincePayout++;
+        if (dayPnl > bestDaySincePayout) bestDaySincePayout = dayPnl;
         if (dayPnl >= minWinningDayProfit) winningDaysSincePayout++;
-        if (winningDaysSincePayout >= minWinningDaysForPayout) {
-          const payout = Math.max(0, Math.min(maxPayout, profitSincePayout * payoutShare));
+
+        // Standard path: N winning days of $X+ each.
+        const standardPathEligible = winningDaysSincePayout >= minWinningDaysForPayout;
+        // Consistency path: as few as N trading days, as long as the best
+        // single day stays under the share cap of total profit so far —
+        // faster, but only usable while genuinely well-distributed.
+        const consistencyPathEligible =
+          daysSincePayout >= consistencyPathMinDays &&
+          profitSincePayout > 0 &&
+          bestDaySincePayout <= profitSincePayout * consistencyPathMaxBestDayShare;
+
+        if (standardPathEligible || consistencyPathEligible) {
+          const payout = Math.max(
+            0,
+            Math.min(maxPayout, profitSincePayout * payoutShare, balance * maxPayoutBalanceShare)
+          );
           if (payout > 0) {
             cashPayouts += payout;
             // Real rule: Maximum Loss Limit resets to $0 the moment funds
@@ -532,6 +560,8 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
           }
           winningDaysSincePayout = 0;
           profitSincePayout = 0;
+          daysSincePayout = 0;
+          bestDaySincePayout = -Infinity;
         }
       }
     }

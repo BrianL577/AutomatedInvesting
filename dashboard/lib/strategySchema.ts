@@ -110,18 +110,18 @@ export const StrategyConfigSchema = z
         // current rules before trusting the "real-world" dollar figures for
         // a real decision, since prop firms change these over time.
         //
-        // Topstep's Combine is a MONTHLY SUBSCRIPTION, not a per-attempt
-        // purchase — busting doesn't itself trigger a new charge; you keep
-        // paying the same monthly rate (unlimited resets assumed within
-        // that subscription — CONFIRM this with Topstep support directly,
-        // since it's not fully verified) until you pass or cancel.
+        // Topstep's Combine is a MONTHLY SUBSCRIPTION ($49/mo Standard
+        // Path, confirmed against a real account) that keeps charging
+        // regardless of busts, PLUS a SEPARATE per-attempt fee charged
+        // every time you buy or reactivate a Combine (evalFeeDollars /
+        // reactivationFeeDollars below) — the two are additive, confirmed
+        // directly by the trader whose account this was checked against.
         monthlyFeeDollars: z.number().min(0).max(10000).optional(),
         // One-time fee charged once when you pass and activate the funded
         // account (Topstep: Express Funded Account activation, $149).
         fundedActivationFeeDollars: z.number().min(0).max(10000).optional(),
-        // Deprecated per-attempt fee fields — no longer used by the
-        // monthly-subscription payout mechanic above; kept only so older
-        // saved strategies with these fields set still pass validation.
+        // Per-attempt fee (initial purchase / each bust-reactivation) — see
+        // monthlyFeeDollars above, these are additive, not either/or.
         evalFeeDollars: z.number().min(0).max(10000).optional(),
         reactivationFeeDollars: z.number().min(0).max(10000).optional(),
         // No longer used by the payout mechanic (see minWinningDaysForPayout
@@ -130,11 +130,27 @@ export const StrategyConfigSchema = z
         fundedProfitThreshold: z.number().min(0).max(1000000).optional(),
         payoutShareRatio: z.number().min(0).max(1).optional(),
         maxPayoutPerEvent: z.number().min(0).max(1000000).optional(),
-        // Standard Path payout eligibility: N days each clearing $X net
-        // P&L, NOT a cumulative-dollar threshold. Defaults (5 days, $150)
-        // are Topstep's actual current published Standard Path numbers.
+        // A single payout request also can't exceed this share of the
+        // account's CURRENT balance (Topstep: 50%), separate from and in
+        // addition to maxPayoutPerEvent/payoutShareRatio above.
+        maxPayoutBalanceShare: z.number().min(0).max(1).optional(),
+        // FUNDED-STAGE payout eligibility only has TWO paths — Combines
+        // have a totally different Consistency Target (profitTarget-based,
+        // see the Consistency Target comment on walkAccountEconomics in
+        // backtester.ts; confirmed by Topstep support this does NOT apply
+        // once funded, there's no "profit target" on a funded account).
+        // Standard path: N days each clearing $X net P&L (defaults: 5
+        // days, $150 — Topstep's actual current published numbers).
         minWinningDaysForPayout: z.number().int().min(1).max(60).optional(),
         minWinningDayProfit: z.number().min(0).max(100000).optional(),
+        // Consistency path (funded-stage only, faster but stricter):
+        // reach payout eligibility in as few as N trading days (default 3)
+        // as long as your single best day stays <= this share of total
+        // profit since the last payout (default 0.40 = Topstep's "40% or
+        // less"). Whichever path — Standard or Consistency — is reached
+        // first triggers the payout.
+        consistencyPathMinDays: z.number().int().min(1).max(60).optional(),
+        consistencyPathMaxBestDayShare: z.number().min(0).max(1).optional(),
       })
       .strict(),
   })
