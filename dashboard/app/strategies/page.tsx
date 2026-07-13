@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { survivabilityViolation, type StrategyConfig, type SavedStrategy } from "../../lib/strategySchema";
 import type { BacktestResult } from "../../lib/backtester";
+import type { SavedOptimization } from "../../lib/optimizationStore";
 
 type BacktestResponse = BacktestResult & { dataSource: "supabase" | "sample"; error?: string };
 
@@ -156,10 +157,11 @@ export default function StrategiesPage() {
   const [resultFor, setResultFor] = useState("");
   const [optimizeRounds, setOptimizeRounds] = useState(3);
   const [optimizeResult, setOptimizeResult] = useState<OptimizeResponse | null>(null);
-  const [optimizeBaseConfig, setOptimizeBaseConfig] = useState<StrategyConfig | null>(null);
-  const [optimizeSaved, setOptimizeSaved] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<StrategyConfig | null>(null);
+  const [listTab, setListTab] = useState<"strategies" | "optimizations">("strategies");
+  const [optimizations, setOptimizations] = useState<SavedOptimization[]>([]);
+  const [selectedOptimization, setSelectedOptimization] = useState<SavedOptimization | null>(null);
 
   async function refresh() {
     const res = await fetch("/api/strategies");
@@ -168,8 +170,15 @@ export default function StrategiesPage() {
     if (!selected && data.strategies?.length) setSelected(data.strategies[0]);
   }
 
+  async function refreshOptimizations() {
+    const res = await fetch("/api/optimizations");
+    const data = await readJson(res);
+    setOptimizations(data.optimizations ?? []);
+  }
+
   useEffect(() => {
     refresh();
+    refreshOptimizations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -262,7 +271,6 @@ export default function StrategiesPage() {
     setBusy("optimizing");
     setMessage(null);
     setOptimizeResult(null);
-    setOptimizeSaved(false);
     try {
       const res = await fetch("/api/optimize", {
         method: "POST",
@@ -272,10 +280,36 @@ export default function StrategiesPage() {
       const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Optimization failed");
       setOptimizeResult(data);
-      setOptimizeBaseConfig(activeConfig);
+
+      // Every run is saved automatically — every AI-Optimize click is a new,
+      // independent search over the historical data, so each becomes its
+      // own entry in the Optimizations tab, never overwriting a prior run.
+      // Revisiting it later costs nothing (no AI call, just reading the
+      // saved leaderboard back from Supabase).
+      let saveNote = "";
+      try {
+        const saveRes = await fetch("/api/optimizations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            baseConfig: activeConfig,
+            rounds: optimizeRounds,
+            dataSource: data.dataSource,
+            history: data.history,
+            bestConfig: data.bestConfig,
+          }),
+        });
+        if (saveRes.ok) {
+          await refreshOptimizations();
+          saveNote = " Saved to the Optimizations tab automatically.";
+        }
+      } catch {
+        // Auto-save is best-effort; the leaderboard below still works either way.
+      }
+
       setMessage({
         kind: "ok",
-        text: `Tried ${data.history.length} variant(s) across ${optimizeRounds} round(s). Review the leaderboard below, then "Use This Config" on the best one to load it as a draft — or Save This Run so it's here next time without spending tokens again.`,
+        text: `Tried ${data.history.length} variant(s) across ${optimizeRounds} round(s). Review the leaderboard below, then "Use This Config" on the best one to load it as a draft.${saveNote}`,
       });
     } catch (err: any) {
       setMessage({ kind: "error", text: err.message });
@@ -284,39 +318,30 @@ export default function StrategiesPage() {
     }
   }
 
-  async function saveOptimizationRun() {
-    if (!optimizeResult || !optimizeBaseConfig) return;
+  function useOptimizedConfig(config: StrategyConfig, fromName?: string) {
+    setDraft(config);
+    setDraftPrompt(`Optimized from "${fromName ?? activeName}"`);
+    setResult(null);
+    setOptimizeResult(null);
+    setSelectedOptimization(null);
+    setListTab("strategies");
+    setMessage({ kind: "ok", text: "Loaded as a new draft. Review, then Save Strategy if you want to keep it." });
+  }
+
+  async function removeOptimization(id: string) {
     setBusy("saving");
     setMessage(null);
     try {
-      const res = await fetch("/api/optimizations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          baseConfig: optimizeBaseConfig,
-          rounds: optimizeRounds,
-          dataSource: optimizeResult.dataSource,
-          history: optimizeResult.history,
-          bestConfig: optimizeResult.bestConfig,
-        }),
-      });
+      const res = await fetch(`/api/optimizations?id=${encodeURIComponent(id)}`, { method: "DELETE" });
       const data = await readJson(res);
-      if (!res.ok) throw new Error(data.error || "Save failed");
-      setOptimizeSaved(true);
-      setMessage({ kind: "ok", text: "Optimization run saved — find it under the Optimizations tab anytime, no re-run needed." });
+      if (!res.ok) throw new Error(data.error || "Delete failed");
+      if (selectedOptimization?.id === id) setSelectedOptimization(null);
+      await refreshOptimizations();
     } catch (err: any) {
       setMessage({ kind: "error", text: err.message });
     } finally {
       setBusy("");
     }
-  }
-
-  function useOptimizedConfig(config: StrategyConfig) {
-    setDraft(config);
-    setDraftPrompt(`Optimized from "${activeName}"`);
-    setResult(null);
-    setOptimizeResult(null);
-    setMessage({ kind: "ok", text: "Loaded as a new draft. Review, then Save Strategy if you want to keep it." });
   }
 
   function startEditing() {
@@ -471,56 +496,174 @@ export default function StrategiesPage() {
 
       <div className="strategy-layout">
         <div className="strategy-list">
-          <h2>Strategies</h2>
-          {strategies.map((s) => (
-            <div
-              key={s.id}
-              role="button"
-              tabIndex={0}
-              className={`strategy-item ${!draft && selected?.id === s.id ? "active" : ""}`}
-              onClick={() => {
-                setSelected(s);
-                setDraft(null);
-                setResult(null);
-                setMessage(null);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  setSelected(s);
-                  setDraft(null);
-                  setResult(null);
-                  setMessage(null);
-                }
-              }}
+          <div className="list-tab-row">
+            <button
+              className={`list-tab ${listTab === "strategies" ? "list-tab-active" : ""}`}
+              onClick={() => setListTab("strategies")}
             >
-              <span className="strategy-item-name">{s.config.name}</span>
-              <span className={`badge ${s.source === "default" ? "test" : s.source === "ai" ? "long" : "short"}`}>
-                {s.source}
-              </span>
-              {s.source !== "default" && (
-                <button
-                  className="strategy-item-delete"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removeStrategy(s.id);
+              Strategies
+            </button>
+            <button
+              className={`list-tab ${listTab === "optimizations" ? "list-tab-active" : ""}`}
+              onClick={() => setListTab("optimizations")}
+            >
+              Optimizations
+            </button>
+          </div>
+
+          {listTab === "strategies" ? (
+            <>
+              {strategies.map((s) => (
+                <div
+                  key={s.id}
+                  role="button"
+                  tabIndex={0}
+                  className={`strategy-item ${!draft && selected?.id === s.id ? "active" : ""}`}
+                  onClick={() => {
+                    setSelected(s);
+                    setDraft(null);
+                    setResult(null);
+                    setMessage(null);
                   }}
-                  title="Delete strategy"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      setSelected(s);
+                      setDraft(null);
+                      setResult(null);
+                      setMessage(null);
+                    }
+                  }}
                 >
-                  ✕
-                </button>
+                  <span className="strategy-item-name">{s.config.name}</span>
+                  <span className={`badge ${s.source === "default" ? "test" : s.source === "ai" ? "long" : "short"}`}>
+                    {s.source}
+                  </span>
+                  {s.source !== "default" && (
+                    <button
+                      className="strategy-item-delete"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeStrategy(s.id);
+                      }}
+                      title="Delete strategy"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              ))}
+              {draft && (
+                <div className="strategy-item active">
+                  <span className="strategy-item-name">{draft.name}</span>
+                  <span className="badge win">draft</span>
+                </div>
               )}
-            </div>
-          ))}
-          {draft && (
-            <div className="strategy-item active">
-              <span className="strategy-item-name">{draft.name}</span>
-              <span className="badge win">draft</span>
-            </div>
+            </>
+          ) : (
+            <>
+              {optimizations.length === 0 && (
+                <div className="empty-state" style={{ padding: "12px 4px" }}>
+                  No saved runs yet — click AI-Optimize on a strategy to create one.
+                </div>
+              )}
+              {optimizations.map((o) => (
+                <div
+                  key={o.id}
+                  role="button"
+                  tabIndex={0}
+                  className={`strategy-item ${selectedOptimization?.id === o.id ? "active" : ""}`}
+                  onClick={() => setSelectedOptimization(o)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") setSelectedOptimization(o);
+                  }}
+                >
+                  <span className="strategy-item-name">
+                    {o.base_config_name} · {new Date(o.created_at).toLocaleDateString()}
+                  </span>
+                  <span className={`badge ${o.data_source === "supabase" ? "long" : "short"}`}>{o.data_source}</span>
+                  <button
+                    className="strategy-item-delete"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeOptimization(o.id);
+                    }}
+                    title="Delete this saved run"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </>
           )}
         </div>
 
         <div className="strategy-detail">
-          {activeConfig ? (
+          {listTab === "optimizations" ? (
+            selectedOptimization ? (
+              <>
+                <div className="strategy-detail-header">
+                  <h2>
+                    {selectedOptimization.base_config_name} — saved{" "}
+                    {new Date(selectedOptimization.created_at).toLocaleString()}
+                  </h2>
+                </div>
+                {message && (
+                  <div className={`test-status test-status-${message.kind === "error" ? "error" : "success"}`}>
+                    {message.text}
+                  </div>
+                )}
+                <div className="bt-results">
+                  <p className="bt-explainer">
+                    {selectedOptimization.rounds} round(s), {selectedOptimization.history.length} variant(s) tried
+                    against {selectedOptimization.data_source === "supabase" ? "real historical data" : "synthetic sample data"}.{" "}
+                    <strong>Profitable</strong> means the real-money bottom line (payouts minus fees) came out
+                    positive. Every variant here still runs the base config's exact risk sizing — the optimizer only
+                    ever changes which trades get taken.
+                  </p>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>What was tried</th>
+                          <th>Win Rate</th>
+                          <th>Bottom Line</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...selectedOptimization.history]
+                          .sort((a, b) => b.fitness - a.fitness)
+                          .map((c, i) => (
+                            <tr key={i}>
+                              <td>{i === 0 ? "🏆" : i + 1}</td>
+                              <td>{c.rationale}</td>
+                              <td>{c.result.winRate.toFixed(1)}%</td>
+                              <td>
+                                <span className={`badge ${c.result.realWorldNetPnl > 0 ? "win" : "loss"}`}>
+                                  {fmtMoney(c.result.realWorldNetPnl)}
+                                  {c.result.realWorldNetPnl > 0 ? " Profitable" : ""}
+                                </span>
+                              </td>
+                              <td>
+                                <button
+                                  className="btn"
+                                  onClick={() => useOptimizedConfig(c.config, selectedOptimization.base_config_name)}
+                                >
+                                  Use This Config
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="empty-state">Select a saved optimization run to view its leaderboard.</div>
+            )
+          ) : activeConfig ? (
             <>
               <div className="strategy-detail-header">
                 <h2>{activeName}</h2>
@@ -835,16 +978,12 @@ export default function StrategiesPage() {
 
               {optimizeResult && (
                 <div className="bt-results">
-                  <div className="bt-results-header">
-                    <p className="bt-explainer" style={{ margin: 0 }}>
-                      Claude proposed parameter tweaks each round based on how prior variants actually performed against
-                      your real historical data. <strong>Profitable</strong> simply means the real-money bottom line
-                      (payouts minus fees) came out positive.
-                    </p>
-                    <button className="btn" onClick={saveOptimizationRun} disabled={busy !== "" || optimizeSaved}>
-                      {optimizeSaved ? "Saved ✓" : busy === "saving" ? "Saving…" : "Save This Run"}
-                    </button>
-                  </div>
+                  <p className="bt-explainer">
+                    Claude proposed parameter tweaks each round based on how prior variants actually performed against
+                    your real historical data. <strong>Profitable</strong> simply means the real-money bottom line
+                    (payouts minus fees) came out positive. This run is saved automatically — find it anytime under
+                    the Optimizations tab.
+                  </p>
                   {optimizeResult.warning && (
                     <div className="test-status test-status-error">{optimizeResult.warning}</div>
                   )}
