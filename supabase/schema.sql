@@ -67,6 +67,26 @@ create table if not exists public.strategies (
   created_at timestamptz not null default now()
 );
 
+-- is_active: which saved strategy the live Python bot should actually
+-- trade (jj_bot/config.py fetches this). At most one row per user can be
+-- active at a time; no active row means the bot falls back to the built-in
+-- JJ default (config.yaml). The bot is single-operator (see the account
+-- names comment above), so it looks for is_active=true across all rows,
+-- not scoped to a particular user.
+alter table public.strategies add column if not exists is_active boolean not null default false;
+
+create unique index if not exists strategies_one_active_per_user
+  on public.strategies (user_id)
+  where is_active;
+
+drop policy if exists "Users can update their own strategies" on public.strategies;
+create policy "Users can update their own strategies"
+  on public.strategies
+  for update
+  to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
 create index if not exists strategies_user_id_idx on public.strategies (user_id, created_at desc);
 
 alter table public.strategies enable row level security;

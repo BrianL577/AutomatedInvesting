@@ -1,6 +1,7 @@
 """Loads strategy/risk config from config.yaml and credentials from .env."""
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +11,102 @@ import yaml
 from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+logger = logging.getLogger("jj_bot.config")
+
+# Maps the dashboard's camelCase Strategy Creator schema (dashboard/lib/
+# strategySchema.ts) onto this module's snake_case StrategyConfig/RiskConfig
+# field names. Only fields the live rule engine (jj_bot/strategy.py) actually
+# implements are here — see _ACTIVE_STRATEGY_UNSUPPORTED_KEYS below for the
+# backtester-only features a saved strategy might also set.
+_ACTIVE_STRATEGY_FIELD_MAP = {
+    ("session", "open"): "session_open",
+    ("session", "hardCutoff"): "hard_cutoff",
+    ("phases", "continuationEndMin"): "continuation_end_minutes",
+    ("phases", "reversionEndMin"): "reversion_end_minutes",
+    ("entry", "displacementSizeRatio"): "displacement_size_ratio",
+    ("entry", "displacementPrevRatio"): "displacement_prev_ratio",
+    ("entry", "maxWickRatio"): "max_wick_ratio",
+    ("entry", "structureLookbackMin"): "structure_lookback",
+    ("entry", "swingStrength"): "swing_strength",
+    ("entry", "breakBufferPoints"): "break_buffer_points",
+    ("entry", "minExtensionPoints"): "min_extension_points",
+}
+_ACTIVE_RISK_FIELD_MAP = {
+    "stopPoints": "stop_points",
+    "targetPoints": "target_points",
+    "maxTradesPerDay": "max_trades_per_day",
+    "stopAfterConsecutiveLosses": "stop_after_consecutive_losses",
+    "contractsPerTrade": "contracts_per_trade",
+    "dailyProfitCap": "daily_profit_cap",
+    "dailyLossCap": "daily_loss_cap",
+}
+# Strategy Creator config keys the live engine has no equivalent for
+# (backtester-only: multi-session, portfolio staggering, date exclusions,
+# per-phase on/off toggles). A selected strategy using these still runs
+# live with its mapped fields applied — these are just silently ignored,
+# which we warn about so it's not a silent behavior gap.
+_ACTIVE_STRATEGY_UNSUPPORTED_KEYS = ("additionalSessions", "portfolio", "excludeDates")
+
+
+def _fetch_active_strategy_config() -> dict | None:
+    """Whichever saved strategy the dashboard's "My Accounts"/Strategy
+    Creator page has marked is_active=true (Supabase `strategies` table) —
+    this is what the live bot actually trades, instead of always the
+    built-in JJ default in config.yaml. Single-operator bot (see
+    _fetch_saved_account_names): looks for is_active=true across all rows,
+    not scoped to one user. Returns None (fall back to config.yaml) if
+    nothing is active or Supabase isn't configured."""
+    url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    if not url or not key:
+        return None
+    try:
+        resp = requests.get(
+            f"{url}/rest/v1/strategies",
+            params={"select": "config", "is_active": "eq.true", "limit": 1},
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        return rows[0]["config"] if rows else None
+    except requests.RequestException:
+        logger.warning("Could not fetch active strategy from Supabase; using config.yaml default.")
+        return None
+
+
+def _apply_active_strategy(raw_strategy: dict, raw_risk: dict) -> tuple[dict, dict]:
+    """Overrides config.yaml's strategy/risk dicts in-place with whatever
+    the active saved strategy (if any) specifies, field by field — anything
+    the saved strategy doesn't set keeps the config.yaml/JJ default value."""
+    active = _fetch_active_strategy_config()
+    if active is None:
+        logger.info("No active custom strategy selected — trading the default JJ strategy.")
+        return raw_strategy, raw_risk
+
+    strategy = dict(raw_strategy)
+    risk = dict(raw_risk)
+
+    for (section, key), field_name in _ACTIVE_STRATEGY_FIELD_MAP.items():
+        value = (active.get(section) or {}).get(key)
+        if value is not None:
+            strategy[field_name] = value
+
+    for key, field_name in _ACTIVE_RISK_FIELD_MAP.items():
+        value = (active.get("risk") or {}).get(key)
+        if value is not None:
+            risk[field_name] = value
+
+    unsupported = [k for k in _ACTIVE_STRATEGY_UNSUPPORTED_KEYS if active.get(k)]
+    name = active.get("name", "(unnamed)")
+    if unsupported:
+        logger.warning(
+            "Active strategy '%s' uses %s, which the live engine doesn't support yet "
+            "(backtester-only) — those parts are ignored; everything else still applies.",
+            name, unsupported,
+        )
+    logger.info("Trading active custom strategy: '%s'.", name)
+    return strategy, risk
 
 
 def _fetch_saved_account_names() -> list[str]:
@@ -188,9 +285,11 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         instrument=os.getenv("NT_INSTRUMENT", ""),
     )
 
+    active_strategy, active_risk = _apply_active_strategy(raw["strategy"], raw["risk"])
+
     return AppConfig(
-        strategy=StrategyConfig(**raw["strategy"]),
-        risk=RiskConfig(**raw["risk"]),
+        strategy=StrategyConfig(**active_strategy),
+        risk=RiskConfig(**active_risk),
         instrument=InstrumentConfig(**raw["instrument"]),
         topstep_eval=TopstepEvalConfig(**raw["topstep_eval"]),
         broker=os.getenv("BROKER", "ibkr").strip().lower(),

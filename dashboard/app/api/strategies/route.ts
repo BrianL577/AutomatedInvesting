@@ -4,6 +4,7 @@ import {
   deleteStrategyForCurrentUser,
   listStrategiesForCurrentUser,
   saveStrategyForCurrentUser,
+  setActiveStrategyForCurrentUser,
 } from "../../../lib/strategyStore";
 
 export const dynamic = "force-dynamic";
@@ -41,6 +42,24 @@ export async function POST(req: NextRequest) {
   const result = await saveStrategyForCurrentUser(parsed.data, source === "ai" ? "ai" : "manual", prompt);
   if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
   return NextResponse.json({ id: result.id });
+}
+
+export async function PATCH(req: NextRequest) {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const { activateId } = (body ?? {}) as { activateId?: string | null };
+  if (activateId === undefined) {
+    return NextResponse.json({ error: "Missing activateId (string id, or null for the default)" }, { status: 400 });
+  }
+
+  const result = await setActiveStrategyForCurrentUser(activateId);
+  if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+  return NextResponse.json({ ok: true });
 }
 
 export async function DELETE(req: NextRequest) {

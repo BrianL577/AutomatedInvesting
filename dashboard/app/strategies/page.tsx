@@ -396,6 +396,26 @@ export default function StrategiesPage() {
     }
   }
 
+  async function activateStrategy(id: string) {
+    setBusy("saving");
+    setMessage(null);
+    try {
+      const res = await fetch("/api/strategies", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ activateId: id === "default-jj" ? null : id }),
+      });
+      const data = await readJson(res);
+      if (!res.ok) throw new Error(data.error || "Failed to set live strategy");
+      setMessage({ kind: "ok", text: "Live trading strategy updated." });
+      await refresh();
+    } catch (err: any) {
+      setMessage({ kind: "error", text: err.message });
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function save() {
     if (!draft) return;
     setBusy("saving");
@@ -543,6 +563,23 @@ export default function StrategiesPage() {
                   <span className={`badge ${s.source === "default" ? "test" : s.source === "ai" ? "long" : "short"}`}>
                     {s.source}
                   </span>
+                  {s.is_active ? (
+                    <span className="badge win" title="This is what the live bot is currently trading">
+                      ● live
+                    </span>
+                  ) : (
+                    <button
+                      className="strategy-item-activate"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        activateStrategy(s.id);
+                      }}
+                      title="Make this the live-trading strategy"
+                      disabled={busy !== ""}
+                    >
+                      Set live
+                    </button>
+                  )}
                   {s.source !== "default" && (
                     <button
                       className="strategy-item-delete"

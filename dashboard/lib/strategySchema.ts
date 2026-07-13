@@ -135,6 +135,9 @@ export type SavedStrategy = {
   source: "default" | "ai" | "manual";
   prompt?: string | null;
   created_at: string;
+  // Whether the live Python bot (jj_bot/config.py) is currently trading
+  // this strategy. At most one strategy is active at a time.
+  is_active?: boolean;
 };
 
 /** JJ's strategy: the Python bot's config.yaml rules, updated with the

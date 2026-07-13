@@ -707,6 +707,29 @@ tbody tr:hover {
   background: rgba(248, 81, 73, 0.12);
 }
 
+.strategy-item-activate {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.strategy-item-activate:hover:not(:disabled) {
+  color: var(--green);
+  border-color: var(--green);
+  background: rgba(63, 185, 80, 0.1);
+}
+
+.strategy-item-activate:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .env-copy {
   display: block;
   background: #0f151d;
