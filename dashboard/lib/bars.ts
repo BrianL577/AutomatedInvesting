@@ -37,10 +37,13 @@ import type { Bar } from "./backtester";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-// ~2-3 years of near-continuous 1-minute NQ data (CME trades ~23h/day,
-// 5 days/week), kept safely under Vercel's 60s function budget even with
-// sequential keyset pagination (see module doc comment).
-const MAX_BARS = 200_000;
+// TEMP: uncapped for testing whether the full multi-year dataset fits
+// within Vercel's 60s function budget on /api/backtest (sequential keyset
+// pagination — see module doc comment). If a backtest starts timing out
+// (FUNCTION_INVOCATION_TIMEOUT / hangs past ~60s), REVERT THIS ONE LINE
+// back to a safe cap:
+//   const MAX_BARS = 200_000; // ~6 months of near-continuous 1-min data, safely under budget
+const MAX_BARS = 10_000_000;
 // PostgREST caps every request at 1000 rows regardless of the requested limit.
 const PAGE_SIZE = 1_000;
 const CONCURRENCY = 12;
