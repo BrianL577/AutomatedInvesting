@@ -39,7 +39,15 @@ load_dotenv(REPO_ROOT / ".env")
 
 BATCH = 2000
 POLL_SECONDS = 30
-OFFSET_FILE_NAME = ".sync_bars_offset"
+# Byte-offset based (not the old row-count ".sync_bars_offset"), so each
+# poll only reads bytes appended since last time instead of re-reading and
+# re-parsing the entire file — that used to get slower every cycle as
+# bars.csv grew into the millions of rows. New filename so an old row-count
+# offset is never misread as a byte position (which would corrupt the
+# resume point). First run after upgrading does one full re-scan (upserts
+# are idempotent, so this is safe, just a one-time cost); every run after
+# that only reads the new tail.
+OFFSET_FILE_NAME = ".sync_bars_byte_offset"
 
 
 def main() -> None:
@@ -57,7 +65,7 @@ def main() -> None:
     tz = ZoneInfo(tz_name)
 
     print(f"Watching {bars_csv} (timezone: {tz_name}). Ctrl+C to stop.")
-    offset = int(offset_file.read_text()) if offset_file.exists() else 0
+    byte_offset = int(offset_file.read_text()) if offset_file.exists() else 0
 
     headers = {
         "apikey": key,
@@ -66,41 +74,42 @@ def main() -> None:
         "Prefer": "resolution=merge-duplicates,return=minimal",
     }
 
+    total_synced = 0
     while True:
-        rows = _read_new_rows(bars_csv, offset, tz)
+        rows, byte_offset = _read_new_rows(bars_csv, byte_offset, tz)
         if rows:
             for i in range(0, len(rows), BATCH):
                 chunk = rows[i:i + BATCH]
                 resp = requests.post(f"{url}/rest/v1/bars?on_conflict=t", json=chunk, headers=headers, timeout=60)
                 resp.raise_for_status()
-            offset += len(rows)
-            offset_file.write_text(str(offset))
-            print(f"Synced {len(rows)} new bar(s), {offset} total so far.")
+            offset_file.write_text(str(byte_offset))
+            total_synced += len(rows)
+            print(f"Synced {len(rows)} new bar(s), {total_synced} total so far.")
         time.sleep(POLL_SECONDS)
 
 
-def _read_new_rows(bars_csv: Path, offset: int, tz: ZoneInfo) -> list[dict]:
+def _read_new_rows(bars_csv: Path, byte_offset: int, tz: ZoneInfo) -> tuple[list[dict], int]:
     if not bars_csv.exists():
-        return []
-    with open(bars_csv, newline="") as f:
-        reader = csv.reader(f)
-        all_rows = list(reader)
-    new_rows = all_rows[offset:]
+        return [], byte_offset
     out = []
-    for row in new_rows:
-        if len(row) < 6:
-            continue
-        ts_naive, o, h, l, c, v = row[:6]
-        try:
-            local_dt = _parse_naive(ts_naive).replace(tzinfo=tz)
-        except ValueError:
-            continue
-        out.append({
-            "t": local_dt.isoformat(),
-            "o": float(o), "h": float(h), "l": float(l), "c": float(c),
-            "v": float(v) if v else 0.0,
-        })
-    return out
+    with open(bars_csv, newline="") as f:
+        f.seek(byte_offset)
+        reader = csv.reader(f)
+        for row in reader:
+            if len(row) < 6:
+                continue
+            ts_naive, o, h, l, c, v = row[:6]
+            try:
+                local_dt = _parse_naive(ts_naive).replace(tzinfo=tz)
+            except ValueError:
+                continue
+            out.append({
+                "t": local_dt.isoformat(),
+                "o": float(o), "h": float(h), "l": float(l), "c": float(c),
+                "v": float(v) if v else 0.0,
+            })
+        new_byte_offset = f.tell()
+    return out, new_byte_offset
 
 
 def _parse_naive(ts: str):
