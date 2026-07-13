@@ -18,22 +18,27 @@ risk:
   # Reverted from the AI-Optimize "Row #1" geometry (45pt/35pt on 3 contracts):
   # that config's $2,700 max single-trade loss exceeded the real Topstep
   # trailing drawdown limit ($2,000 below), meaning a single loss would
-  # guaranteed-bust the eval. This 25pt/37pt/2-contract sizing is deliberately
+  # guaranteed-bust the eval. This 25pt/38pt/2-contract sizing is deliberately
   # designed around the real account numbers: $1,000 loss x 2 losing days =
-  # exactly the $2,000 drawdown limit. Target is 37pt (not 38) so a single
-  # winning day ($1,480) stays under Topstep's Consistency Target (best day
-  # must be <= 50% of the $3,000 profit target, i.e. <= $1,500) — this means
-  # clearing $3,000 now takes 3 winning days minimum, not 2.
+  # exactly the $2,000 drawdown limit; $1,520 gain x 2 winning days = $3,040,
+  # clearing the $3,000 profit target with margin. Per user instruction.
+  #
+  # NOTE on Topstep's Consistency Target: best single day must stay <=50% of
+  # the $3,000 profit target ($1,500) or "the Profit Target increases" —
+  # confirmed this does NOT fail the account, it's a soft constraint, not a
+  # bust condition. $1,520 slightly exceeds $1,500 (per user's own
+  # confirmation from a Topstep trader — small overage accounts for fees).
+  # The exact escalation formula (how much the target increases) is NOT
+  # currently known or modeled — confirm with Topstep before assuming 2
+  # winning days still cleanly passes under a raised target.
   stop_points: 25
-  target_points: 37              # ~1:1.48 R:R, kept under the Consistency Target
+  target_points: 38              # ~1:1.5 R:R as in the video
   max_trades_per_day: 1          # one trade per account per day, per user instruction
   stop_after_consecutive_losses: 2
-  contracts_per_trade: 2         # 25pts=-$1000, 37pts=+$1480 at $20/point — never 1 contract
+  contracts_per_trade: 2         # 25pts=-$1000, 38pts=+$1520 at $20/point — never 1 contract
   # Daily rate limiter: stop trading for the day once running P&L touches
-  # either cap. 1500 = 50% of the $3,000 profit target (Topstep's
-  # Consistency Target threshold) — non-binding in practice since a single
-  # trade already stays under it, kept aligned with the real rule.
-  daily_profit_cap: 1500
+  # either cap. Sized to the real Topstep account rules above.
+  daily_profit_cap: 1520
   daily_loss_cap: 1000
 
 instrument:

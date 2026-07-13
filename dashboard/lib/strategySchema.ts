@@ -168,13 +168,14 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
     "reversion back toward the opening price until 90 minutes in. Trades the 8:30 ET news window, the " +
     "9:30 NY open, the 2:00pm NY PM session, and the 8:00pm Asian open — more sessions means more " +
     "attempts per day. Entries require a displacement candle (large true range, small wicks) that breaks " +
-    "and closes through recent swing structure. Static bracket exits, never moved: 25pt stop / 37pt " +
-    "target on 2 contracts ($1,000 / $1,480 on NQ), one trade per account per day — the trade runs to " +
-    "either the full stop or the full target, no early exits. Sized around the real Topstep account " +
-    "rules: $1,000 loss x 2 losing days = the $2,000 trailing drawdown limit exactly; $1,480 max single " +
-    "day stays under the Consistency Target (best day must be <= 50% of the $3,000 profit target, i.e. " +
-    "<= $1,500) — this means clearing the $3,000 target now takes 3 winning days minimum, not 2, since a " +
-    "single-day win no longer clears $1,500.",
+    "and closes through recent swing structure. Static bracket exits, never moved: 25pt stop / 38pt " +
+    "target on 2 contracts ($1,000 / $1,520 on NQ), one trade per account per day — the trade runs to " +
+    "either the full stop or the full target, no early exits. Sized deliberately around the real " +
+    "Topstep account rules: $1,000 loss x 2 losing days = the $2,000 trailing drawdown limit exactly; " +
+    "$1,520 gain x 2 winning days = $3,040, clearing the $3,000 profit target with margin. $1,520 " +
+    "slightly exceeds Topstep's Consistency Target (best day <= 50% of profit target, i.e. <= $1,500) " +
+    "but does not fail the account, per Topstep's rule — it's a soft constraint (profit target " +
+    "increases), not a bust condition. The exact escalation formula isn't modeled here.",
   session: {
     open: "09:30",
     hardCutoff: "11:00",
@@ -201,15 +202,15 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
   },
   risk: {
     stopPoints: 25,
-    targetPoints: 37,
+    targetPoints: 38,
     maxTradesPerDay: 1,
     stopAfterConsecutiveLosses: 2,
     contractsPerTrade: 2,
-    // 1500 = 50% of the $3,000 profit target, Topstep's Consistency Target
-    // threshold. With targetPoints=37 x 2 contracts x $20/pt = $1,480 max
-    // per trade, this cap is non-binding in practice (one trade/day already
-    // stays under it) but kept aligned with the real rule for clarity.
-    dailyProfitCap: 1500,
+    // $1,520 = targetPoints x contracts x $20/pt, per the description above.
+    // Slightly exceeds Topstep's Consistency Target ($1,500 = 50% of the
+    // $3,000 profit target) — confirmed this is a soft constraint (profit
+    // target increases), not a bust condition, so kept per user instruction.
+    dailyProfitCap: 1520,
     dailyLossCap: 1000,
   },
   eval: {
