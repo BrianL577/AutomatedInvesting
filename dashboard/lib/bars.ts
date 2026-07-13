@@ -64,11 +64,11 @@ function supabaseHeaders(extra?: Record<string, string>): Record<string, string>
  * multi-hundred-page load back to synthetic sample data. Logs every
  * failure (including the final one) so a real problem is always visible in
  * Vercel's function logs instead of silently degrading. */
-async function fetchWithRetry(url: string, context: string): Promise<Response | null> {
+async function fetchWithRetry(url: string, context: string, extraHeaders?: Record<string, string>): Promise<Response | null> {
   let lastError = "";
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const res = await fetch(url, { headers: supabaseHeaders(), cache: "no-store" });
+      const res = await fetch(url, { headers: supabaseHeaders(extraHeaders), cache: "no-store" });
       if (res.ok) return res;
       lastError = `HTTP ${res.status}: ${await res.text().catch(() => "")}`;
     } catch (err) {
@@ -80,11 +80,24 @@ async function fetchWithRetry(url: string, context: string): Promise<Response | 
   return null;
 }
 
-/** Total row count via a zero-row request with Prefer: count=exact. */
+/** Total row count via a zero-row request with Prefer: count=estimated.
+ * NOT count=exact: an exact COUNT(*) over a multi-million-row table is a
+ * full scan and can exceed Postgres's statement_timeout outright — that's
+ * exactly what was happening here (content-range came back "0-0/*", i.e.
+ * "count unavailable", once the table crossed into the millions of rows).
+ * count=estimated uses the query planner's row estimate instead (same
+ * technique Supabase's own dashboard Table Editor uses past ~50k rows) —
+ * fast regardless of table size, at the cost of being approximate rather
+ * than exact, which is fine here: we only need it to decide which fetch
+ * strategy to use, not for anything requiring precision. */
 async function fetchBarCount(baseUrl: string): Promise<number | null> {
-  const res = await fetchWithRetry(`${baseUrl}/rest/v1/bars?select=t&limit=1`, "fetchBarCount");
+  const res = await fetchWithRetry(`${baseUrl}/rest/v1/bars?select=t&limit=1`, "fetchBarCount", {
+    Prefer: "count=estimated",
+    Range: "0-0",
+  });
   if (!res) return null;
-  // content-range looks like "0-0/123456"
+  // content-range looks like "0-0/123456", or "0-0/*" if even the estimate
+  // was unavailable (shouldn't happen with count=estimated, but handle it).
   const total = res.headers.get("content-range")?.split("/")[1];
   const n = total ? parseInt(total, 10) : NaN;
   if (!Number.isFinite(n)) {
