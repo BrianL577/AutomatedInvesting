@@ -67,16 +67,17 @@ export async function POST(req: NextRequest) {
     const response = await client.messages.create({
       model: "claude-opus-4-8",
       max_tokens: 4096,
-      // Bounded, not "adaptive" — adaptive can think for long enough to
-      // exceed Vercel's 60s function timeout on some requests. A fixed
-      // budget keeps response time predictable.
-      thinking: { type: "enabled", budget_tokens: 3000 },
+      thinking: { type: "adaptive" },
       // Static across every call — mark cacheable so repeat requests within
       // the cache TTL bill ~10% of input cost for this block instead of
       // full price. Same exact prompt, no change in what the model sees.
       system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
+      // effort (not thinking.budget_tokens, which claude-opus-4-8 rejects)
+      // bounds adaptive thinking time — "low" keeps response time
+      // predictable against Vercel's 60s function timeout.
       output_config: {
         format: { type: "json_schema", schema: STRATEGY_JSON_SCHEMA },
+        effort: "low",
       },
       messages: [
         {
