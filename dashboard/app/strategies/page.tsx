@@ -796,8 +796,9 @@ export default function StrategiesPage() {
                     <NumField label="Account size ($)" hint="Simulated prop-firm account starting balance." value={editForm.eval.accountSize} onChange={(v) => setEditField("eval", "accountSize", v)} step={1000} min={1000} max={1000000} />
                     <NumField label="Profit target ($)" hint="Profit needed to pass the eval." value={editForm.eval.profitTarget} onChange={(v) => setEditField("eval", "profitTarget", v)} step={100} min={100} max={100000} />
                     <NumField label="Trailing max drawdown ($)" hint="Balance drop from peak that busts the account — a single trade's max loss must stay under this." value={editForm.eval.trailingMaxDrawdown} onChange={(v) => setEditField("eval", "trailingMaxDrawdown", v)} step={100} min={100} max={100000} />
-                    <NumField label="Funded payout threshold ($)" hint="Cumulative profit needed, once funded, before a cash payout unlocks." value={editForm.eval.fundedProfitThreshold ?? 4000} onChange={(v) => setEditField("eval", "fundedProfitThreshold", v)} step={100} min={0} max={1000000} />
-                    <NumField label="Payout share (0-1)" hint="Fraction of funded profit paid out when a payout triggers (e.g. 0.5 = 50%)." value={editForm.eval.payoutShareRatio ?? 0.5} onChange={(v) => setEditField("eval", "payoutShareRatio", v)} step={0.05} min={0} max={1} />
+                    <NumField label="Winning days for payout" hint="Days (each clearing the profit threshold below) needed, once funded, before a payout becomes eligible — Topstep Standard Path is 5 days, not a cumulative-dollar target." value={editForm.eval.minWinningDaysForPayout ?? 5} onChange={(v) => setEditField("eval", "minWinningDaysForPayout", v)} min={1} max={60} />
+                    <NumField label="Winning day profit ($)" hint="Minimum net P&L a day needs to count toward the winning-days requirement above." value={editForm.eval.minWinningDayProfit ?? 150} onChange={(v) => setEditField("eval", "minWinningDayProfit", v)} step={10} min={0} max={100000} />
+                    <NumField label="Payout share (0-1)" hint="Fraction of profit-since-last-payout paid out when a payout triggers (Topstep is 0.9 = 90% trader / 10% firm, for accounts opened on/after Jan 12, 2026)." value={editForm.eval.payoutShareRatio ?? 0.9} onChange={(v) => setEditField("eval", "payoutShareRatio", v)} step={0.05} min={0} max={1} />
                     <NumField label="Max payout per event ($)" hint="Hard cap on a single payout, regardless of the share calculation." value={editForm.eval.maxPayoutPerEvent ?? 2000} onChange={(v) => setEditField("eval", "maxPayoutPerEvent", v)} step={100} min={0} max={1000000} />
                   </div>
                 </div>
@@ -860,7 +861,7 @@ export default function StrategiesPage() {
                   </div>
 
                   <div className="bt-results-header" style={{ marginTop: 20 }}>
-                    <h3>Real Money <Hint text="Actual money in and out of your pocket: $50 per eval/reactivation, and once funded, $4,000 cumulative profit unlocks a payout at 50% share, capped at $2,000 per event (50% single-day consistency rule). Verify these against the firm's current rules." /></h3>
+                    <h3>Real Money <Hint text="Actual money in and out of your pocket: $50 per eval/reactivation, and once funded, 5 winning days of $150+ each unlock a payout at 90% share (10% to the firm), capped at $2,000 per event — Topstep's actual Standard Path rule, not a cumulative-dollar target. After every payout the drawdown buffer resets to $0, so the very next losing day can bust the account outright. Verify these against the firm's current rules." /></h3>
                   </div>
                   <div className="stat-grid">
                     <StatCard

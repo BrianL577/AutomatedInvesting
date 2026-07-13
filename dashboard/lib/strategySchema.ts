@@ -104,16 +104,24 @@ export const StrategyConfigSchema = z
         trailingMaxDrawdown: z.number().min(100).max(100000),
         // Real-world prop-firm economics — optional/backward-compatible so
         // older saved strategies (and AI-generated configs that omit them)
-        // still validate; runBacktest() applies defaults when absent. These
-        // default to what the user described for TopStep-style firms, but
-        // exact current fees/thresholds vary by firm and change over time —
-        // verify against the actual firm's current rules before trusting
-        // the "real-world" dollar figures for a real decision.
+        // still validate; runBacktest() applies defaults when absent.
+        // Verified against Topstep's actual published Standard Path rules
+        // (help.topstep.com) as of this writing — confirm against their
+        // current rules before trusting the "real-world" dollar figures for
+        // a real decision, since prop firms change these over time.
         evalFeeDollars: z.number().min(0).max(10000).optional(),
         reactivationFeeDollars: z.number().min(0).max(10000).optional(),
+        // No longer used by the payout mechanic (see minWinningDaysForPayout
+        // below) — kept only so older saved strategies with this field set
+        // still pass validation.
         fundedProfitThreshold: z.number().min(0).max(1000000).optional(),
         payoutShareRatio: z.number().min(0).max(1).optional(),
         maxPayoutPerEvent: z.number().min(0).max(1000000).optional(),
+        // Standard Path payout eligibility: N days each clearing $X net
+        // P&L, NOT a cumulative-dollar threshold. Defaults (5 days, $150)
+        // are Topstep's actual current published Standard Path numbers.
+        minWinningDaysForPayout: z.number().int().min(1).max(60).optional(),
+        minWinningDayProfit: z.number().min(0).max(100000).optional(),
       })
       .strict(),
   })
@@ -186,11 +194,14 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
     accountSize: 50000,
     profitTarget: 3000,
     trailingMaxDrawdown: 2000,
-    // Once funded, $4,000 cumulative profit unlocks a payout capped at
-    // $2,000 (50% share) — the user's real account's cash-out rule.
-    fundedProfitThreshold: 4000,
-    payoutShareRatio: 0.5,
+    // Topstep Standard Path, 50K account, signed up on/after Jan 12, 2026
+    // (flat 90/10 split from dollar one — no first-$10k-at-100% bonus).
+    // Payout eligibility is 5 winning days (each >= $150 net P&L), NOT a
+    // cumulative-dollar threshold — see minWinningDaysForPayout below.
+    payoutShareRatio: 0.9,
     maxPayoutPerEvent: 2000,
+    minWinningDaysForPayout: 5,
+    minWinningDayProfit: 150,
   },
 };
 

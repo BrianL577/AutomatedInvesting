@@ -389,16 +389,29 @@ function simulateSession(
 
 /** One account's full chronological lifecycle over a daily P&L series: buy
  * an eval, bust -> pay reactivation and restart next day, pass -> funded
- * stage with payout share, per-event cap, and the 50% single-day
- * consistency rule. `startDay` lets staggered/portfolio accounts begin
- * partway through the series. Module-level (not a runBacktest closure) so
- * it can be reused by session-split multi-account backtests too. */
+ * stage with day-count-based payout eligibility. `startDay` lets
+ * staggered/portfolio accounts begin partway through the series.
+ * Module-level (not a runBacktest closure) so it can be reused by
+ * session-split multi-account backtests too.
+ *
+ * Payout mechanic matches Topstep's actual Standard Path rule (confirmed
+ * via Topstep's help center, not guessed): a payout becomes eligible once
+ * minWinningDaysForPayout days (default 5) each cleared
+ * minWinningDayProfit (default $150) net P&L — NOT a cumulative-dollar
+ * threshold. The payout itself is min(maxPayoutPerEvent, profit-since-
+ * last-payout x payoutShareRatio) — payoutShareRatio defaults to 0.9 (90%
+ * trader / 10% Topstep, the flat split for accounts opened on/after Jan
+ * 12, 2026). After every payout, the winning-day counter AND the trailing
+ * drawdown buffer both reset — Topstep's real rule is that your Maximum
+ * Loss Limit resets to $0 the moment funds are withdrawn, so the very next
+ * losing day can bust the account outright with zero cushion. */
 function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: number) {
   const evalFee = cfg.eval.evalFeeDollars ?? 50;
   const reactivationFee = cfg.eval.reactivationFeeDollars ?? 50;
-  const fundedThreshold = cfg.eval.fundedProfitThreshold ?? 4000;
-  const payoutShare = cfg.eval.payoutShareRatio ?? 0.5;
+  const payoutShare = cfg.eval.payoutShareRatio ?? 0.9;
   const maxPayout = cfg.eval.maxPayoutPerEvent ?? 2000;
+  const minWinningDaysForPayout = cfg.eval.minWinningDaysForPayout ?? 5;
+  const minWinningDayProfit = cfg.eval.minWinningDayProfit ?? 150;
 
   let feesPaid = 0;
   let cashPayouts = 0;
@@ -420,14 +433,14 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
     let highWater = balance;
     let floor = balance - cfg.eval.trailingMaxDrawdown;
     let funded = false;
-    let fundedHighWater = 0;
-    let fundedWindowDailyPnls: number[] = [];
     let busted = false;
+    let winningDaysSincePayout = 0;
+    let profitSincePayout = 0;
 
     for (; d < series.length; d++) {
       dayPhase[d] = funded ? "funded" : "eval";
-      balance += series[d];
-      if (funded) fundedWindowDailyPnls.push(series[d]);
+      const dayPnl = series[d];
+      balance += dayPnl;
       if (balance <= floor) {
         busted = true;
         d++;
@@ -440,23 +453,25 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
       if (!funded && balance >= cfg.eval.accountSize + cfg.eval.profitTarget) {
         funded = true;
         fundedCount++;
-        fundedHighWater = balance;
-        fundedWindowDailyPnls = [];
+        winningDaysSincePayout = 0;
+        profitSincePayout = 0;
       }
       if (funded) {
-        const fundedProfit = balance - fundedHighWater;
-        if (fundedProfit >= fundedThreshold) {
-          // 50% consistency rule: no single day in this funded window can
-          // account for more than half the window's total profit, or the
-          // payout doesn't qualify yet — keep accruing until it does.
-          const maxSingleDayProfit = Math.max(0, ...fundedWindowDailyPnls);
-          const consistent = maxSingleDayProfit <= fundedProfit * 0.5;
-          if (consistent) {
-            const payout = Math.min(maxPayout, fundedProfit * payoutShare);
+        profitSincePayout += dayPnl;
+        if (dayPnl >= minWinningDayProfit) winningDaysSincePayout++;
+        if (winningDaysSincePayout >= minWinningDaysForPayout) {
+          const payout = Math.max(0, Math.min(maxPayout, profitSincePayout * payoutShare));
+          if (payout > 0) {
             cashPayouts += payout;
-            fundedHighWater = balance; // reset so further profit can trigger another payout
-            fundedWindowDailyPnls = [];
+            // Real rule: Maximum Loss Limit resets to $0 the moment funds
+            // are withdrawn — zero drawdown buffer until the balance
+            // climbs again, so the very next losing day can bust the
+            // account outright.
+            floor = balance;
+            highWater = balance;
           }
+          winningDaysSincePayout = 0;
+          profitSincePayout = 0;
         }
       }
     }
