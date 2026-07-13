@@ -402,11 +402,12 @@ function simulateSession(
 // ---------- full backtest + prop-firm eval simulation ----------
 
 /** One account's full chronological lifecycle over a daily P&L series: buy
- * an eval, bust -> pay reactivation and restart next day, pass -> funded
- * stage with day-count-based payout eligibility. `startDay` lets
- * staggered/portfolio accounts begin partway through the series.
- * Module-level (not a runBacktest closure) so it can be reused by
- * session-split multi-account backtests too.
+ * a Combine (monthly subscription, not a one-time fee), bust -> restart
+ * next day (still billed monthly), pass -> pay the one-time funded
+ * activation fee and enter the funded stage with day-count-based payout
+ * eligibility. `startDay` lets staggered/portfolio accounts begin partway
+ * through the series. Module-level (not a runBacktest closure) so it can
+ * be reused by session-split multi-account backtests too.
  *
  * Payout mechanic matches Topstep's actual Standard Path rule (confirmed
  * via Topstep's help center, not guessed): a payout becomes eligible once
@@ -420,8 +421,20 @@ function simulateSession(
  * Loss Limit resets to $0 the moment funds are withdrawn, so the very next
  * losing day can bust the account outright with zero cushion. */
 function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: number) {
-  const evalFee = cfg.eval.evalFeeDollars ?? 50;
-  const reactivationFee = cfg.eval.reactivationFeeDollars ?? 50;
+  // Topstep's Combine is a MONTHLY SUBSCRIPTION, not a per-attempt
+  // purchase — busting and resetting within the same Combine doesn't
+  // itself trigger a new charge, you just keep paying the same monthly
+  // rate. Modeled here as: charge monthlyFee immediately at the start of
+  // each fresh attempt (buying/restarting a Combine), then again every
+  // ~21 trading days (one month) while still in eval; billing pauses once
+  // funded (charge the one-time activation fee instead) and resumes if a
+  // funded account later busts and a new Combine attempt starts. This is a
+  // reasonable approximation, not confirmed against Topstep's exact
+  // reset/billing mechanics — verify with Topstep support before trusting
+  // the fee totals for a real decision.
+  const monthlyFee = cfg.eval.monthlyFeeDollars ?? cfg.eval.evalFeeDollars ?? 49;
+  const activationFee = cfg.eval.fundedActivationFeeDollars ?? 149;
+  const TRADING_DAYS_PER_MONTH = 21;
   const payoutShare = cfg.eval.payoutShareRatio ?? 0.9;
   const maxPayout = cfg.eval.maxPayoutPerEvent ?? 2000;
   const minWinningDaysForPayout = cfg.eval.minWinningDaysForPayout ?? 5;
@@ -437,11 +450,11 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
   // account permanently busts with no more attempts are left "none".
   const dayPhase: ("eval" | "funded" | "none")[] = new Array(series.length).fill("none");
   let d = Math.min(startDay, series.length);
-  let firstAttempt = true;
   while (d < series.length) {
     attemptsBought++;
-    feesPaid += firstAttempt ? evalFee : reactivationFee;
-    firstAttempt = false;
+    // Force an immediate monthly charge at the start of this attempt —
+    // buying/restarting a Combine.
+    let evalDaysSinceLastBill = TRADING_DAYS_PER_MONTH;
 
     let balance = cfg.eval.accountSize;
     let highWater = balance;
@@ -453,6 +466,13 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
 
     for (; d < series.length; d++) {
       dayPhase[d] = funded ? "funded" : "eval";
+      if (!funded) {
+        evalDaysSinceLastBill++;
+        if (evalDaysSinceLastBill >= TRADING_DAYS_PER_MONTH) {
+          feesPaid += monthlyFee;
+          evalDaysSinceLastBill = 0;
+        }
+      }
       const dayPnl = series[d];
       balance += dayPnl;
       if (balance <= floor) {
@@ -467,6 +487,7 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
       if (!funded && balance >= cfg.eval.accountSize + cfg.eval.profitTarget) {
         funded = true;
         fundedCount++;
+        feesPaid += activationFee;
         winningDaysSincePayout = 0;
         profitSincePayout = 0;
       }

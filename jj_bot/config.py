@@ -156,7 +156,7 @@ class RiskConfig:
     max_trades_per_day: int
     stop_after_consecutive_losses: int
     contracts_per_trade: int
-    daily_profit_cap: float = 1520.0
+    daily_profit_cap: float = 1500.0  # 50% of the $3,000 Topstep profit target (Consistency Target)
     daily_loss_cap: float = 1000.0
 
 

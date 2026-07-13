@@ -109,6 +109,19 @@ export const StrategyConfigSchema = z
         // (help.topstep.com) as of this writing — confirm against their
         // current rules before trusting the "real-world" dollar figures for
         // a real decision, since prop firms change these over time.
+        //
+        // Topstep's Combine is a MONTHLY SUBSCRIPTION, not a per-attempt
+        // purchase — busting doesn't itself trigger a new charge; you keep
+        // paying the same monthly rate (unlimited resets assumed within
+        // that subscription — CONFIRM this with Topstep support directly,
+        // since it's not fully verified) until you pass or cancel.
+        monthlyFeeDollars: z.number().min(0).max(10000).optional(),
+        // One-time fee charged once when you pass and activate the funded
+        // account (Topstep: Express Funded Account activation, $149).
+        fundedActivationFeeDollars: z.number().min(0).max(10000).optional(),
+        // Deprecated per-attempt fee fields — no longer used by the
+        // monthly-subscription payout mechanic above; kept only so older
+        // saved strategies with these fields set still pass validation.
         evalFeeDollars: z.number().min(0).max(10000).optional(),
         reactivationFeeDollars: z.number().min(0).max(10000).optional(),
         // No longer used by the payout mechanic (see minWinningDaysForPayout
@@ -155,11 +168,13 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
     "reversion back toward the opening price until 90 minutes in. Trades the 8:30 ET news window, the " +
     "9:30 NY open, the 2:00pm NY PM session, and the 8:00pm Asian open — more sessions means more " +
     "attempts per day. Entries require a displacement candle (large true range, small wicks) that breaks " +
-    "and closes through recent swing structure. Static bracket exits, never moved: 25pt stop / 38pt " +
-    "target on 2 contracts ($1,000 / $1,520 on NQ), one trade per account per day — the trade runs to " +
-    "either the full stop or the full target, no early exits. Sized deliberately around the real " +
-    "Topstep account rules: $1,000 loss x 2 losing days = the $2,000 trailing drawdown limit exactly; " +
-    "$1,520 gain x 2 winning days = $3,040, clearing the $3,000 profit target with margin.",
+    "and closes through recent swing structure. Static bracket exits, never moved: 25pt stop / 37pt " +
+    "target on 2 contracts ($1,000 / $1,480 on NQ), one trade per account per day — the trade runs to " +
+    "either the full stop or the full target, no early exits. Sized around the real Topstep account " +
+    "rules: $1,000 loss x 2 losing days = the $2,000 trailing drawdown limit exactly; $1,480 max single " +
+    "day stays under the Consistency Target (best day must be <= 50% of the $3,000 profit target, i.e. " +
+    "<= $1,500) — this means clearing the $3,000 target now takes 3 winning days minimum, not 2, since a " +
+    "single-day win no longer clears $1,500.",
   session: {
     open: "09:30",
     hardCutoff: "11:00",
@@ -186,11 +201,15 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
   },
   risk: {
     stopPoints: 25,
-    targetPoints: 38,
+    targetPoints: 37,
     maxTradesPerDay: 1,
     stopAfterConsecutiveLosses: 2,
     contractsPerTrade: 2,
-    dailyProfitCap: 1520,
+    // 1500 = 50% of the $3,000 profit target, Topstep's Consistency Target
+    // threshold. With targetPoints=37 x 2 contracts x $20/pt = $1,480 max
+    // per trade, this cap is non-binding in practice (one trade/day already
+    // stays under it) but kept aligned with the real rule for clarity.
+    dailyProfitCap: 1500,
     dailyLossCap: 1000,
   },
   eval: {
@@ -205,6 +224,12 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
     maxPayoutPerEvent: 2000,
     minWinningDaysForPayout: 5,
     minWinningDayProfit: 150,
+    // Real Topstep Standard Path pricing for the 50K Combine, confirmed
+    // against the trader's own active subscription — NOT the $95/mo "No
+    // Activation Fee Path" figure. Confirm before trusting for a real
+    // decision, since these can change.
+    monthlyFeeDollars: 49,
+    fundedActivationFeeDollars: 149,
   },
 };
 
