@@ -94,7 +94,10 @@ class NinjaTraderClient:
         # this prefix, not by content, and silently rejects anything else
         # with "Unknown OIF file type" in its Log tab.
         path = self.incoming_dir / f"oif_{uuid.uuid4().hex}.txt"
-        path.write_text(";".join(fields) + ";\n")
+        # Exactly 13 semicolon-separated fields, no trailing semicolon —
+        # an extra trailing ";" creates a phantom 14th empty field, which
+        # ATI rejects with "invalid # of parameters, should be 13 but is 14".
+        path.write_text(";".join(fields) + "\n")
 
     def place_bracket_order(
         self,
