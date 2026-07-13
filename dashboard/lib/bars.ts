@@ -7,12 +7,15 @@
  * Creator works out of the box — results on the sample are clearly labeled
  * as synthetic, not real market performance.
  *
- * Performance: PostgREST caps each request at 1,000 rows, so a year of
- * 1-minute data is 100+ pages. Fetching those sequentially on every API call
- * blew Vercel's 60s function limit (FUNCTION_INVOCATION_TIMEOUT). Instead we
- * read the exact row count once, fetch all pages with bounded concurrency,
- * and keep the result in module memory so warm invocations skip the download
- * entirely.
+ * Performance: PostgREST caps each request at 1,000 rows, so multiple years
+ * of 1-minute data is hundreds of pages. Fetching those sequentially on
+ * every API call blew Vercel's 60s function limit
+ * (FUNCTION_INVOCATION_TIMEOUT). Instead we read the exact row count once,
+ * fetch all pages with bounded concurrency, and keep the result in module
+ * memory so warm invocations skip the download entirely. If the dataset
+ * exceeds MAX_BARS, we fetch the MOST RECENT rows (not the earliest) so a
+ * continuously growing NinjaTrader sync never silently stalls backtests on
+ * stale history once the cap is crossed.
  */
 import { promises as fs } from "fs";
 import path from "path";
@@ -21,7 +24,10 @@ import type { Bar } from "./backtester";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-const MAX_BARS = 200_000;
+// ~2-3 years of near-continuous 1-minute NQ data (CME trades ~23h/day,
+// 5 days/week). 500 pages at PAGE_SIZE=1000, well within Vercel's function
+// time budget at CONCURRENCY=12 concurrent requests.
+const MAX_BARS = 500_000;
 // PostgREST caps every request at 1000 rows regardless of the requested limit.
 const PAGE_SIZE = 1_000;
 const CONCURRENCY = 12;
@@ -52,9 +58,9 @@ async function fetchBarCount(baseUrl: string): Promise<number | null> {
   return Number.isFinite(n) ? n : null;
 }
 
-async function fetchPage(baseUrl: string, offset: number): Promise<Bar[] | null> {
+async function fetchPage(baseUrl: string, offset: number, order: "asc" | "desc"): Promise<Bar[] | null> {
   const res = await fetch(
-    `${baseUrl}/rest/v1/bars?select=t,o,h,l,c,v&order=t.asc&limit=${PAGE_SIZE}&offset=${offset}`,
+    `${baseUrl}/rest/v1/bars?select=t,o,h,l,c,v&order=t.${order}&limit=${PAGE_SIZE}&offset=${offset}`,
     { headers: supabaseHeaders(), cache: "no-store" }
   );
   if (!res.ok) return null;
@@ -68,7 +74,14 @@ async function loadBarsFromSupabase(): Promise<Bar[] | null> {
     const count = await fetchBarCount(baseUrl);
     if (!count || count <= 0) return null;
 
+    // When the dataset exceeds MAX_BARS, prefer the MOST RECENT bars, not
+    // the earliest — a growing NinjaTrader sync should always surface fresh
+    // data to backtests, never silently stall on the oldest slice once the
+    // total crosses the cap. Fetch newest-first, then reverse to
+    // chronological order for the rest of the codebase (which assumes
+    // ascending timestamps).
     const total = Math.min(count, MAX_BARS);
+    const order: "asc" | "desc" = count > MAX_BARS ? "desc" : "asc";
     const offsets: number[] = [];
     for (let offset = 0; offset < total; offset += PAGE_SIZE) offsets.push(offset);
 
@@ -79,7 +92,7 @@ async function loadBarsFromSupabase(): Promise<Bar[] | null> {
       while (!failed) {
         const i = next++;
         if (i >= offsets.length) return;
-        const page = await fetchPage(baseUrl, offsets[i]);
+        const page = await fetchPage(baseUrl, offsets[i], order);
         if (page === null) {
           failed = true;
           return;
@@ -91,6 +104,7 @@ async function loadBarsFromSupabase(): Promise<Bar[] | null> {
     if (failed) return null;
 
     const all = pages.flat();
+    if (order === "desc") all.reverse();
     return all.length > 0 ? all : null;
   } catch {
     return null;
