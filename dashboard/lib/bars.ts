@@ -10,12 +10,25 @@
  * Performance: PostgREST caps each request at 1,000 rows, so multiple years
  * of 1-minute data is hundreds of pages. Fetching those sequentially on
  * every API call blew Vercel's 60s function limit
- * (FUNCTION_INVOCATION_TIMEOUT). Instead we read the exact row count once,
- * fetch all pages with bounded concurrency, and keep the result in module
- * memory so warm invocations skip the download entirely. If the dataset
- * exceeds MAX_BARS, we fetch the MOST RECENT rows (not the earliest) so a
- * continuously growing NinjaTrader sync never silently stalls backtests on
- * stale history once the cap is crossed.
+ * (FUNCTION_INVOCATION_TIMEOUT). We read the exact row count once, then
+ * fetch pages and keep the result in module memory so warm invocations skip
+ * the download entirely.
+ *
+ * When the dataset is small (<= MAX_BARS), we fetch ascending with OFFSET
+ * pagination and bounded concurrency — cheap at small offsets.
+ *
+ * When the dataset EXCEEDS MAX_BARS (multi-million-row tables), we instead
+ * fetch the MOST RECENT MAX_BARS rows using KEYSET (cursor) pagination —
+ * "t < <oldest timestamp seen so far>", not OFFSET. This matters a lot at
+ * scale: Postgres OFFSET has to scan through every skipped row before
+ * returning a page, so a deep offset (e.g. 499,000) against a multi-million
+ * row table is slow and can exceed Postgres's statement_timeout under
+ * concurrent load — keyset pagination is a fast indexed range scan
+ * regardless of how deep into the table it goes. Both a growing sync should
+ * always surface fresh data (never stall on the oldest slice once the cap
+ * is crossed), and a single failed page must not silently nuke the entire
+ * load back to synthetic sample data — every failure here is logged so a
+ * real problem is never invisible.
  */
 import { promises as fs } from "fs";
 import path from "path";
@@ -25,13 +38,14 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 // ~2-3 years of near-continuous 1-minute NQ data (CME trades ~23h/day,
-// 5 days/week). 500 pages at PAGE_SIZE=1000, well within Vercel's function
-// time budget at CONCURRENCY=12 concurrent requests.
-const MAX_BARS = 500_000;
+// 5 days/week), kept safely under Vercel's 60s function budget even with
+// sequential keyset pagination (see module doc comment).
+const MAX_BARS = 200_000;
 // PostgREST caps every request at 1000 rows regardless of the requested limit.
 const PAGE_SIZE = 1_000;
 const CONCURRENCY = 12;
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const MAX_RETRIES = 2;
 
 export type BarsResult = { bars: Bar[]; source: "supabase" | "sample" };
 
@@ -45,68 +59,126 @@ function supabaseHeaders(extra?: Record<string, string>): Record<string, string>
   };
 }
 
+/** GET with a couple of retries on transient failures (network blip,
+ * momentary timeout) — a single flaky request must not nuke an entire
+ * multi-hundred-page load back to synthetic sample data. Logs every
+ * failure (including the final one) so a real problem is always visible in
+ * Vercel's function logs instead of silently degrading. */
+async function fetchWithRetry(url: string, context: string): Promise<Response | null> {
+  let lastError = "";
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(url, { headers: supabaseHeaders(), cache: "no-store" });
+      if (res.ok) return res;
+      lastError = `HTTP ${res.status}: ${await res.text().catch(() => "")}`;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
+    console.error(`[bars] ${context} attempt ${attempt + 1}/${MAX_RETRIES + 1} failed: ${lastError}`);
+  }
+  console.error(`[bars] ${context} gave up after ${MAX_RETRIES + 1} attempts: ${lastError}`);
+  return null;
+}
+
 /** Total row count via a zero-row request with Prefer: count=exact. */
 async function fetchBarCount(baseUrl: string): Promise<number | null> {
-  const res = await fetch(`${baseUrl}/rest/v1/bars?select=t&limit=1`, {
-    headers: supabaseHeaders({ Prefer: "count=exact", Range: "0-0" }),
-    cache: "no-store",
-  });
-  if (!res.ok) return null;
+  const res = await fetchWithRetry(`${baseUrl}/rest/v1/bars?select=t&limit=1`, "fetchBarCount");
+  if (!res) return null;
   // content-range looks like "0-0/123456"
   const total = res.headers.get("content-range")?.split("/")[1];
   const n = total ? parseInt(total, 10) : NaN;
-  return Number.isFinite(n) ? n : null;
+  if (!Number.isFinite(n)) {
+    console.error(`[bars] fetchBarCount: could not parse content-range header (got "${res.headers.get("content-range")}")`);
+    return null;
+  }
+  return n;
 }
 
-async function fetchPage(baseUrl: string, offset: number, order: "asc" | "desc"): Promise<Bar[] | null> {
-  const res = await fetch(
-    `${baseUrl}/rest/v1/bars?select=t,o,h,l,c,v&order=t.${order}&limit=${PAGE_SIZE}&offset=${offset}`,
-    { headers: supabaseHeaders(), cache: "no-store" }
-  );
-  if (!res.ok) return null;
-  return (await res.json()) as Bar[];
+/** Ascending OFFSET pagination — only used when the whole table fits under
+ * MAX_BARS, where offsets stay small and cheap. */
+async function fetchAllAscending(baseUrl: string, total: number): Promise<Bar[] | null> {
+  const offsets: number[] = [];
+  for (let offset = 0; offset < total; offset += PAGE_SIZE) offsets.push(offset);
+
+  const pages: Bar[][] = new Array(offsets.length);
+  let failed = false;
+  let next = 0;
+  const worker = async () => {
+    while (!failed) {
+      const i = next++;
+      if (i >= offsets.length) return;
+      const res = await fetchWithRetry(
+        `${baseUrl}/rest/v1/bars?select=t,o,h,l,c,v&order=t.asc&limit=${PAGE_SIZE}&offset=${offsets[i]}`,
+        `fetchAllAscending page ${i + 1}/${offsets.length}`
+      );
+      if (res === null) {
+        failed = true;
+        return;
+      }
+      pages[i] = (await res.json()) as Bar[];
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, offsets.length) }, worker));
+  if (failed) return null;
+  return pages.flat();
+}
+
+/** Keyset (cursor) pagination for the MOST RECENT `maxBars` rows — fast
+ * indexed range scans ("t < cursor ORDER BY t DESC LIMIT N"), no matter how
+ * deep into a multi-million-row table it reaches, unlike OFFSET. Necessarily
+ * sequential (each page's cursor depends on the previous page's last row),
+ * but each page is cheap, so this stays well within the function time
+ * budget even for MAX_BARS pages. */
+async function fetchMostRecent(baseUrl: string, maxBars: number): Promise<Bar[] | null> {
+  const pagesDesc: Bar[][] = [];
+  let cursor: string | null = null;
+  let fetched = 0;
+  let pageNum = 0;
+  while (fetched < maxBars) {
+    pageNum++;
+    const limit = Math.min(PAGE_SIZE, maxBars - fetched);
+    const filter = cursor ? `&t=lt.${encodeURIComponent(cursor)}` : "";
+    const res = await fetchWithRetry(
+      `${baseUrl}/rest/v1/bars?select=t,o,h,l,c,v&order=t.desc&limit=${limit}${filter}`,
+      `fetchMostRecent page ${pageNum}`
+    );
+    if (res === null) return null;
+    const page = (await res.json()) as Bar[];
+    if (page.length === 0) break; // reached the start of the table
+    pagesDesc.push(page);
+    fetched += page.length;
+    cursor = page[page.length - 1].t; // oldest timestamp in this page = next cursor
+  }
+  const all = pagesDesc.flat();
+  all.reverse(); // newest-first pages -> chronological ascending
+  return all;
 }
 
 async function loadBarsFromSupabase(): Promise<Bar[] | null> {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    console.error("[bars] NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY not set — using sample data.");
+    return null;
+  }
   try {
     const baseUrl = SUPABASE_URL.replace(/\/$/, "");
     const count = await fetchBarCount(baseUrl);
-    if (!count || count <= 0) return null;
+    if (!count || count <= 0) {
+      console.error(`[bars] fetchBarCount returned ${count} — falling back to sample data.`);
+      return null;
+    }
 
-    // When the dataset exceeds MAX_BARS, prefer the MOST RECENT bars, not
-    // the earliest — a growing NinjaTrader sync should always surface fresh
-    // data to backtests, never silently stall on the oldest slice once the
-    // total crosses the cap. Fetch newest-first, then reverse to
-    // chronological order for the rest of the codebase (which assumes
-    // ascending timestamps).
-    const total = Math.min(count, MAX_BARS);
-    const order: "asc" | "desc" = count > MAX_BARS ? "desc" : "asc";
-    const offsets: number[] = [];
-    for (let offset = 0; offset < total; offset += PAGE_SIZE) offsets.push(offset);
-
-    const pages: Bar[][] = new Array(offsets.length);
-    let failed = false;
-    let next = 0;
-    const worker = async () => {
-      while (!failed) {
-        const i = next++;
-        if (i >= offsets.length) return;
-        const page = await fetchPage(baseUrl, offsets[i], order);
-        if (page === null) {
-          failed = true;
-          return;
-        }
-        pages[i] = page;
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, offsets.length) }, worker));
-    if (failed) return null;
-
-    const all = pages.flat();
-    if (order === "desc") all.reverse();
-    return all.length > 0 ? all : null;
-  } catch {
+    const all = count > MAX_BARS ? await fetchMostRecent(baseUrl, MAX_BARS) : await fetchAllAscending(baseUrl, count);
+    if (all === null) {
+      console.error(`[bars] failed to load bars from Supabase (table has ${count} rows) — falling back to sample data.`);
+      return null;
+    }
+    if (all.length === 0) {
+      console.error("[bars] Supabase returned 0 bars despite a positive count — falling back to sample data.");
+      return null;
+    }
+    return all;
+  } catch (err) {
+    console.error(`[bars] unexpected error loading bars from Supabase: ${err instanceof Error ? err.stack : err} — falling back to sample data.`);
     return null;
   }
 }
