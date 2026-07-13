@@ -111,6 +111,11 @@ class NinjaTraderClient:
         stop_price: float,
         target_price: float,
     ) -> BracketOrderIds:
+        # Normalize case: callers pass "Buy"/"Sell" (CLI/dashboard) as well
+        # as "BUY"/"SELL" — comparing against a bare "BUY" silently failed
+        # for "Buy", making every exit leg place as BUY instead of SELL
+        # (confirmed live: all three bracket orders showed as Buy in NT8).
+        action = action.upper()
         reverse = "SELL" if action == "BUY" else "BUY"
         entry_id = f"jjbot-entry-{uuid.uuid4().hex[:8]}"
         stop_id = f"jjbot-stop-{uuid.uuid4().hex[:8]}"
@@ -142,6 +147,7 @@ class NinjaTraderClient:
         stop_points: float = 4.0,
         target_points: float = 6.0,
     ) -> BracketOrderIds:
+        action = action.upper()
         price = self.get_last_price(contract)
         if action == "BUY":
             stop_price = price - stop_points
