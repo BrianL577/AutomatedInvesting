@@ -668,10 +668,12 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
 }
 
 /** One account's results in a session-split multi-account backtest — every
- * stat here belongs to just this account's assigned session. */
+ * stat here belongs to just this account's assigned session (and, for
+ * accounts 0/1 when accountCount >= 2, a specific phase within it). */
 export type SessionSplitAccount = {
   accountIndex: number;
   sessionOpen: string; // which session window (e.g. "09:30") this account trades
+  phaseFilter: "continuation" | "reversion" | null; // null = trades the whole session, both phases
   trades: number;
   wins: number;
   losses: number;
@@ -706,12 +708,29 @@ export type SessionSplitResult = {
  * exactly as if it were a separate real account — this is NOT the same as
  * StrategyConfig.portfolio (staggered starts, every account trading every
  * session); this is a per-request backtest parameter, not saved config.
+ *
+ * SPECIAL CASE, per user rule: whenever accountCount >= 2, account 0 and
+ * account 1 don't get separate sessions — they split the MAIN session
+ * (cfg.session.open, e.g. 09:30 ET) by phase instead: account 0 trades
+ * ONLY that session's continuation phase, account 1 trades ONLY its
+ * reversion phase (the move back toward the session's opening/"fair"
+ * price). This reuses the strategy's own phases.tradeContinuation/
+ * tradeReversion toggles to filter entries, rather than any new mechanic.
+ * Accounts 2+ round-robin across the strategy's OTHER sessions (since the
+ * main session is now spoken for by accounts 0/1) — falling back to
+ * round-robining every session (including the main one, both phases) if
+ * the strategy has no other sessions configured.
  */
 export function runSessionSplitBacktest(cfg: StrategyConfig, bars: Bar[], accountCount: number): SessionSplitResult {
   const round2 = (x: number) => Math.round(x * 100) / 100;
   const { byDay, days } = groupBarsByDay(cfg, bars);
   const sessionWindows = getSessionWindows(cfg);
   const M = sessionWindows.length;
+
+  const mainWindow = sessionWindows.find((w) => w.open === cfg.session.open) ?? sessionWindows[0];
+  const otherWindows = sessionWindows.filter((w) => w !== mainWindow);
+  const roundRobinPool = otherWindows.length > 0 ? otherWindows : sessionWindows;
+  const splitMainSession = accountCount >= 2;
 
   const accounts: SessionSplitAccount[] = [];
   let totalFeesPaid = 0;
@@ -720,7 +739,24 @@ export function runSessionSplitBacktest(cfg: StrategyConfig, bars: Bar[], accoun
   let incompleteTrades = 0;
 
   for (let i = 0; i < accountCount; i++) {
-    const w = sessionWindows[i % M];
+    let w: { open: string; hardCutoff: string };
+    let phaseFilter: "continuation" | "reversion" | null = null;
+    let accountCfg = cfg;
+
+    if (splitMainSession && i === 0) {
+      w = mainWindow;
+      phaseFilter = "continuation";
+      accountCfg = { ...cfg, phases: { ...cfg.phases, tradeContinuation: true, tradeReversion: false } };
+    } else if (splitMainSession && i === 1) {
+      w = mainWindow;
+      phaseFilter = "reversion";
+      accountCfg = { ...cfg, phases: { ...cfg.phases, tradeContinuation: false, tradeReversion: true } };
+    } else if (splitMainSession) {
+      w = roundRobinPool[(i - 2) % roundRobinPool.length];
+    } else {
+      w = sessionWindows[i % M];
+    }
+
     const dailyPnl: number[] = [];
     const accountTrades: SimTrade[] = [];
 
@@ -732,7 +768,7 @@ export function runSessionSplitBacktest(cfg: StrategyConfig, bars: Bar[], accoun
       const state: DayRiskState = { tradesCount: 0, consecutiveLosses: 0, dayPnlDollars: 0 };
       const { trades, incompleteTrades: dayIncomplete } = simulateSession(
         dayBars,
-        cfg,
+        accountCfg,
         hhmmToMinutes(w.open),
         hhmmToMinutes(w.hardCutoff),
         state,
@@ -743,13 +779,14 @@ export function runSessionSplitBacktest(cfg: StrategyConfig, bars: Bar[], accoun
       dailyPnl.push(trades.reduce((s, t) => s + t.pnlDollars, 0));
     }
 
-    const econ = walkAccountEconomics(cfg, dailyPnl, 0);
+    const econ = walkAccountEconomics(accountCfg, dailyPnl, 0);
     const wins = accountTrades.filter((t) => t.win).length;
     const pooledNetPnl = accountTrades.reduce((s, t) => s + t.pnlDollars, 0);
 
     accounts.push({
       accountIndex: i,
       sessionOpen: w.open,
+      phaseFilter,
       trades: accountTrades.length,
       wins,
       losses: accountTrades.length - wins,

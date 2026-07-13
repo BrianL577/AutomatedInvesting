@@ -997,7 +997,7 @@ export default function StrategiesPage() {
                       <div className="bt-results-header" style={{ marginTop: 20 }}>
                         <h3>
                           {result.sessionSplit.accountCount} Accounts, Session Round-Robin{" "}
-                          <Hint text="Each account trades exactly one of the strategy's sessions, cycling through them in order (account 1 = first session, account 2 = second, wrapping back around once every session has an account). Each account is its own independent eval/funded lifecycle — its own fees, payouts, busts." />
+                          <Hint text="With 2+ accounts: account 1 trades only the main session's continuation phase, account 2 trades only its reversion phase (back toward the session's open). Remaining accounts round-robin the strategy's other sessions. Each account is its own independent eval/funded lifecycle — its own fees, payouts, busts." />
                         </h3>
                       </div>
                       <div className="stat-grid">
@@ -1043,7 +1043,7 @@ export default function StrategiesPage() {
                             {result.sessionSplit.accounts.map((a) => (
                               <tr key={a.accountIndex}>
                                 <td>#{a.accountIndex + 1}</td>
-                                <td>{a.sessionOpen} ET</td>
+                                <td>{a.sessionOpen} ET{a.phaseFilter ? ` (${a.phaseFilter} only)` : ""}</td>
                                 <td>{a.trades} ({a.wins}/{a.losses})</td>
                                 <td className={a.winRate >= 50 ? "positive" : "negative"}>{a.winRate.toFixed(1)}%</td>
                                 <td className="negative">{fmtMoney(-a.feesPaid)}</td>

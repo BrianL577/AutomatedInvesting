@@ -37,13 +37,14 @@ import type { Bar } from "./backtester";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-// TEMP: uncapped for testing whether the full multi-year dataset fits
-// within Vercel's 60s function budget on /api/backtest (sequential keyset
-// pagination — see module doc comment). If a backtest starts timing out
-// (FUNCTION_INVOCATION_TIMEOUT / hangs past ~60s), REVERT THIS ONE LINE
-// back to a safe cap:
-//   const MAX_BARS = 200_000; // ~6 months of near-continuous 1-min data, safely under budget
-const MAX_BARS = 10_000_000;
+// Confirmed by direct test: uncapping this (10,000,000) hit
+// FUNCTION_INVOCATION_TIMEOUT on /api/backtest — Vercel's 60s function
+// limit is a real, hard ceiling with the current sequential keyset
+// pagination, not just theoretical. ~6 months of near-continuous 1-min
+// data (200,000 rows) is what reliably fits; a real fix for more history
+// needs a different architecture (background pre-aggregation, a longer-
+// running job outside the request path, etc.), not a bigger number here.
+const MAX_BARS = 200_000;
 // PostgREST caps every request at 1000 rows regardless of the requested limit.
 const PAGE_SIZE = 1_000;
 const CONCURRENCY = 12;
