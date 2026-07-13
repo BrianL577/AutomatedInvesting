@@ -221,6 +221,18 @@ function simulateSession(
   const seen: Bar[] = [];
   let inTradeUntilIdx = -1;
 
+  // Skip bars well before this window's open — with near-continuous 1-min
+  // data, a day's bars can span ~1,380 rows, but a later session (e.g.
+  // 20:00 ET) only ever needs bars from shortly before its own open
+  // onward (enough lookback for structure/pivots and the displacement
+  // average). Without this, every bar from the start of the day gets
+  // pushed through seen/updatePivots for nothing — wasted on its own, and
+  // multiplied by however many accounts/sessions call this per day in a
+  // session-split multi-account backtest.
+  const lookbackBuffer = cfg.entry.structureLookbackMin + 10;
+  const startIdx = dayBars.findIndex((b) => etParts(b.t).minutes >= openMin - lookbackBuffer);
+  const scanStart = startIdx === -1 ? dayBars.length : startIdx;
+
   const updatePivots = (barMinutes: number) => {
     const s = cfg.entry.swingStrength;
     const idx = seen.length - 1 - s;
@@ -287,7 +299,7 @@ function simulateSession(
     return null;
   };
 
-  for (let i = 0; i < dayBars.length; i++) {
+  for (let i = scanStart; i < dayBars.length; i++) {
     const bar = dayBars[i];
     const { minutes } = etParts(bar.t);
     seen.push(bar);
