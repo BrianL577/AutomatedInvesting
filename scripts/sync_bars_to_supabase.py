@@ -93,9 +93,17 @@ def _sync_new_rows(
     Returns the updated (byte_offset, total_synced)."""
     with open(bars_csv, newline="") as f:
         f.seek(byte_offset)
-        reader = csv.reader(f)
         chunk: list[dict] = []
-        for row in reader:
+        while True:
+            # Explicit readline() (not `for line in f` / csv.reader(f) iteration)
+            # -- Python disables tell() on a text file once it's been read via
+            # its iterator protocol ("OSError: telling position disabled by
+            # next() call"). readline() doesn't trigger that restriction, so
+            # tell() stays usable for per-chunk checkpointing below.
+            line = f.readline()
+            if not line:
+                break
+            row = next(csv.reader([line]))
             if len(row) < 6:
                 continue
             ts_naive, o, h, l, c, v = row[:6]
