@@ -5,7 +5,10 @@ command files into NinjaTrader's `incoming` folder and it executes them
 (order placement only — one-way). For live bars and fill confirmations
 (which ATI doesn't provide), a companion NinjaScript AddOn
 (`ninjatrader/JJBotExporter.cs` — install into NinjaTrader) appends rows to
-two CSV files that this client tails: `bars.csv` and `fills.csv`.
+CSV files that this client tails: `bars.csv` (live bars only — used here
+for order pricing) and `fills.csv`. It also writes `history.csv` (the
+one-time historical replay), which only `scripts/sync_bars_to_supabase.py`
+reads, never this client — live price lookups must never see replay data.
 
 NinjaTrader itself is Windows-only desktop software — this client (and the
 bot process using it) must run on the same Windows machine as NinjaTrader,

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Continuously syncs bars.csv (written by the JJBotExporter NinjaScript —
-see ninjatrader/JJBotExporter.cs) into Supabase's `bars` table, which backs
-the dashboard's Strategy Creator backtests.
+"""Continuously syncs history.csv and bars.csv (written by the JJBotExporter
+NinjaScript — see ninjatrader/JJBotExporter.cs) into Supabase's `bars`
+table, which backs the dashboard's Strategy Creator backtests.
 
-Unlike a one-time scripts/import_bars.py run, this is meant to run
-indefinitely alongside scripts/run_live.py: JJBotExporter writes its full
-historical backlog (as far back as the chart's "Days to load" setting
-allows) the first time it's attached, plus every new live bar afterward —
-this script picks up both, so the Supabase dataset only grows over time and
-never needs a manual re-export.
+JJBotExporter splits its output: history.csv gets the one-time historical
+replay (as far back as the chart's "Days to load" setting allows, written
+once on attach), and bars.csv gets only genuinely live bars going forward
+(kept separate so the live trading bot's price lookups never see stale
+replay data). This script uploads both — history.csv once it stops
+growing, bars.csv continuously — so the Supabase dataset keeps growing over
+time and never needs a manual re-export.
 
 IMPORTANT — timezone: NinjaTrader's chart timestamps are in whatever
 timezone the chart displays (commonly America/Chicago, CME's exchange
@@ -47,7 +48,8 @@ POLL_SECONDS = 30
 # resume point). First run after upgrading does one full re-scan (upserts
 # are idempotent, so this is safe, just a one-time cost); every run after
 # that only reads the new tail.
-OFFSET_FILE_NAME = ".sync_bars_byte_offset"
+BARS_OFFSET_FILE_NAME = ".sync_bars_byte_offset"
+HISTORY_OFFSET_FILE_NAME = ".sync_history_byte_offset"
 
 
 def main() -> None:
@@ -61,11 +63,14 @@ def main() -> None:
         raise SystemExit("Set NT_EXPORT_DIR (must match the JJBotExporter indicator's Export Directory).")
 
     bars_csv = Path(export_dir) / "bars.csv"
-    offset_file = Path(export_dir) / OFFSET_FILE_NAME
+    history_csv = Path(export_dir) / "history.csv"
+    bars_offset_file = Path(export_dir) / BARS_OFFSET_FILE_NAME
+    history_offset_file = Path(export_dir) / HISTORY_OFFSET_FILE_NAME
     tz = ZoneInfo(tz_name)
 
-    print(f"Watching {bars_csv} (timezone: {tz_name}). Ctrl+C to stop.")
-    byte_offset = int(offset_file.read_text()) if offset_file.exists() else 0
+    print(f"Watching {history_csv} and {bars_csv} (timezone: {tz_name}). Ctrl+C to stop.")
+    bars_offset = int(bars_offset_file.read_text()) if bars_offset_file.exists() else 0
+    history_offset = int(history_offset_file.read_text()) if history_offset_file.exists() else 0
 
     headers = {
         "apikey": key,
@@ -76,8 +81,10 @@ def main() -> None:
 
     total_synced = 0
     while True:
+        if history_csv.exists():
+            history_offset, total_synced = _sync_new_rows(history_csv, history_offset, tz, url, headers, history_offset_file, total_synced)
         if bars_csv.exists():
-            byte_offset, total_synced = _sync_new_rows(bars_csv, byte_offset, tz, url, headers, offset_file, total_synced)
+            bars_offset, total_synced = _sync_new_rows(bars_csv, bars_offset, tz, url, headers, bars_offset_file, total_synced)
         time.sleep(POLL_SECONDS)
 
 

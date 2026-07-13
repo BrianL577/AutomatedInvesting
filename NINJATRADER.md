@@ -34,8 +34,11 @@ identical regardless of broker.
 
 ATI only handles order placement (one-way, file-drop). For live bars and
 fill confirmations, this repo includes `ninjatrader/JJBotExporter.cs`, a
-small NinjaScript indicator that writes `bars.csv` and `fills.csv` for the
-Python bot to read.
+small NinjaScript indicator that writes three files for the Python bot to
+read: `bars.csv` (live bars only — the trading bot uses this for order
+pricing), `history.csv` (the one-time historical replay, used only for
+backtesting, kept separate so a live price lookup never sees years-old
+data), and `fills.csv`.
 
 1. In NinjaTrader: **New > NinjaScript Editor**.
 2. Right-click **Indicators** > **Import** > select
@@ -83,14 +86,18 @@ python scripts/test_connection.py --account "Sim101" --direction Buy
 If `list-accounts` fails, check `NT_INCOMING_DIR` points at a real,
 existing folder and ATI is enabled. If the test order doesn't fill or
 `bars.csv` stays empty, confirm the JJBotExporter indicator is actually
-attached and the chart is receiving live data (market must be open).
+attached and the chart is receiving live data (market must be open) — note
+that `bars.csv` only gets live bars now, so it stays empty until the market
+is actually open and printing new bars, even right after attaching.
 
 ## 6. Building a growing historical dataset (for backtesting)
 
-JJBotExporter writes every closed bar the chart loads — both the
-**historical replay** (as far back as the chart's "Days to load" setting
-allows, the first time you attach it) and every new live bar afterward. To
-turn that into a permanent, ever-growing dataset for the dashboard's
+JJBotExporter writes closed bars to two separate files: `history.csv` gets
+the one-time **historical replay** (as far back as the chart's "Days to
+load" setting allows, written once on attach) and `bars.csv` gets only
+genuinely live bars going forward — kept apart so the live trading bot's
+price lookups never accidentally read a years-old close price. To turn
+`history.csv` into a permanent, ever-growing dataset for the dashboard's
 Strategy Creator backtests:
 
 1. On your NQ chart, increase the historical lookback as far as your data

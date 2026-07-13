@@ -5,11 +5,16 @@
 // (or paste into a new Indicator), then Compile (F5), then add it to a
 // 1-minute chart of your NQ contract. See NINJATRADER.md for full setup.
 //
-// Writes EVERY closed bar the chart loads — both the historical backlog
-// (as far back as your chart's "Days to load" setting goes) and every new
-// live bar going forward — not just realtime ones. Combined with
-// scripts/sync_bars_to_supabase.py, this means the historical dataset only
-// grows over time and never has to be manually re-exported.
+// Writes closed bars to TWO separate files, split by NinjaScript's own
+// State.Historical vs State.Realtime distinction:
+//   history.csv — the one-time historical replay (as far back as the
+//                 chart's "Days to load" setting goes), for backtesting.
+//   bars.csv    — only genuinely live bars going forward, for the live
+//                 trading bot (jj_bot/ninjatrader_client.py tails this one
+//                 for order pricing — it must never contain years-old
+//                 replay data, or price lookups return stale numbers).
+// scripts/sync_bars_to_supabase.py reads both (history.csv once, bars.csv
+// continuously) so the backtesting dataset still grows over time.
 //
 // Set ExportDir below (or via the indicator's Properties panel) to match
 // NT_EXPORT_DIR in your .env — must be the same folder on this machine.
@@ -36,6 +41,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public string AccountName { get; set; } = "Sim101";
 
         private string barsPath;
+        private string historyPath;
         private string fillsPath;
         private Account account;
 
@@ -52,6 +58,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 Directory.CreateDirectory(ExportDir);
                 barsPath = Path.Combine(ExportDir, "bars.csv");
+                historyPath = Path.Combine(ExportDir, "history.csv");
                 fillsPath = Path.Combine(ExportDir, "fills.csv");
             }
             else if (State == State.DataLoaded)
@@ -69,17 +76,21 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnBarUpdate()
         {
-            // Writes both the historical replay (on first attach/load, as far
-            // back as the chart's "Days to load" setting allows) and every
-            // new live bar afterward — this is what lets the historical
-            // dataset backfill once and then keep growing indefinitely.
             if (CurrentBar < 1)
                 return;
 
             string line = string.Format(
                 "{0:yyyy-MM-ddTHH:mm:ss},{1},{2},{3},{4},{5}\n",
                 Time[0], Open[0], High[0], Low[0], Close[0], Volume[0]);
-            File.AppendAllText(barsPath, line);
+
+            // State.Historical = the one-time replay of past bars on
+            // attach; State.Realtime = genuinely live bars going forward.
+            // Keeping these in separate files means the live trading bot's
+            // price lookups (bars.csv) never see years-old replay data.
+            if (State == State.Historical)
+                File.AppendAllText(historyPath, line);
+            else
+                File.AppendAllText(barsPath, line);
         }
 
         private void OnExecutionUpdate(object sender, ExecutionEventArgs e)
