@@ -213,11 +213,23 @@ class StrategyEngine:
         if self.open_bar is None:
             if bar.timestamp < open_dt:
                 return None
-            if bar.timestamp == open_dt:
-                self.open_bar = bar
-                self.open_price = bar.open
-                self.continuation_direction = Direction.SHORT if not bar.is_green else Direction.LONG
-                self.phase = Phase.CONTINUATION
+            # First bar at or after the session open anchors "fair price" —
+            # NOT an exact-equality match. A live process that starts or
+            # restarts (e.g. a crash-recovery restart mid-session) after the
+            # literal open-minute bar has already passed would otherwise
+            # never see a bar equal to open_dt and get stuck in
+            # WAITING_FOR_OPEN for the rest of the day, silently never
+            # trading again until the next calendar day — confirmed live.
+            # Anchoring on a later bar than the true 09:30 candle uses a
+            # stale-ish open price on a late restart, but that's still far
+            # better than never anchoring at all.
+            if bar.timestamp >= cutoff_dt:
+                self.phase = Phase.DONE_FOR_DAY
+                return None
+            self.open_bar = bar
+            self.open_price = bar.open
+            self.continuation_direction = Direction.SHORT if not bar.is_green else Direction.LONG
+            self.phase = Phase.CONTINUATION
             return None
 
         if self.rate_limited:

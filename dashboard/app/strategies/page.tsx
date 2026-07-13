@@ -789,8 +789,8 @@ export default function StrategiesPage() {
                       <button className="btn btn-primary" onClick={backtest} disabled={busy !== ""}>
                         {busy === "backtesting" ? "Simulating…" : "Run Backtest"}
                       </button>
-                      <label className="accounts-input" title="Accounts: round-robins one trade per session across this many independent accounts (account 1 = first session, account 2 = second, wrapping around).">
-                        <span>Accounts</span>
+                      <label className="accounts-input" title="Session Split: NOT the same as the Portfolio feature under Edit. This round-robins one SLICE of the strategy (a session or a continuation/reversion phase) per account — most accounts trade a restricted subset, not the full strategy. For true 'N accounts each running the whole strategy' scaling, use Portfolio in the strategy editor instead.">
+                        <span>Session Split (Accts)</span>
                         <input
                           type="number"
                           className="test-input"
@@ -902,7 +902,7 @@ export default function StrategiesPage() {
                     <NumField label="Daily loss cap ($)" hint="Stop trading for the day once loss reaches this." value={editForm.risk.dailyLossCap} onChange={(v) => setEditField("risk", "dailyLossCap", v)} min={0} max={100000} />
                   </div>
 
-                  <p className="edit-section-label">Portfolio (scaling across accounts)</p>
+                  <p className="edit-section-label">Full-Strategy Scaling (Portfolio) — use this to scale up account count</p>
                   <div className="edit-grid">
                     <BoolField
                       label="Simulate multiple accounts"
@@ -1075,8 +1075,8 @@ export default function StrategiesPage() {
                       <>
                         <div className="bt-results-header" style={{ marginTop: 20 }}>
                           <h3>
-                            Real Money{accountCountLabel > 1 ? ` — ${accountCountLabel} Accounts` : ""}{" "}
-                            <Hint text="Actual money in and out of your pocket: $50 per eval/reactivation, and once funded, 5 winning days of $150+ each unlock a payout at 90% share (10% to the firm), capped at $2,000 per event — Topstep's actual Standard Path rule, not a cumulative-dollar target. After every payout the drawdown buffer resets to $0, so the very next losing day can bust the account outright. Verify these against the firm's current rules. With more than 1 account set above, every figure here is summed across all of them." />
+                            Real Money{accountCountLabel > 1 ? ` — Session Split, ${accountCountLabel} Accounts` : ""}{" "}
+                            <Hint text="Actual money in and out of your pocket: $50 per eval/reactivation, and once funded, 5 winning days of $150+ each unlock a payout at 90% share (10% to the firm), capped at $2,000 per event — Topstep's actual Standard Path rule, not a cumulative-dollar target. After every payout the drawdown buffer resets to $0, so the very next losing day can bust the account outright. Verify these against the firm's current rules. If 'Session Split (Accts)' above is set >1, most of those accounts trade a RESTRICTED SLICE of the strategy (one session or phase), not the full thing — this section can total LESS than one full account. For true N-accounts-each-running-the-whole-strategy scaling, use the separate 'Portfolio' section below (enable it under Edit)." />
                           </h3>
                         </div>
                         <div className="stat-grid">
@@ -1180,7 +1180,10 @@ export default function StrategiesPage() {
                   {result.portfolio && (
                     <>
                       <div className="bt-results-header" style={{ marginTop: 20 }}>
-                        <h3>Portfolio — {result.portfolio.accountCount} Accounts</h3>
+                        <h3>
+                          Full-Strategy Scaling — {result.portfolio.accountCount} Accounts{" "}
+                          <Hint text="Every account here runs the COMPLETE strategy identically (not a restricted session/phase slice like the Session Split section above) — this is the number to look at when you mean 'what if I ran this on N real accounts.'" />
+                        </h3>
                         <span className="data-source-badge static">
                           {result.portfolio.oneTradePerDay ? "One trade per account per day" : "Full daily trading per account"}, starts staggered {result.portfolio.staggerDays} day(s) apart
                         </span>

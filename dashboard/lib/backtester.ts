@@ -314,7 +314,13 @@ function simulateSession(
     updatePivots(minutes);
 
     if (openPrice === null) {
-      if (minutes === openMin) {
+      // First bar AT OR AFTER the session open anchors "fair price" — not
+      // an exact-equality match. A gap in the historical data at exactly
+      // openMin (a missing 1-minute bar) would otherwise skip anchoring
+      // for the entire day, same bug confirmed live in strategy.py. Always
+      // `continue` here (same as before) so the anchor bar itself is never
+      // also evaluated as a possible entry in this same iteration.
+      if (minutes >= openMin) {
         openPrice = bar.o;
         continuationDir = isGreen(bar) ? "long" : "short";
       }
