@@ -76,25 +76,25 @@ def main() -> None:
 
     total_synced = 0
     while True:
-        rows, byte_offset = _read_new_rows(bars_csv, byte_offset, tz)
-        if rows:
-            for i in range(0, len(rows), BATCH):
-                chunk = rows[i:i + BATCH]
-                resp = requests.post(f"{url}/rest/v1/bars?on_conflict=t", json=chunk, headers=headers, timeout=60)
-                resp.raise_for_status()
-            offset_file.write_text(str(byte_offset))
-            total_synced += len(rows)
-            print(f"Synced {len(rows)} new bar(s), {total_synced} total so far.")
+        if bars_csv.exists():
+            byte_offset, total_synced = _sync_new_rows(bars_csv, byte_offset, tz, url, headers, offset_file, total_synced)
         time.sleep(POLL_SECONDS)
 
 
-def _read_new_rows(bars_csv: Path, byte_offset: int, tz: ZoneInfo) -> tuple[list[dict], int]:
-    if not bars_csv.exists():
-        return [], byte_offset
-    out = []
+def _sync_new_rows(
+    bars_csv: Path, byte_offset: int, tz: ZoneInfo, url: str, headers: dict, offset_file: Path, total_synced: int
+) -> tuple[int, int]:
+    """Reads bars.csv starting at byte_offset and uploads it to Supabase in
+    BATCH-sized chunks, printing progress and checkpointing the byte offset
+    after EACH chunk (not just once at the end) — so a large one-time
+    catch-up (e.g. after widening NinjaTrader's "Days to load") shows live
+    progress instead of going silent for minutes, and a Ctrl+C mid-catch-up
+    only loses at most one chunk of work instead of the whole thing.
+    Returns the updated (byte_offset, total_synced)."""
     with open(bars_csv, newline="") as f:
         f.seek(byte_offset)
         reader = csv.reader(f)
+        chunk: list[dict] = []
         for row in reader:
             if len(row) < 6:
                 continue
@@ -103,13 +103,27 @@ def _read_new_rows(bars_csv: Path, byte_offset: int, tz: ZoneInfo) -> tuple[list
                 local_dt = _parse_naive(ts_naive).replace(tzinfo=tz)
             except ValueError:
                 continue
-            out.append({
+            chunk.append({
                 "t": local_dt.isoformat(),
                 "o": float(o), "h": float(h), "l": float(l), "c": float(c),
                 "v": float(v) if v else 0.0,
             })
-        new_byte_offset = f.tell()
-    return out, new_byte_offset
+            if len(chunk) >= BATCH:
+                resp = requests.post(f"{url}/rest/v1/bars?on_conflict=t", json=chunk, headers=headers, timeout=60)
+                resp.raise_for_status()
+                byte_offset = f.tell()
+                offset_file.write_text(str(byte_offset))
+                total_synced += len(chunk)
+                print(f"Synced {len(chunk)} new bar(s), {total_synced} total so far.")
+                chunk = []
+        if chunk:
+            resp = requests.post(f"{url}/rest/v1/bars?on_conflict=t", json=chunk, headers=headers, timeout=60)
+            resp.raise_for_status()
+            byte_offset = f.tell()
+            offset_file.write_text(str(byte_offset))
+            total_synced += len(chunk)
+            print(f"Synced {len(chunk)} new bar(s), {total_synced} total so far.")
+    return byte_offset, total_synced
 
 
 def _parse_naive(ts: str):
