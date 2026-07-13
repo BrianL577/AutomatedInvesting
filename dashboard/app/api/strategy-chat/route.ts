@@ -125,7 +125,11 @@ export async function POST(req: NextRequest) {
     const response = await client.messages.create({
       model: "claude-opus-4-8",
       max_tokens: 4096,
-      thinking: { type: "adaptive" },
+      // Bounded, not "adaptive" — adaptive lets the model think for as long
+      // as it wants, which can exceed Vercel's function timeout on requests
+      // that invite a lot of reasoning (comparisons, multi-session tradeoffs
+      // like this one). A fixed budget keeps response time predictable.
+      thinking: { type: "enabled", budget_tokens: 3000 },
       // Identical on every turn of a conversation (digest/reference config
       // only change when historical data is reimported) — mark cacheable
       // so repeat turns within the cache TTL bill ~10% of input cost for

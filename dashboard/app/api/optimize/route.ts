@@ -149,7 +149,10 @@ export async function POST(req: NextRequest) {
       const response = await client.messages.create({
         model: "claude-opus-4-8",
         max_tokens: 4096,
-        thinking: { type: "adaptive" },
+        // Bounded, not "adaptive" — up to MAX_ROUNDS=5 calls share one 300s
+        // function budget, so one round thinking unboundedly long can starve
+        // the rest and blow the whole request's timeout.
+        thinking: { type: "enabled", budget_tokens: 3000 },
         // Static across every round of this run (and across separate runs)
         // — mark cacheable so repeat calls within the cache TTL bill ~10%
         // of input cost for this block instead of full price each round.
