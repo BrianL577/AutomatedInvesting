@@ -13,12 +13,14 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from .config import AppConfig
 from .models import Bar, Direction, Signal, TradeResult
 from .ninjatrader_client import BracketOrderIds, Contract, NinjaTraderClient
 from .strategy import StrategyEngine
+from .topstep_eval_sim import TopstepEvalSimConfig, TopstepEvalSimulator
 from .trade_logger import TradeLogger
 from .logging_setup import setup_logging
 
@@ -49,12 +51,42 @@ class NinjaTraderLiveRunner:
         self.trade_logger = TradeLogger(dollar_per_point=self.dollar_per_point, source="live_paper")
         self._current_day = None
         self._account_states: dict[str, _AccountState] = {}
+        self._topstep_sims: dict[str, TopstepEvalSimulator] = {}
         self._contract: Optional[Contract] = None
+
+    def _topstep_sim_config(self) -> TopstepEvalSimConfig:
+        te = self.cfg.topstep_eval
+        return TopstepEvalSimConfig(
+            account_size=te.account_size,
+            profit_target=te.profit_target,
+            trailing_max_drawdown=te.trailing_max_drawdown,
+            eval_fee=te.eval_fee,
+            reactivation_fee=te.reactivation_fee,
+            monthly_fee=te.monthly_fee,
+            activation_fee=te.activation_fee,
+            payout_share=te.payout_share,
+            max_payout_per_event=te.max_payout_per_event,
+            max_payout_balance_share=te.max_payout_balance_share,
+            min_winning_days_for_payout=te.min_winning_days_for_payout,
+            min_winning_day_profit=te.min_winning_day_profit,
+            consistency_path_min_days=te.consistency_path_min_days,
+            consistency_path_max_best_day_share=te.consistency_path_max_best_day_share,
+        )
 
     def start(self) -> None:
         logger.info("Connecting to NinjaTrader ATI ...")
         self.client.connect()
         self._account_states = {a: _AccountState(account=a) for a in self.client.accounts}
+        # One independent Topstep eval/funded simulator per account, fed
+        # each account's own daily P&L — see jj_bot/topstep_eval_sim.py.
+        # Purely informational: never affects real order placement, just
+        # logs what today's paper results would mean on a real Topstep
+        # account, so you can gauge readiness before ever connecting one.
+        sim_cfg = self._topstep_sim_config()
+        self._topstep_sims = {
+            a: TopstepEvalSimulator(sim_cfg, label=a, state_path=Path(f"topstep_sim_state_{a}.json"))
+            for a in self.client.accounts
+        }
         logger.info("Trading %d sim account(s): %s", len(self.client.accounts), self.client.accounts)
 
         self._contract = self.client.find_front_month_contract(self.cfg.instrument.symbol)
@@ -84,6 +116,13 @@ class NinjaTraderLiveRunner:
         day = bar.timestamp.date()
         if self._current_day != day:
             logger.info("New trading day: %s — resetting strategy + all account state.", day)
+            if self._current_day is not None:
+                # Feed yesterday's realized $ P&L into each account's
+                # Topstep simulator before wiping it for the new day.
+                for state in self._account_states.values():
+                    sim = self._topstep_sims.get(state.account)
+                    if sim is not None:
+                        sim.record_day(state.day_pnl_dollars)
             self.engine.reset_day()
             for state in self._account_states.values():
                 state.reset_day()

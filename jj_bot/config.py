@@ -173,6 +173,19 @@ class TopstepEvalConfig:
     profit_target: float
     trailing_max_drawdown: float
     daily_loss_limit: float | None = None
+    # Eval/funded economics — mirrors dashboard/lib/strategySchema.ts's
+    # JJ_DEFAULT_STRATEGY.eval defaults; see jj_bot/topstep_eval_sim.py.
+    eval_fee: float = 49
+    reactivation_fee: float = 49
+    monthly_fee: float = 49
+    activation_fee: float = 149
+    payout_share: float = 0.9
+    max_payout_per_event: float = 2000
+    max_payout_balance_share: float = 0.5
+    min_winning_days_for_payout: int = 5
+    min_winning_day_profit: float = 150
+    consistency_path_min_days: int = 3
+    consistency_path_max_best_day_share: float = 0.4
 
 
 @dataclass

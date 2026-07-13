@@ -46,8 +46,22 @@ instrument:
   tick_size: 0.25
   tick_value: 5.0                # USD per tick, NQ
 
-topstep_eval:                    # used only by the backtester's prop-firm-style simulation
+topstep_eval:                    # used by the backtester AND the live TopstepEvalSimulator
   account_size: 50000
   profit_target: 3000
   trailing_max_drawdown: 2000
   daily_loss_limit: null         # set if your eval enforces one
+  # Confirmed against a real Topstep Standard Path account — see
+  # jj_bot/topstep_eval_sim.py and dashboard/lib/backtester.ts for the
+  # rule mechanics these numbers feed into.
+  eval_fee: 49
+  reactivation_fee: 49
+  monthly_fee: 49
+  activation_fee: 149
+  payout_share: 0.9
+  max_payout_per_event: 2000
+  max_payout_balance_share: 0.5
+  min_winning_days_for_payout: 5
+  min_winning_day_profit: 150
+  consistency_path_min_days: 3
+  consistency_path_max_best_day_share: 0.4
