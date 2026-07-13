@@ -421,18 +421,18 @@ function simulateSession(
  * Loss Limit resets to $0 the moment funds are withdrawn, so the very next
  * losing day can bust the account outright with zero cushion. */
 function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: number) {
-  // Topstep's Combine is a MONTHLY SUBSCRIPTION, not a per-attempt
-  // purchase — busting and resetting within the same Combine doesn't
-  // itself trigger a new charge, you just keep paying the same monthly
-  // rate. Modeled here as: charge monthlyFee immediately at the start of
-  // each fresh attempt (buying/restarting a Combine), then again every
-  // ~21 trading days (one month) while still in eval; billing pauses once
-  // funded (charge the one-time activation fee instead) and resumes if a
-  // funded account later busts and a new Combine attempt starts. This is a
-  // reasonable approximation, not confirmed against Topstep's exact
-  // reset/billing mechanics — verify with Topstep support before trusting
-  // the fee totals for a real decision.
-  const monthlyFee = cfg.eval.monthlyFeeDollars ?? cfg.eval.evalFeeDollars ?? 49;
+  // TWO INDEPENDENT, ADDITIVE fee streams, per direct user confirmation:
+  // 1) A per-attempt fee charged every time you start or restart a Combine
+  //    attempt — busting and resetting costs this again ($49, both the
+  //    initial purchase and every reactivation).
+  // 2) A SEPARATE, continuous monthly subscription charge that accrues
+  //    regardless of busts/restarts, for as long as you're still in eval
+  //    ($49 every ~21 trading days). Pauses once funded (the one-time
+  //    activation fee applies instead), resumes if a funded account later
+  //    busts and a new Combine is purchased.
+  const evalFee = cfg.eval.evalFeeDollars ?? 49;
+  const reactivationFee = cfg.eval.reactivationFeeDollars ?? 49;
+  const monthlyFee = cfg.eval.monthlyFeeDollars ?? 49;
   const activationFee = cfg.eval.fundedActivationFeeDollars ?? 149;
   const TRADING_DAYS_PER_MONTH = 21;
   const payoutShare = cfg.eval.payoutShareRatio ?? 0.9;
@@ -450,11 +450,24 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
   // account permanently busts with no more attempts are left "none".
   const dayPhase: ("eval" | "funded" | "none")[] = new Array(series.length).fill("none");
   let d = Math.min(startDay, series.length);
+  // The monthly billing clock persists ACROSS eval bust/restart attempts
+  // (declared outside the while loop, not reset each attempt) since it's a
+  // separate charge from the per-attempt fee below — it only pauses while
+  // funded, and only restarts (a genuinely new Combine) if a FUNDED
+  // account later busts and a new Combine is purchased from scratch.
+  let evalDaysSinceLastBill = TRADING_DAYS_PER_MONTH; // charge immediately on the very first attempt
+  let needsFreshSubscription = false;
+  let firstAttempt = true;
   while (d < series.length) {
     attemptsBought++;
-    // Force an immediate monthly charge at the start of this attempt —
-    // buying/restarting a Combine.
-    let evalDaysSinceLastBill = TRADING_DAYS_PER_MONTH;
+    // Per-attempt fee: initial purchase, or a reactivation after busting —
+    // charged every attempt regardless of the monthly clock above.
+    feesPaid += firstAttempt ? evalFee : reactivationFee;
+    firstAttempt = false;
+    if (needsFreshSubscription) {
+      evalDaysSinceLastBill = TRADING_DAYS_PER_MONTH;
+      needsFreshSubscription = false;
+    }
 
     let balance = cfg.eval.accountSize;
     let highWater = balance;
@@ -522,6 +535,9 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
         }
       }
     }
+    // If this attempt reached funded before busting, the next attempt (if
+    // any) is a brand-new Combine purchase, not a free eval reset.
+    if (funded) needsFreshSubscription = true;
     if (!busted) break; // ran out of data mid-attempt, nothing more to simulate
   }
   return { feesPaid, cashPayouts, attemptsBought, fundedCount, dayPhase };
