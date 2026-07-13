@@ -428,6 +428,33 @@ tbody tr:hover {
   white-space: nowrap;
 }
 
+.strategy-item-rename {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 5px;
+  line-height: 1;
+}
+
+.strategy-item-rename:hover {
+  color: var(--text);
+  background: rgba(139, 152, 165, 0.15);
+}
+
+.strategy-item-rename-input {
+  flex: 1;
+  min-width: 0;
+  background: #0f151d;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 3px 6px;
+}
+
 .strategy-detail {
   background: var(--panel);
   border: 1px solid var(--panel-border);

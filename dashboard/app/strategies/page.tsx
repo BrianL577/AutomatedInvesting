@@ -165,6 +165,8 @@ export default function StrategiesPage() {
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<StrategyConfig | null>(null);
   const [listTab, setListTab] = useState<"strategies" | "optimizations">("strategies");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const [optimizations, setOptimizations] = useState<SavedOptimization[]>([]);
   const [selectedOptimization, setSelectedOptimization] = useState<SavedOptimization | null>(null);
 
@@ -433,6 +435,31 @@ export default function StrategiesPage() {
     }
   }
 
+  async function submitRename(id: string) {
+    const name = renameValue.trim();
+    if (!name) {
+      setRenamingId(null);
+      return;
+    }
+    setBusy("saving");
+    setMessage(null);
+    try {
+      const res = await fetch("/api/strategies", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ renameId: id, name }),
+      });
+      const data = await readJson(res);
+      if (!res.ok) throw new Error(data.error || "Rename failed");
+      setRenamingId(null);
+      await refresh();
+    } catch (err: any) {
+      setMessage({ kind: "error", text: err.message });
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function save() {
     if (!draft) return;
     setBusy("saving");
@@ -576,7 +603,37 @@ export default function StrategiesPage() {
                     }
                   }}
                 >
-                  <span className="strategy-item-name">{s.config.name}</span>
+                  {renamingId === s.id ? (
+                    <input
+                      autoFocus
+                      className="strategy-item-rename-input"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => {
+                        e.stopPropagation();
+                        if (e.key === "Enter") submitRename(s.id);
+                        if (e.key === "Escape") setRenamingId(null);
+                      }}
+                      onBlur={() => submitRename(s.id)}
+                      maxLength={80}
+                    />
+                  ) : (
+                    <span className="strategy-item-name">{s.config.name}</span>
+                  )}
+                  {s.source !== "default" && renamingId !== s.id && (
+                    <button
+                      className="strategy-item-rename"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRenamingId(s.id);
+                        setRenameValue(s.config.name);
+                      }}
+                      title="Rename strategy"
+                    >
+                      ✎
+                    </button>
+                  )}
                   <span className={`badge ${s.source === "default" ? "test" : s.source === "ai" ? "long" : "short"}`}>
                     {s.source}
                   </span>

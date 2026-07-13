@@ -3,6 +3,7 @@ import { StrategyConfigSchema } from "../../../lib/strategySchema";
 import {
   deleteStrategyForCurrentUser,
   listStrategiesForCurrentUser,
+  renameStrategyForCurrentUser,
   saveStrategyForCurrentUser,
   setActiveStrategyForCurrentUser,
 } from "../../../lib/strategyStore";
@@ -52,9 +53,26 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { activateId } = (body ?? {}) as { activateId?: string | null };
+  const { activateId, renameId, name } = (body ?? {}) as {
+    activateId?: string | null;
+    renameId?: string;
+    name?: string;
+  };
+
+  if (renameId !== undefined) {
+    if (typeof name !== "string") {
+      return NextResponse.json({ error: "Missing name (string)" }, { status: 400 });
+    }
+    const result = await renameStrategyForCurrentUser(renameId, name);
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+    return NextResponse.json({ ok: true });
+  }
+
   if (activateId === undefined) {
-    return NextResponse.json({ error: "Missing activateId (string id, or null for the default)" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Missing activateId (string id, or null for the default) or renameId+name" },
+      { status: 400 }
+    );
   }
 
   const result = await setActiveStrategyForCurrentUser(activateId);

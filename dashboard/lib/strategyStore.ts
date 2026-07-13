@@ -101,6 +101,47 @@ export async function setActiveStrategyForCurrentUser(
   return { ok: true };
 }
 
+/**
+ * Renames a saved strategy in place — updates config.name on the existing
+ * row (not a new row like saveStrategyForCurrentUser). Only ever touches
+ * the user's own strategies; the built-in default ("default-jj") isn't a
+ * real row and can't be renamed.
+ */
+export async function renameStrategyForCurrentUser(
+  id: string,
+  name: string
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) return { ok: false, status: 401, error: "Sign in required." };
+  if (id === "default-jj") return { ok: false, status: 400, error: "Cannot rename the default strategy." };
+
+  const trimmed = name.trim();
+  if (!trimmed || trimmed.length > 80) {
+    return { ok: false, status: 400, error: "Name must be 1-80 characters." };
+  }
+
+  const { data: existing, error: fetchError } = await supabase
+    .from("strategies")
+    .select("config")
+    .eq("id", id)
+    .eq("user_id", user.id)
+    .single();
+  if (fetchError || !existing) return { ok: false, status: 404, error: "Strategy not found." };
+
+  const updatedConfig = { ...(existing.config as StrategyConfig), name: trimmed };
+  const { error: updateError } = await supabase
+    .from("strategies")
+    .update({ config: updatedConfig })
+    .eq("id", id)
+    .eq("user_id", user.id);
+  if (updateError) return { ok: false, status: 500, error: updateError.message };
+  return { ok: true };
+}
+
 export async function deleteStrategyForCurrentUser(
   id: string
 ): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
