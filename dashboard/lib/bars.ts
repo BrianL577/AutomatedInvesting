@@ -21,10 +21,12 @@ import type { Bar } from "./backtester";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-const MAX_BARS = 200_000;
+// ~5 years of 24h 1-minute NQ bars. Loading this many rows is only viable
+// because pages are fetched concurrently and the result is memoized below.
+const MAX_BARS = 2_000_000;
 // PostgREST caps every request at 1000 rows regardless of the requested limit.
 const PAGE_SIZE = 1_000;
-const CONCURRENCY = 12;
+const CONCURRENCY = 24;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
 export type BarsResult = { bars: Bar[]; source: "supabase" | "sample" };
