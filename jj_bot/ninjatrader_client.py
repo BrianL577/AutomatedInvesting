@@ -149,15 +149,20 @@ class NinjaTraderClient:
         return self.place_bracket_order(contract, account, action, qty, stop_price, target_price)
 
     def get_last_price(self, contract: Contract) -> float:
-        """Reads the close of the most recent row in bars.csv (written by the
-        companion NinjaScript exporter) — ATI has no quote-snapshot command."""
+        """Reads the close of the chronologically most recent row in
+        bars.csv (written by the companion NinjaScript exporter) — ATI has
+        no quote-snapshot command. Sorts by timestamp rather than trusting
+        file order, since bars.csv can interleave rows from more than one
+        chart/timeframe if JJBotExporter is attached to more than one
+        (e.g. a Daily chart alongside the 1-minute one)."""
         rows = _read_csv_rows(self.bars_csv)
         if not rows:
             raise NinjaTraderError(
                 "No bars found in bars.csv yet — confirm the JJBotExporter NinjaScript "
                 "is running and attached to a chart for this instrument."
             )
-        return float(rows[-1]["close"])
+        latest = max(rows, key=lambda r: r["timestamp"])
+        return float(latest["close"])
 
     # ---- historical / streaming bars (via the companion exporter) ------
 
