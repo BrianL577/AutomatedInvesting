@@ -897,39 +897,68 @@ export default function StrategiesPage() {
                     />
                   </div>
 
-                  <div className="bt-results-header" style={{ marginTop: 20 }}>
-                    <h3>Real Money <Hint text="Actual money in and out of your pocket: $50 per eval/reactivation, and once funded, 5 winning days of $150+ each unlock a payout at 90% share (10% to the firm), capped at $2,000 per event — Topstep's actual Standard Path rule, not a cumulative-dollar target. After every payout the drawdown buffer resets to $0, so the very next losing day can bust the account outright. Verify these against the firm's current rules." /></h3>
-                  </div>
-                  <div className="stat-grid">
-                    <StatCard
-                      label="Bottom Line"
-                      hint="Payouts received minus fees paid — the actual cash result of running this strategy over the whole period. Positive = profitable."
-                      value={fmtMoney(result.realWorldNetPnl)}
-                      tone={result.realWorldNetPnl >= 0 ? "positive" : "negative"}
-                    />
-                    <StatCard
-                      label="Fees Paid"
-                      hint="Every $50 spent buying an eval or reactivating after busting an account."
-                      value={fmtMoney(-result.realWorldFeesPaid)}
-                      tone="negative"
-                    />
-                    <StatCard
-                      label="Payouts Received"
-                      hint="Real cash withdrawn from funded accounts. Each payout is 50% of the funded profit at the moment it triggers, capped at $2,000 — so it's usually less than $2,000 (e.g. a payout triggering at $3,600 profit pays $1,800). It also only counts when no single day made over half the profit."
-                      value={fmtMoney(result.realWorldCashPayouts)}
-                      tone="positive"
-                    />
-                    <StatCard
-                      label="Accounts Bought"
-                      hint="How many evals were purchased in total — every bust means buying another."
-                      value={`${result.chronologicalAttempts}`}
-                    />
-                    <StatCard
-                      label="Reached Funded"
-                      hint="How many of those attempts made it through the eval to a funded account."
-                      value={`${result.timesFunded}`}
-                    />
-                  </div>
+                  {(() => {
+                    // Below reflects exactly the number of accounts set in
+                    // the "Accounts" field (top of the page) — when it's 1,
+                    // that's just this single account's real economics; when
+                    // it's N > 1, result.sessionSplit already has the N
+                    // accounts' real economics correctly aggregated (see
+                    // "Combined Bottom Line" further below), so this section
+                    // sums the SAME numbers instead of ignoring accountCount
+                    // and always showing the 1-account figures.
+                    const split = result.sessionSplit;
+                    const bottomLine = split ? split.totalRealWorldNetPnl : result.realWorldNetPnl;
+                    const feesPaid = split ? split.totalFeesPaid : result.realWorldFeesPaid;
+                    const cashPayouts = split ? split.totalCashPayouts : result.realWorldCashPayouts;
+                    const attemptsBought = split
+                      ? split.accounts.reduce((s, a) => s + a.attemptsBought, 0)
+                      : result.chronologicalAttempts;
+                    const timesFunded = split
+                      ? split.accounts.reduce((s, a) => s + a.timesFunded, 0)
+                      : result.timesFunded;
+                    const accountCountLabel = split ? split.accountCount : 1;
+
+                    return (
+                      <>
+                        <div className="bt-results-header" style={{ marginTop: 20 }}>
+                          <h3>
+                            Real Money{accountCountLabel > 1 ? ` — ${accountCountLabel} Accounts` : ""}{" "}
+                            <Hint text="Actual money in and out of your pocket: $50 per eval/reactivation, and once funded, 5 winning days of $150+ each unlock a payout at 90% share (10% to the firm), capped at $2,000 per event — Topstep's actual Standard Path rule, not a cumulative-dollar target. After every payout the drawdown buffer resets to $0, so the very next losing day can bust the account outright. Verify these against the firm's current rules. With more than 1 account set above, every figure here is summed across all of them." />
+                          </h3>
+                        </div>
+                        <div className="stat-grid">
+                          <StatCard
+                            label="Bottom Line"
+                            hint="Payouts received minus fees paid, summed across every account — the actual cash result of running this strategy over the whole period. Positive = profitable."
+                            value={fmtMoney(bottomLine)}
+                            tone={bottomLine >= 0 ? "positive" : "negative"}
+                          />
+                          <StatCard
+                            label="Fees Paid"
+                            hint="Every $50 spent buying an eval or reactivating after busting an account, summed across every account."
+                            value={fmtMoney(-feesPaid)}
+                            tone="negative"
+                          />
+                          <StatCard
+                            label="Payouts Received"
+                            hint="Real cash withdrawn from funded accounts, summed across every account. Each payout is 50% of the funded profit at the moment it triggers, capped at $2,000 — so it's usually less than $2,000 (e.g. a payout triggering at $3,600 profit pays $1,800). It also only counts when no single day made over half the profit."
+                            value={fmtMoney(cashPayouts)}
+                            tone="positive"
+                          />
+                          <StatCard
+                            label="Accounts Bought"
+                            hint="How many evals were purchased in total across every account — every bust means buying another."
+                            value={`${attemptsBought}`}
+                          />
+                          <StatCard
+                            label="Reached Funded"
+                            hint="How many of those attempts made it through the eval to a funded account, across every account."
+                            value={`${timesFunded}`}
+                          />
+                        </div>
+                      </>
+                    );
+                  })()}
 
                   <details className="bt-pooled-details">
                     <summary>Pooled stats (all {result.totalTrades} trades on one never-resetting account — not real economics, kept for reference)</summary>

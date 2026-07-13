@@ -140,11 +140,60 @@ causes the freeze you hit earlier.
 ## 7. Running it fully automated
 
 Since NinjaTrader can't run headless on Railway, "fully automated" here
-means: leave a Windows machine on, NinjaTrader logged into Sim101, the
+means: leave a Windows machine on, NinjaTrader logged into your account, the
 JJBotExporter indicator attached to a live NQ chart, and
-`python scripts/run_live.py --symbol NQ` running continuously on that same
-machine. A cheap Windows VPS (e.g. Amazon WorkSpaces, a Windows Azure VM,
-or a dedicated Windows mini-PC) works if you don't want to keep your own
+`scripts/run_live.py` running continuously on that same machine — with
+something restarting it if it crashes, since (unlike Railway) nothing does
+that by default here.
+
+### Auto-restart with `run_live_loop.ps1`
+
+`scripts/run_live_loop.ps1` wraps `run_live.py` in a loop: if it exits for
+any reason (crash, NT8 hiccup, network blip), it relaunches after 15
+seconds, logging every start/stop to `logs\run_live_loop.log`.
+
+Test it manually first:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run_live_loop.ps1
+```
+
+### Making it survive reboots — Task Scheduler
+
+1. Open **Task Scheduler** (search it in the Start menu).
+2. **Action → Create Task...** (not "Basic Task" — the full dialog gives more control).
+3. **General** tab:
+   - Name: `JJ Bot - NinjaTrader Live Loop`
+   - Select **"Run whether user is logged on or not"** if this is a remote
+     desktop that might not always have an active session — otherwise
+     "Run only when user is logged on" is fine and simpler.
+   - Check **"Run with highest privileges"**.
+4. **Triggers** tab → **New...**:
+   - Begin the task: **At startup** (add a second trigger **At log on** too,
+     if you chose "only when logged on" above).
+5. **Actions** tab → **New...**:
+   - Action: **Start a program**
+   - Program/script: `powershell.exe`
+   - Add arguments: `-ExecutionPolicy Bypass -File "C:\AutomatedInvesting\scripts\run_live_loop.ps1"`
+   - (Adjust the path if this repo isn't at `C:\AutomatedInvesting`.)
+6. **Settings** tab:
+   - Uncheck **"Stop the task if it runs longer than..."** (default 3 days —
+     this needs to run indefinitely).
+   - Check **"If the task fails, restart every:"** → 1 minute, a few
+     attempts, as an extra safety net on top of the script's own loop.
+7. Click OK, enter your Windows password if prompted.
+8. Right-click the task → **Run**, to test it fires correctly. Check
+   `logs\run_live_loop.log` for the startup line, and confirm NT8's Orders
+   tab reflects activity once the market's live.
+
+**Important**: NinjaTrader itself still needs to already be open and logged
+in for any of this to work — Task Scheduler restarts the Python bot, not
+NinjaTrader. If NT8 also needs to survive a full machine reboot, add its own
+Task Scheduler "at startup" entry, or (simpler) just don't reboot the
+machine and let Task Scheduler only handle crash-recovery of the Python
+side.
+
+A cheap Windows VPS (e.g. Amazon WorkSpaces, a Windows Azure VM, or a
+dedicated Windows mini-PC) works if you don't want to keep your own
 computer on 24/7 — install NinjaTrader + this repo there instead of trying
 to adapt the Railway setup in `RAILWAY.md` (which assumes a broker with a
 network API, not a desktop app).
