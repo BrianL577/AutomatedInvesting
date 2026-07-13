@@ -48,15 +48,25 @@ data), and `fills.csv`.
    flags them — the `ExecutionUpdate` event signature has changed slightly
    across NinjaTrader 8 releases; check NinjaTrader's NinjaScript docs for
    your installed version if compilation fails.
-4. Add the indicator to your NQ 1-minute chart: right-click the chart >
-   **Indicators** > add **JJBotExporter**.
-5. In its Properties, set:
+4. **Before adding the indicator**, set your NQ 1-minute chart's history to
+   something small: right-click the chart > **Data Series...** > set "Days
+   to load" to ~5-10 days (not years). A large lookback makes NinjaTrader
+   replay years of bars before reaching live data, which can freeze the UI
+   for a long time — this setting is what actually controls that, not the
+   indicator.
+5. Add the indicator to the chart: right-click the chart > **Indicators** >
+   add **JJBotExporter**.
+6. In its Properties, set:
    - **Export Directory**: a folder like `C:\jjbot-export` — this must
      match `NT_EXPORT_DIR` in `.env`.
    - **Account Name**: your sim account (e.g. `DEMO8217187` or `Sim101`) — must match the account name saved on the dashboard's My Accounts page, or `NT_ACCOUNT_NAMES` if set.
-6. Leave the chart open with the indicator attached — this is what keeps
+   - **Export History**: leave **OFF** on this chart — this is the live
+     trading chart; historical export is a separate, optional step (§6).
+7. Leave the chart open with the indicator attached — this is what keeps
    `bars.csv`/`fills.csv` updating live, similar to how IB Gateway has to
-   stay logged in for IBKR.
+   stay logged in for IBKR. Because "Days to load" is small, `bars.csv`
+   starts filling with genuinely live bars within a minute or two, not
+   after a long historical replay.
 
 ## 4. Configure the bot
 
@@ -90,37 +100,40 @@ attached and the chart is receiving live data (market must be open) — note
 that `bars.csv` only gets live bars now, so it stays empty until the market
 is actually open and printing new bars, even right after attaching.
 
-## 6. Building a growing historical dataset (for backtesting)
+## 6. Building a growing historical dataset (for backtesting) — optional, separate from live trading
 
-JJBotExporter writes closed bars to two separate files: `history.csv` gets
-the one-time **historical replay** (as far back as the chart's "Days to
-load" setting allows, written once on attach) and `bars.csv` gets only
-genuinely live bars going forward — kept apart so the live trading bot's
-price lookups never accidentally read a years-old close price. To turn
-`history.csv` into a permanent, ever-growing dataset for the dashboard's
-Strategy Creator backtests:
+This is entirely optional and doesn't affect the live-trading setup above —
+skip it if you just want to trade right now.
 
-1. On your NQ chart, increase the historical lookback as far as your data
-   feed allows (right-click the chart → Data Series, or similar — how far
-   back you can actually go depends on what NinjaTrader's data provider
-   gives you on a sim account).
+`history.csv` only fills when a JJBotExporter instance has **Export
+History** turned ON. Do this on a **second, separate chart** — don't turn
+it on for your live-trading chart, since a large lookback there is what
+causes the freeze you hit earlier.
+
+1. Open a **new** NQ chart (right-click a chart tab → New Chart, or
+   Workspaces → new chart window) — leave your live-trading chart alone.
+2. Right-click this new chart → **Data Series...** → increase the
+   historical lookback as far as your data feed allows (how far back you
+   can actually go depends on what NinjaTrader's data provider gives you on
+   a sim account).
 2. Check what timezone your chart's timestamps are actually in — NinjaTrader
    Tools > General Options > Time Zone (commonly `America/Chicago`, CME's
    exchange timezone, unless you've changed it). Set `NT_BAR_TIMEZONE` in
    `.env` to match — the strategy's session logic depends on this being
    correct, since it needs true UTC under the hood.
-3. Run the sync script (separately from `run_live.py`, can run alongside
+3. Add **JJBotExporter** to this new chart too, with the same **Export
+   Directory** as the live chart, but **Export History** turned **ON** this
+   time.
+4. Run the sync script (separately from `run_live.py`, can run alongside
    it):
    ```bash
    python scripts/sync_bars_to_supabase.py
    ```
-   On first run this picks up the full historical backlog JJBotExporter
-   already wrote to `bars.csv` and upserts it into Supabase's `bars` table;
-   after that it polls for new rows every 30 seconds, so as long as this
-   keeps running (alongside NinjaTrader being open and the market being
-   live), the dataset keeps growing — a year from now, it'll hold roughly
-   two years of history, not just one.
-4. The dashboard's Strategy Creator automatically backtests against
+   It uploads `history.csv` (the backlog from this second chart) once, then
+   polls `bars.csv` (the live chart's genuinely live bars) every 30 seconds
+   going forward, so as long as this keeps running, the dataset keeps
+   growing — a year from now, it'll hold roughly two years of history.
+5. The dashboard's Strategy Creator automatically backtests against
    whatever's in Supabase's `bars` table, so no further action is needed
    once this is syncing.
 

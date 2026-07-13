@@ -16,6 +16,16 @@
 // scripts/sync_bars_to_supabase.py reads both (history.csv once, bars.csv
 // continuously) so the backtesting dataset still grows over time.
 //
+// IMPORTANT — for the LIVE TRADING chart, keep "Days to load" small (e.g.
+// 5-10 days) and leave "Export History" OFF (default). A large lookback
+// makes NinjaTrader replay years of 1-minute bars before it reaches live
+// data at all, which can freeze the UI for a long time and delays
+// bars.csv — that replay time is a NinjaTrader chart setting, this
+// indicator can't shortcut it. If you want a growing history.csv for
+// backtesting, attach a SECOND instance of this indicator to a separate
+// chart with "Export History" ON and as large a lookback as you want —
+// keep that entirely separate from the live-trading chart/setup.
+//
 // Set ExportDir below (or via the indicator's Properties panel) to match
 // NT_EXPORT_DIR in your .env — must be the same folder on this machine.
 
@@ -39,6 +49,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Display(Name = "Account Name", Order = 2, GroupName = "Parameters")]
         public string AccountName { get; set; } = "Sim101";
+
+        [NinjaScriptProperty]
+        [Display(Name = "Export History", Order = 3, GroupName = "Parameters",
+            Description = "OFF for the live-trading chart (default). Only turn ON for a " +
+                           "separate chart instance dedicated to building history.csv for backtesting.")]
+        public bool ExportHistory { get; set; } = false;
 
         private string barsPath;
         private string historyPath;
@@ -87,10 +103,17 @@ namespace NinjaTrader.NinjaScript.Indicators
             // attach; State.Realtime = genuinely live bars going forward.
             // Keeping these in separate files means the live trading bot's
             // price lookups (bars.csv) never see years-old replay data.
+            // Skipping the write entirely when ExportHistory is off avoids
+            // the extra disk I/O during a large replay on the live chart.
             if (State == State.Historical)
-                File.AppendAllText(historyPath, line);
+            {
+                if (ExportHistory)
+                    File.AppendAllText(historyPath, line);
+            }
             else
+            {
                 File.AppendAllText(barsPath, line);
+            }
         }
 
         private void OnExecutionUpdate(object sender, ExecutionEventArgs e)
