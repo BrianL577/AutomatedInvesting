@@ -239,6 +239,19 @@ tbody tr:hover {
   margin-top: 8px;
 }
 
+.accounts-input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.accounts-input .test-input {
+  min-width: 0;
+  flex: none;
+}
+
 .test-input {
   flex: 1;
   min-width: 240px;
