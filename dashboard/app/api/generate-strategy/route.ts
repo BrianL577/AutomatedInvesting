@@ -13,6 +13,7 @@ import {
   JJ_DEFAULT_STRATEGY,
   STRATEGY_JSON_SCHEMA,
   StrategyConfigSchema,
+  survivabilityViolation,
 } from "../../../lib/strategySchema";
 
 export const dynamic = "force-dynamic";
@@ -31,8 +32,9 @@ The engine's fixed rule library (you can only tune its parameters, not invent ne
 
 Guidelines:
 - Map the user's intent onto these parameters as faithfully as possible. If they describe a mechanic the engine cannot express (e.g. VWAP, order flow, news filters), approximate it with the closest available parameters and say so in the description field.
-- Use sensible defaults for anything unspecified (reference: stop 25 / target 38, max 4 trades/day, 09:30 open, 11:00 cutoff, $1520/$1000 daily caps, 50k eval with +3000 target and 2000 trailing drawdown).
+- Use sensible defaults for anything unspecified (reference: stop 25 / target 38 on 2 contracts [$1,000/$1,520 on NQ], 1 trade/day, 09:30 open, 11:00 cutoff, $1520/$1000 daily caps, 50k eval with +3000 target and 2000 trailing drawdown).
 - Keep values realistic for NQ 1-minute data: stops 5-100 points, targets 5-200 points, ratios near 1.
+- HARD CONSTRAINT: risk.stopPoints x risk.contractsPerTrade x $20/point must not exceed eval.trailingMaxDrawdown — a single losing trade must never be able to bust the account outright. Configs violating this are rejected outright, so check this arithmetic before finalizing stopPoints/contractsPerTrade.
 - The description field must summarize, in plain English, the exact rules this config encodes — including any approximations you made.
 - Times are 24h ET "HH:MM". Never disable both tradeContinuation and tradeReversion.`;
 
@@ -66,9 +68,16 @@ export async function POST(req: NextRequest) {
       model: "claude-opus-4-8",
       max_tokens: 4096,
       thinking: { type: "adaptive" },
-      system: SYSTEM_PROMPT,
+      // Static across every call — mark cacheable so repeat requests within
+      // the cache TTL bill ~10% of input cost for this block instead of
+      // full price. Same exact prompt, no change in what the model sees.
+      system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
+      // effort (not thinking.budget_tokens, which claude-opus-4-8 rejects)
+      // bounds adaptive thinking time — "low" keeps response time
+      // predictable against Vercel's 60s function timeout.
       output_config: {
         format: { type: "json_schema", schema: STRATEGY_JSON_SCHEMA },
+        effort: "low",
       },
       messages: [
         {
@@ -105,6 +114,13 @@ export async function POST(req: NextRequest) {
     if (!parsed.data.phases.tradeContinuation && !parsed.data.phases.tradeReversion) {
       return NextResponse.json(
         { error: "Generated config disables all entry phases — try a more concrete description." },
+        { status: 422 }
+      );
+    }
+    const violation = survivabilityViolation(parsed.data);
+    if (violation) {
+      return NextResponse.json(
+        { error: `Generated config rejected: ${violation} Try a more conservative description.` },
         { status: 422 }
       );
     }

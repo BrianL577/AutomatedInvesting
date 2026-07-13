@@ -1,4 +1,8 @@
--- Run this once in your Supabase project's SQL editor (Project -> SQL Editor -> New query).
+-- Run this in your Supabase project's SQL editor (Project -> SQL Editor -> New query).
+-- Safe to re-run anytime the file changes (e.g. after a new table is added) —
+-- every statement is idempotent (create-if-not-exists tables/indexes,
+-- drop-then-recreate policies), so running it again never errors on
+-- already-existing objects.
 --
 -- This backs the live trade log: the Python bot (jj_bot/trade_logger.py)
 -- writes here using the service role key, and the Vercel dashboard reads
@@ -33,6 +37,7 @@ alter table public.trades enable row level security;
 -- dashboard has auth — for now every trade is written by the bot with the
 -- service role key, which bypasses RLS entirely, so this policy only
 -- controls who can *read*.
+drop policy if exists "Public can read trades" on public.trades;
 create policy "Public can read trades"
   on public.trades
   for select
@@ -62,22 +67,45 @@ create table if not exists public.strategies (
   created_at timestamptz not null default now()
 );
 
+-- is_active: which saved strategy the live Python bot should actually
+-- trade (jj_bot/config.py fetches this). At most one row per user can be
+-- active at a time; no active row means the bot falls back to the built-in
+-- JJ default (config.yaml). The bot is single-operator (see the account
+-- names comment above), so it looks for is_active=true across all rows,
+-- not scoped to a particular user.
+alter table public.strategies add column if not exists is_active boolean not null default false;
+
+create unique index if not exists strategies_one_active_per_user
+  on public.strategies (user_id)
+  where is_active;
+
+drop policy if exists "Users can update their own strategies" on public.strategies;
+create policy "Users can update their own strategies"
+  on public.strategies
+  for update
+  to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
 create index if not exists strategies_user_id_idx on public.strategies (user_id, created_at desc);
 
 alter table public.strategies enable row level security;
 
+drop policy if exists "Users can read their own strategies" on public.strategies;
 create policy "Users can read their own strategies"
   on public.strategies
   for select
   to authenticated
   using (auth.uid() = user_id);
 
+drop policy if exists "Users can insert their own strategies" on public.strategies;
 create policy "Users can insert their own strategies"
   on public.strategies
   for insert
   to authenticated
   with check (auth.uid() = user_id);
 
+drop policy if exists "Users can delete their own strategies" on public.strategies;
 create policy "Users can delete their own strategies"
   on public.strategies
   for delete
@@ -85,6 +113,52 @@ create policy "Users can delete their own strategies"
   using (auth.uid() = user_id);
 
 -- No anon policy at all: signed-out visitors see only the built-in default.
+
+-- ---------------------------------------------------------------------------
+-- Strategy Creator: saved AI-Optimize runs (PRIVATE per user)
+-- ---------------------------------------------------------------------------
+-- Each AI-Optimize call costs real tokens (system prompt + leaderboard per
+-- round). Without persistence, the resulting leaderboard vanished on
+-- refresh, forcing a full re-run (and re-spend) just to look at it again.
+-- Saving the whole run — base config, every variant tried, and the winner —
+-- lets a user revisit or reuse past results for free.
+
+create table if not exists public.optimizations (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  base_config jsonb not null,
+  base_config_name text not null,
+  rounds integer not null,
+  data_source text not null,
+  history jsonb not null,
+  best_config jsonb not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists optimizations_user_id_idx on public.optimizations (user_id, created_at desc);
+
+alter table public.optimizations enable row level security;
+
+drop policy if exists "Users can read their own optimizations" on public.optimizations;
+create policy "Users can read their own optimizations"
+  on public.optimizations
+  for select
+  to authenticated
+  using (auth.uid() = user_id);
+
+drop policy if exists "Users can insert their own optimizations" on public.optimizations;
+create policy "Users can insert their own optimizations"
+  on public.optimizations
+  for insert
+  to authenticated
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can delete their own optimizations" on public.optimizations;
+create policy "Users can delete their own optimizations"
+  on public.optimizations
+  for delete
+  to authenticated
+  using (auth.uid() = user_id);
 
 -- ---------------------------------------------------------------------------
 -- Strategy Creator / live bot: saved Tradovate account names (PRIVATE per user)
@@ -107,18 +181,21 @@ create index if not exists tradovate_accounts_user_id_idx on public.tradovate_ac
 
 alter table public.tradovate_accounts enable row level security;
 
+drop policy if exists "Users can read their own accounts" on public.tradovate_accounts;
 create policy "Users can read their own accounts"
   on public.tradovate_accounts
   for select
   to authenticated
   using (auth.uid() = user_id);
 
+drop policy if exists "Users can insert their own accounts" on public.tradovate_accounts;
 create policy "Users can insert their own accounts"
   on public.tradovate_accounts
   for insert
   to authenticated
   with check (auth.uid() = user_id);
 
+drop policy if exists "Users can delete their own accounts" on public.tradovate_accounts;
 create policy "Users can delete their own accounts"
   on public.tradovate_accounts
   for delete
@@ -145,6 +222,7 @@ create index if not exists bars_t_idx on public.bars (t asc);
 
 alter table public.bars enable row level security;
 
+drop policy if exists "Public can read bars" on public.bars;
 create policy "Public can read bars"
   on public.bars
   for select

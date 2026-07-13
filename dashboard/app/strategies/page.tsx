@@ -1,14 +1,151 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { StrategyConfig, SavedStrategy } from "../../lib/strategySchema";
-import type { BacktestResult } from "../../lib/backtester";
+import { survivabilityViolation, type StrategyConfig, type SavedStrategy } from "../../lib/strategySchema";
+import type { BacktestResult, SessionSplitResult } from "../../lib/backtester";
+import type { SavedOptimization } from "../../lib/optimizationStore";
 
-type BacktestResponse = BacktestResult & { dataSource: "supabase" | "sample"; error?: string };
+type BacktestResponse = BacktestResult & {
+  dataSource: "supabase" | "sample";
+  error?: string;
+  sessionSplit: SessionSplitResult | null;
+};
+
+type OptimizeCandidate = {
+  round: number;
+  rationale: string;
+  diff: unknown;
+  fitness: number;
+  result: BacktestResult;
+  config: StrategyConfig;
+};
+
+type OptimizeResponse = {
+  bestConfig: StrategyConfig;
+  bestResult: BacktestResult;
+  history: OptimizeCandidate[];
+  dataSource: "supabase" | "sample";
+  warning?: string;
+  error?: string;
+};
+
+type ChatMessage = { role: "user" | "assistant"; content: string; config?: StrategyConfig | null };
+
+/** Parse a fetch response as JSON, surfacing plain-text errors (e.g. Vercel
+ * timeout pages) as a readable message instead of "Unexpected token ... is
+ * not valid JSON". */
+async function readJson(res: Response): Promise<any> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: text.trim().slice(0, 200) || `Request failed with status ${res.status}` };
+  }
+}
 
 function fmtMoney(n: number): string {
   const sign = n < 0 ? "-" : "";
   return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** ⓘ icon with a themed tooltip bubble shown on hover. */
+function Hint({ text }: { text: string }) {
+  return (
+    <span className="hint-wrap">
+      <span className="hint-icon" tabIndex={0}>ⓘ</span>
+      <span className="hint-pop" role="tooltip">{text}</span>
+    </span>
+  );
+}
+
+/** One stat tile with a plain-English hover explanation. */
+function StatCard({
+  label,
+  hint,
+  value,
+  tone,
+}: {
+  label: string;
+  hint: string;
+  value: string;
+  tone?: "positive" | "negative" | "";
+}) {
+  return (
+    <div className="stat-card stat-card-hint">
+      <div className="label">
+        {label} <span className="hint-icon">ⓘ</span>
+      </div>
+      <div className={`value ${tone ?? ""}`}>{value}</div>
+      <span className="hint-pop" role="tooltip">{hint}</span>
+    </div>
+  );
+}
+
+/** Labeled number input for the manual strategy editor. */
+function NumField({
+  label,
+  hint,
+  value,
+  onChange,
+  step,
+  min,
+  max,
+}: {
+  label: string;
+  hint: string;
+  value: number;
+  onChange: (v: number) => void;
+  step?: number;
+  min?: number;
+  max?: number;
+}) {
+  return (
+    <label className="edit-field">
+      <span className="edit-field-label">
+        {label} <Hint text={hint} />
+      </span>
+      <input
+        type="number"
+        className="test-input"
+        value={value}
+        step={step ?? 1}
+        min={min}
+        max={max}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+    </label>
+  );
+}
+
+/** Labeled "HH:MM" time input for the manual strategy editor. */
+function TimeField({ label, hint, value, onChange }: { label: string; hint: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="edit-field">
+      <span className="edit-field-label">
+        {label} <Hint text={hint} />
+      </span>
+      <input
+        type="text"
+        className="test-input"
+        placeholder="HH:MM"
+        pattern="^([01]\d|2[0-3]):[0-5]\d$"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </label>
+  );
+}
+
+/** Labeled checkbox for the manual strategy editor. */
+function BoolField({ label, hint, value, onChange }: { label: string; hint: string; value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="edit-field edit-field-bool">
+      <input type="checkbox" checked={value} onChange={(e) => onChange(e.target.checked)} />
+      <span className="edit-field-label">
+        {label} <Hint text={hint} />
+      </span>
+    </label>
+  );
 }
 
 export default function StrategiesPage() {
@@ -16,47 +153,103 @@ export default function StrategiesPage() {
   const [selected, setSelected] = useState<SavedStrategy | null>(null);
   const [draft, setDraft] = useState<StrategyConfig | null>(null);
   const [draftPrompt, setDraftPrompt] = useState("");
-  const [prompt, setPrompt] = useState("");
-  const [busy, setBusy] = useState<"" | "generating" | "backtesting" | "saving">("");
+  const [chat, setChat] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [busy, setBusy] = useState<"" | "chatting" | "backtesting" | "saving" | "optimizing">("");
   const [message, setMessage] = useState<{ kind: "error" | "ok"; text: string } | null>(null);
   const [result, setResult] = useState<BacktestResponse | null>(null);
   const [resultFor, setResultFor] = useState("");
+  const [optimizeRounds, setOptimizeRounds] = useState(3);
+  const [optimizeResult, setOptimizeResult] = useState<OptimizeResponse | null>(null);
+  const [accountCount, setAccountCount] = useState(1);
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState<StrategyConfig | null>(null);
+  const [listTab, setListTab] = useState<"strategies" | "optimizations">("strategies");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [optimizations, setOptimizations] = useState<SavedOptimization[]>([]);
+  const [selectedOptimization, setSelectedOptimization] = useState<SavedOptimization | null>(null);
 
   async function refresh() {
     const res = await fetch("/api/strategies");
-    const data = await res.json();
+    const data = await readJson(res);
     setStrategies(data.strategies ?? []);
     if (!selected && data.strategies?.length) setSelected(data.strategies[0]);
   }
 
+  async function refreshOptimizations() {
+    const res = await fetch("/api/optimizations");
+    const data = await readJson(res);
+    setOptimizations(data.optimizations ?? []);
+  }
+
   useEffect(() => {
     refresh();
+    refreshOptimizations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const activeConfig: StrategyConfig | null = draft ?? selected?.config ?? null;
   const activeName = draft ? `${draft.name} (unsaved)` : selected?.config.name ?? "";
 
-  async function generate() {
-    setBusy("generating");
+  async function sendChat() {
+    const text = chatInput.trim();
+    if (!text || busy !== "") return;
+    // Keep the last ~20 turns so long conversations don't hit the API cap.
+    const nextChat: ChatMessage[] = [...chat, { role: "user" as const, content: text }].slice(-20);
+    setChat(nextChat);
+    setChatInput("");
+    setBusy("chatting");
     setMessage(null);
     try {
-      const res = await fetch("/api/generate-strategy", {
+      const res = await fetch("/api/strategy-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ messages: nextChat.map(({ role, content }) => ({ role, content })) }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Generation failed");
-      setDraft(data.config);
-      setDraftPrompt(prompt);
-      setResult(null);
-      setMessage({ kind: "ok", text: "Strategy generated. Review the rules below, then backtest or save it." });
+      const data = await readJson(res);
+      if (!res.ok) throw new Error(data.error || "Chat failed");
+      const withReply: ChatMessage[] = [...nextChat, { role: "assistant", content: data.reply, config: data.config ?? null }];
+      setChat(withReply);
+      // If Claude attached a concrete config, immediately test it against the
+      // historical data and post the numbers back into the conversation —
+      // "what happens if I do X" gets a real answer, not a hypothesis.
+      if (data.config) {
+        setBusy("backtesting");
+        try {
+          const btRes = await fetch("/api/backtest", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ config: data.config }),
+          });
+          const bt = await readJson(btRes);
+          if (btRes.ok) {
+            const summary =
+              `Backtest of "${data.config.name}" against ${bt.dataSource === "supabase" ? "real historical" : "synthetic sample"} data:\n` +
+              `• Real-money bottom line: ${fmtMoney(bt.realWorldNetPnl)} (${fmtMoney(bt.realWorldCashPayouts)} in payouts − ${fmtMoney(bt.realWorldFeesPaid)} in fees)\n` +
+              `• ${bt.chronologicalAttempts} account(s) bought, ${bt.timesFunded} reached funded\n` +
+              `• Win rate ${bt.winRate.toFixed(1)}% over ${bt.totalTrades} trades\n` +
+              `Load it as a draft below to see the full breakdown, or keep refining it here.`;
+            setChat([...withReply, { role: "assistant", content: summary, config: null }]);
+          }
+        } catch {
+          // Auto-backtest is best-effort; the config button still works.
+        }
+      }
     } catch (err: any) {
       setMessage({ kind: "error", text: err.message });
+      setChat(chat); // roll back the optimistic user turn so it can be retried
+      setChatInput(text);
     } finally {
       setBusy("");
     }
+  }
+
+  function loadChatConfig(config: StrategyConfig) {
+    setDraft(config);
+    setDraftPrompt("Designed in AI chat");
+    setResult(null);
+    setMessage({ kind: "ok", text: "Loaded as a draft — run a backtest to see how it actually performs, then save it if you like it." });
   }
 
   async function backtest() {
@@ -67,9 +260,9 @@ export default function StrategiesPage() {
       const res = await fetch("/api/backtest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config: activeConfig }),
+        body: JSON.stringify({ config: activeConfig, accountCount }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Backtest failed");
       setResult(data);
       setResultFor(activeName);
@@ -80,14 +273,185 @@ export default function StrategiesPage() {
     }
   }
 
+  async function optimize() {
+    if (!activeConfig) return;
+    setBusy("optimizing");
+    setMessage(null);
+    setOptimizeResult(null);
+    try {
+      const res = await fetch("/api/optimize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseConfig: activeConfig, rounds: optimizeRounds, batchSize: 4 }),
+      });
+      const data = await readJson(res);
+      if (!res.ok) throw new Error(data.error || "Optimization failed");
+      setOptimizeResult(data);
+
+      // Every run is saved automatically — every AI-Optimize click is a new,
+      // independent search over the historical data, so each becomes its
+      // own entry in the Optimizations tab, never overwriting a prior run.
+      // Revisiting it later costs nothing (no AI call, just reading the
+      // saved leaderboard back from Supabase).
+      let saveNote = "";
+      try {
+        const saveRes = await fetch("/api/optimizations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            baseConfig: activeConfig,
+            rounds: optimizeRounds,
+            dataSource: data.dataSource,
+            history: data.history,
+            bestConfig: data.bestConfig,
+          }),
+        });
+        if (saveRes.ok) {
+          await refreshOptimizations();
+          saveNote = " Saved to the Optimizations tab automatically.";
+        }
+      } catch {
+        // Auto-save is best-effort; the leaderboard below still works either way.
+      }
+
+      setMessage({
+        kind: "ok",
+        text: `Tried ${data.history.length} variant(s) across ${optimizeRounds} round(s). Review the leaderboard below, then "Use This Config" on the best one to load it as a draft.${saveNote}`,
+      });
+    } catch (err: any) {
+      setMessage({ kind: "error", text: err.message });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function useOptimizedConfig(config: StrategyConfig, fromName?: string) {
+    setDraft(config);
+    setDraftPrompt(`Optimized from "${fromName ?? activeName}"`);
+    setResult(null);
+    setOptimizeResult(null);
+    setSelectedOptimization(null);
+    setListTab("strategies");
+    setMessage({ kind: "ok", text: "Loaded as a new draft. Review, then Save Strategy if you want to keep it." });
+  }
+
+  async function removeOptimization(id: string) {
+    setBusy("saving");
+    setMessage(null);
+    try {
+      const res = await fetch(`/api/optimizations?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      const data = await readJson(res);
+      if (!res.ok) throw new Error(data.error || "Delete failed");
+      if (selectedOptimization?.id === id) setSelectedOptimization(null);
+      await refreshOptimizations();
+    } catch (err: any) {
+      setMessage({ kind: "error", text: err.message });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function startEditing() {
+    if (!activeConfig) return;
+    setEditForm(JSON.parse(JSON.stringify(activeConfig)));
+    setEditing(true);
+    setMessage(null);
+  }
+
+  function cancelEditing() {
+    setEditing(false);
+    setEditForm(null);
+  }
+
+  function applyEdits() {
+    if (!editForm) return;
+    setDraft(editForm);
+    setDraftPrompt(draft ? draftPrompt : `Manually edited from "${activeName}"`);
+    setEditing(false);
+    setEditForm(null);
+    setResult(null);
+    setMessage({ kind: "ok", text: "Applied as a draft — run a backtest to see how it performs, then Save Strategy if you want to keep it." });
+  }
+
+  /** Update one field of the in-progress edit form, e.g. setEditField("risk", "stopPoints", 30). */
+  function setEditField<G extends "session" | "phases" | "entry" | "risk" | "eval">(
+    group: G,
+    field: keyof StrategyConfig[G],
+    value: StrategyConfig[G][keyof StrategyConfig[G]]
+  ) {
+    setEditForm((prev) => (prev ? { ...prev, [group]: { ...prev[group], [field]: value } } : prev));
+  }
+
+  const DEFAULT_PORTFOLIO = { accountCount: 2, staggerDays: 0, oneTradePerDay: false };
+
+  /** Portfolio is optional/absent by default (undefined = single account,
+   * no portfolio simulation) — unlike the other groups, so this can't reuse
+   * setEditField's always-present-object assumption. */
+  function setPortfolioField<F extends keyof typeof DEFAULT_PORTFOLIO>(field: F, value: (typeof DEFAULT_PORTFOLIO)[F]) {
+    setEditForm((prev) =>
+      prev ? { ...prev, portfolio: { ...(prev.portfolio ?? DEFAULT_PORTFOLIO), [field]: value } } : prev
+    );
+  }
+
+  function togglePortfolio(enabled: boolean) {
+    setEditForm((prev) =>
+      prev ? { ...prev, portfolio: enabled ? (prev.portfolio ?? DEFAULT_PORTFOLIO) : undefined } : prev
+    );
+  }
+
   async function removeStrategy(id: string) {
     setBusy("saving");
     setMessage(null);
     try {
       const res = await fetch(`/api/strategies?id=${encodeURIComponent(id)}`, { method: "DELETE" });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Delete failed");
       if (selected?.id === id) setSelected(null);
+      await refresh();
+    } catch (err: any) {
+      setMessage({ kind: "error", text: err.message });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function activateStrategy(id: string) {
+    setBusy("saving");
+    setMessage(null);
+    try {
+      const res = await fetch("/api/strategies", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ activateId: id === "default-jj" ? null : id }),
+      });
+      const data = await readJson(res);
+      if (!res.ok) throw new Error(data.error || "Failed to set live strategy");
+      setMessage({ kind: "ok", text: "Live trading strategy updated." });
+      await refresh();
+    } catch (err: any) {
+      setMessage({ kind: "error", text: err.message });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function submitRename(id: string) {
+    const name = renameValue.trim();
+    if (!name) {
+      setRenamingId(null);
+      return;
+    }
+    setBusy("saving");
+    setMessage(null);
+    try {
+      const res = await fetch("/api/strategies", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ renameId: id, name }),
+      });
+      const data = await readJson(res);
+      if (!res.ok) throw new Error(data.error || "Rename failed");
+      setRenamingId(null);
       await refresh();
     } catch (err: any) {
       setMessage({ kind: "error", text: err.message });
@@ -106,7 +470,7 @@ export default function StrategiesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ config: draft, source: "ai", prompt: draftPrompt }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.error || "Save failed");
       setMessage({ kind: "ok", text: "Strategy saved." });
       setDraft(null);
@@ -132,27 +496,59 @@ export default function StrategiesPage() {
 
       <div className="test-panel">
         <div className="test-panel-header">
-          <h2>Create a strategy with AI</h2>
+          <h2>Design a strategy with AI</h2>
           <p>
-            Your description is translated by Claude into parameters for the same rule engine that runs JJ&apos;s
-            default strategy (session anchor, displacement candles, break of structure, fixed R:R brackets, daily
-            caps). AI output is data, not code — every config is validated before it runs.
+            Have a conversation: ask what patterns show up in your real historical data (it sees a weekly digest —
+            the first and last trading day of every week), bounce ideas around, and when you&apos;ve agreed on
+            something concrete it attaches a ready-to-test strategy. AI output is data, not code — every config is
+            validated before it runs, and nothing counts until it survives a real backtest.
           </p>
         </div>
+        {chat.length > 0 && (
+          <div className="chat-box">
+            {chat.map((m, i) => (
+              <div key={i} className={`chat-msg ${m.role}`}>
+                <div className="chat-msg-role">{m.role === "user" ? "You" : "Claude"}</div>
+                <div className="chat-msg-text">{m.content}</div>
+                {m.config && (
+                  <button className="btn btn-primary chat-config-btn" onClick={() => loadChatConfig(m.config!)}>
+                    Load &quot;{m.config.name}&quot; as draft
+                  </button>
+                )}
+              </div>
+            ))}
+            {busy === "chatting" && <div className="chat-msg assistant"><div className="chat-msg-role">Claude</div><div className="chat-msg-text">Thinking…</div></div>}
+          </div>
+        )}
         <div className="test-panel-row">
           <textarea
             className="test-input strategy-prompt"
-            rows={3}
+            rows={2}
             maxLength={4000}
-            placeholder='e.g. "Trade only mean reversion between 30 and 90 minutes after the open, with a tight 15 point stop and 45 point target, max 2 trades a day, stop after 1 loss."'
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
+            placeholder={
+              chat.length === 0
+                ? 'e.g. "Looking at my data, do Mondays open differently than Fridays close? What would you try?"'
+                : "Reply…"
+            }
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendChat();
+              }
+            }}
           />
+          <button className="btn btn-primary" onClick={sendChat} disabled={busy !== "" || chatInput.trim().length === 0}>
+            {busy === "chatting" ? "…" : "Send"}
+          </button>
         </div>
         <div className="test-panel-row">
-          <button className="btn btn-primary" onClick={generate} disabled={busy !== "" || prompt.trim().length < 10}>
-            {busy === "generating" ? "Generating…" : "Generate Strategy"}
-          </button>
+          {chat.length > 0 && (
+            <button className="btn" onClick={() => { setChat([]); setMessage(null); }} disabled={busy !== ""}>
+              New Conversation
+            </button>
+          )}
           {draft && (
             <>
               <button className="btn" onClick={save} disabled={busy !== ""}>
@@ -169,77 +565,401 @@ export default function StrategiesPage() {
 
       <div className="strategy-layout">
         <div className="strategy-list">
-          <h2>Strategies</h2>
-          {strategies.map((s) => (
-            <div
-              key={s.id}
-              role="button"
-              tabIndex={0}
-              className={`strategy-item ${!draft && selected?.id === s.id ? "active" : ""}`}
-              onClick={() => {
-                setSelected(s);
-                setDraft(null);
-                setResult(null);
-                setMessage(null);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  setSelected(s);
-                  setDraft(null);
-                  setResult(null);
-                  setMessage(null);
-                }
-              }}
+          <div className="list-tab-row">
+            <button
+              className={`list-tab ${listTab === "strategies" ? "list-tab-active" : ""}`}
+              onClick={() => setListTab("strategies")}
             >
-              <span className="strategy-item-name">{s.config.name}</span>
-              <span className={`badge ${s.source === "default" ? "test" : s.source === "ai" ? "long" : "short"}`}>
-                {s.source}
-              </span>
-              {s.source !== "default" && (
-                <button
-                  className="strategy-item-delete"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removeStrategy(s.id);
+              Strategies
+            </button>
+            <button
+              className={`list-tab ${listTab === "optimizations" ? "list-tab-active" : ""}`}
+              onClick={() => setListTab("optimizations")}
+            >
+              Optimizations
+            </button>
+          </div>
+
+          {listTab === "strategies" ? (
+            <>
+              {strategies.map((s) => (
+                <div
+                  key={s.id}
+                  role="button"
+                  tabIndex={0}
+                  className={`strategy-item ${!draft && selected?.id === s.id ? "active" : ""}`}
+                  onClick={() => {
+                    setSelected(s);
+                    setDraft(null);
+                    setResult(null);
+                    setMessage(null);
                   }}
-                  title="Delete strategy"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      setSelected(s);
+                      setDraft(null);
+                      setResult(null);
+                      setMessage(null);
+                    }
+                  }}
                 >
-                  ✕
-                </button>
+                  {renamingId === s.id ? (
+                    <input
+                      autoFocus
+                      className="strategy-item-rename-input"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => {
+                        e.stopPropagation();
+                        if (e.key === "Enter") submitRename(s.id);
+                        if (e.key === "Escape") setRenamingId(null);
+                      }}
+                      onBlur={() => submitRename(s.id)}
+                      maxLength={80}
+                    />
+                  ) : (
+                    <span className="strategy-item-name">{s.config.name}</span>
+                  )}
+                  {s.source !== "default" && renamingId !== s.id && (
+                    <button
+                      className="strategy-item-rename"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRenamingId(s.id);
+                        setRenameValue(s.config.name);
+                      }}
+                      title="Rename strategy"
+                    >
+                      ✎
+                    </button>
+                  )}
+                  <span className={`badge ${s.source === "default" ? "test" : s.source === "ai" ? "long" : "short"}`}>
+                    {s.source}
+                  </span>
+                  {s.is_active ? (
+                    <span className="badge win" title="This is what the live bot is currently trading">
+                      ● live
+                    </span>
+                  ) : (
+                    <button
+                      className="strategy-item-activate"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        activateStrategy(s.id);
+                      }}
+                      title="Make this the live-trading strategy"
+                      disabled={busy !== ""}
+                    >
+                      Set live
+                    </button>
+                  )}
+                  {s.source !== "default" && (
+                    <button
+                      className="strategy-item-delete"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeStrategy(s.id);
+                      }}
+                      title="Delete strategy"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              ))}
+              {draft && (
+                <div className="strategy-item active">
+                  <span className="strategy-item-name">{draft.name}</span>
+                  <span className="badge win">draft</span>
+                </div>
               )}
-            </div>
-          ))}
-          {draft && (
-            <div className="strategy-item active">
-              <span className="strategy-item-name">{draft.name}</span>
-              <span className="badge win">draft</span>
-            </div>
+            </>
+          ) : (
+            <>
+              {optimizations.length === 0 && (
+                <div className="empty-state" style={{ padding: "12px 4px" }}>
+                  No saved runs yet — click AI-Optimize on a strategy to create one.
+                </div>
+              )}
+              {optimizations.map((o) => (
+                <div
+                  key={o.id}
+                  role="button"
+                  tabIndex={0}
+                  className={`strategy-item ${selectedOptimization?.id === o.id ? "active" : ""}`}
+                  onClick={() => setSelectedOptimization(o)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") setSelectedOptimization(o);
+                  }}
+                >
+                  <span className="strategy-item-name">
+                    {o.base_config_name} · {new Date(o.created_at).toLocaleDateString()}
+                  </span>
+                  <span className={`badge ${o.data_source === "supabase" ? "long" : "short"}`}>{o.data_source}</span>
+                  <button
+                    className="strategy-item-delete"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeOptimization(o.id);
+                    }}
+                    title="Delete this saved run"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </>
           )}
         </div>
 
         <div className="strategy-detail">
-          {activeConfig ? (
+          {listTab === "optimizations" ? (
+            selectedOptimization ? (
+              <>
+                <div className="strategy-detail-header">
+                  <h2>
+                    {selectedOptimization.base_config_name} — saved{" "}
+                    {new Date(selectedOptimization.created_at).toLocaleString()}
+                  </h2>
+                </div>
+                {message && (
+                  <div className={`test-status test-status-${message.kind === "error" ? "error" : "success"}`}>
+                    {message.text}
+                  </div>
+                )}
+                <div className="bt-results">
+                  <p className="bt-explainer">
+                    {selectedOptimization.rounds} round(s), {selectedOptimization.history.length} variant(s) tried
+                    against {selectedOptimization.data_source === "supabase" ? "real historical data" : "synthetic sample data"}.{" "}
+                    <strong>Profitable</strong> means the real-money bottom line (payouts minus fees) came out
+                    positive. Every variant here still runs the base config's exact risk sizing — the optimizer only
+                    ever changes which trades get taken.
+                  </p>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>What was tried</th>
+                          <th>Win Rate</th>
+                          <th>Bottom Line</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...selectedOptimization.history]
+                          .sort((a, b) => b.fitness - a.fitness)
+                          .map((c, i) => (
+                            <tr key={i}>
+                              <td>{i === 0 ? "🏆" : i + 1}</td>
+                              <td>{c.rationale}</td>
+                              <td>{c.result.winRate.toFixed(1)}%</td>
+                              <td>
+                                <span className={`badge ${c.result.realWorldNetPnl > 0 ? "win" : "loss"}`}>
+                                  {fmtMoney(c.result.realWorldNetPnl)}
+                                  {c.result.realWorldNetPnl > 0 ? " Profitable" : ""}
+                                </span>
+                              </td>
+                              <td>
+                                <button
+                                  className="btn"
+                                  onClick={() => useOptimizedConfig(c.config, selectedOptimization.base_config_name)}
+                                >
+                                  Use This Config
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="empty-state">Select a saved optimization run to view its leaderboard.</div>
+            )
+          ) : activeConfig ? (
             <>
               <div className="strategy-detail-header">
                 <h2>{activeName}</h2>
-                <button className="btn btn-primary" onClick={backtest} disabled={busy !== ""}>
-                  {busy === "backtesting" ? "Simulating…" : "Run Backtest"}
-                </button>
-              </div>
-              <p className="strategy-desc">{activeConfig.description}</p>
-              <div className="rule-grid">
-                <div className="rule"><span>Session</span>{activeConfig.session.open}–{activeConfig.session.hardCutoff} ET</div>
-                <div className="rule"><span>Continuation</span>{activeConfig.phases.tradeContinuation ? `first ${activeConfig.phases.continuationEndMin} min` : "off"}</div>
-                <div className="rule"><span>Reversion</span>{activeConfig.phases.tradeReversion ? `until ${activeConfig.phases.reversionEndMin} min (≥${activeConfig.entry.minExtensionPoints} pts ext.)` : "off"}</div>
-                <div className="rule"><span>Stop / Target</span>{activeConfig.risk.stopPoints} / {activeConfig.risk.targetPoints} pts</div>
-                <div className="rule"><span>Trade caps</span>{activeConfig.risk.maxTradesPerDay}/day, stop after {activeConfig.risk.stopAfterConsecutiveLosses} losses</div>
-                <div className="rule"><span>Daily $ caps</span>+${activeConfig.risk.dailyProfitCap} / −${activeConfig.risk.dailyLossCap}</div>
-                <div className="rule"><span>Displacement</span>≥{activeConfig.entry.displacementSizeRatio}× avg TR, wick ≤ {Math.round(activeConfig.entry.maxWickRatio * 100)}%</div>
-                <div className="rule"><span>Structure</span>{activeConfig.entry.structureLookbackMin} min lookback, +{activeConfig.entry.breakBufferPoints} pt buffer</div>
-                <div className="rule"><span>Eval sim</span>${activeConfig.eval.accountSize.toLocaleString()} acct, +${activeConfig.eval.profitTarget.toLocaleString()} target, ${activeConfig.eval.trailingMaxDrawdown.toLocaleString()} trailing DD</div>
+                <div className="test-panel-row" style={{ margin: 0 }}>
+                  {!editing && (
+                    <>
+                      <button className="btn btn-primary" onClick={backtest} disabled={busy !== ""}>
+                        {busy === "backtesting" ? "Simulating…" : "Run Backtest"}
+                      </button>
+                      <label className="accounts-input" title="Session Split: NOT the same as the Portfolio feature under Edit. This round-robins one SLICE of the strategy (a session or a continuation/reversion phase) per account — most accounts trade a restricted subset, not the full strategy. For true 'N accounts each running the whole strategy' scaling, use Portfolio in the strategy editor instead.">
+                        <span>Session Split (Accts)</span>
+                        <input
+                          type="number"
+                          className="test-input"
+                          style={{ width: 56 }}
+                          value={accountCount}
+                          min={1}
+                          max={20}
+                          onChange={(e) => setAccountCount(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
+                          disabled={busy !== ""}
+                        />
+                      </label>
+                      <select
+                        className="test-input"
+                        style={{ width: 140 }}
+                        value={optimizeRounds}
+                        onChange={(e) => setOptimizeRounds(Number(e.target.value))}
+                        disabled={busy !== ""}
+                      >
+                        <option value={2}>2 rounds</option>
+                        <option value={3}>3 rounds</option>
+                        <option value={5}>5 rounds</option>
+                      </select>
+                      <button className="btn" onClick={optimize} disabled={busy !== ""}>
+                        {busy === "optimizing" ? "Optimizing…" : "AI-Optimize"}
+                      </button>
+                      <button className="btn" onClick={startEditing} disabled={busy !== ""}>
+                        Edit
+                      </button>
+                    </>
+                  )}
+                  {editing && (
+                    <>
+                      <button className="btn btn-primary" onClick={applyEdits}>
+                        Apply as Draft
+                      </button>
+                      <button className="btn" onClick={cancelEditing}>
+                        Cancel
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
 
-              {result && (
+              {!editing && (
+                <>
+                  <p className="strategy-desc">{activeConfig.description}</p>
+                  <div className="rule-grid">
+                    <div className="rule"><span>Session <Hint text="The time window when trading happens (ET). The candle at the open sets the day's 'fair price'; no new trades after the cutoff." /></span>{activeConfig.session.open}–{activeConfig.session.hardCutoff} ET</div>
+                    <div className="rule"><span>Continuation <Hint text="Whether the strategy trades in the same direction as the opening move, and for how many minutes after the open." /></span>{activeConfig.phases.tradeContinuation ? `first ${activeConfig.phases.continuationEndMin} min` : "off"}</div>
+                    <div className="rule"><span>Reversion <Hint text="Whether the strategy bets on price coming back toward the opening price after it has stretched far enough away, and until when." /></span>{activeConfig.phases.tradeReversion ? `until ${activeConfig.phases.reversionEndMin} min (≥${activeConfig.entry.minExtensionPoints} pts ext.)` : "off"}</div>
+                    <div className="rule"><span>Stop / Target <Hint text="How many NQ points a trade loses before it's cut (stop) or gains before it's cashed in (target). On NQ, 1 point = $20 per contract." /></span>{activeConfig.risk.stopPoints} / {activeConfig.risk.targetPoints} pts</div>
+                    <div className="rule"><span>Trade caps <Hint text="The most trades allowed per day, and an early quit rule after too many losses in a row." /></span>{activeConfig.risk.maxTradesPerDay}/day, stop after {activeConfig.risk.stopAfterConsecutiveLosses} losses</div>
+                    <div className="rule"><span>Daily $ caps <Hint text="Stop trading for the day once profit reaches the + number or loss reaches the − number." /></span>+${activeConfig.risk.dailyProfitCap} / −${activeConfig.risk.dailyLossCap}</div>
+                    <div className="rule"><span>Displacement <Hint text="How big and clean a price candle must be before the strategy treats it as a real move worth entering on (big body, small wicks)." /></span>≥{activeConfig.entry.displacementSizeRatio}× avg TR, wick ≤ {Math.round(activeConfig.entry.maxWickRatio * 100)}%</div>
+                    <div className="rule"><span>Structure <Hint text="How far back it scans for recent highs/lows, and how far price must break past them to count as a genuine breakout." /></span>{activeConfig.entry.structureLookbackMin} min lookback, +{activeConfig.entry.breakBufferPoints} pt buffer</div>
+                    <div className="rule"><span>Eval sim <Hint text="The simulated prop-firm account: its size, the profit needed to pass the eval, and the trailing drawdown that busts it." /></span>${activeConfig.eval.accountSize.toLocaleString()} acct, +${activeConfig.eval.profitTarget.toLocaleString()} target, ${activeConfig.eval.trailingMaxDrawdown.toLocaleString()} trailing DD</div>
+                  </div>
+                </>
+              )}
+
+              {editing && editForm && (
+                <div className="edit-form">
+                  {survivabilityViolation(editForm) && (
+                    <div className="test-status test-status-error">⚠️ {survivabilityViolation(editForm)}</div>
+                  )}
+                  <label className="edit-field" style={{ marginBottom: 12 }}>
+                    <span className="edit-field-label">Name</span>
+                    <input
+                      type="text"
+                      className="test-input"
+                      value={editForm.name}
+                      onChange={(e) => setEditForm((prev) => (prev ? { ...prev, name: e.target.value } : prev))}
+                    />
+                  </label>
+
+                  <p className="edit-section-label">Session</p>
+                  <div className="edit-grid">
+                    <TimeField label="Open" hint="ET time the session-anchor candle fires." value={editForm.session.open} onChange={(v) => setEditField("session", "open", v)} />
+                    <TimeField label="Hard cutoff" hint="No new entries after this ET time." value={editForm.session.hardCutoff} onChange={(v) => setEditField("session", "hardCutoff", v)} />
+                  </div>
+
+                  <p className="edit-section-label">Phases</p>
+                  <div className="edit-grid">
+                    <BoolField label="Trade continuation" hint="Enter in the opening candle's direction." value={editForm.phases.tradeContinuation} onChange={(v) => setEditField("phases", "tradeContinuation", v)} />
+                    <NumField label="Continuation end (min)" hint="Minutes after open the continuation window stays valid." value={editForm.phases.continuationEndMin} onChange={(v) => setEditField("phases", "continuationEndMin", v)} min={0} max={120} />
+                    <BoolField label="Trade reversion" hint="Enter back toward the open price after it has extended far enough." value={editForm.phases.tradeReversion} onChange={(v) => setEditField("phases", "tradeReversion", v)} />
+                    <NumField label="Reversion end (min)" hint="Minutes after open the reversion window stays valid." value={editForm.phases.reversionEndMin} onChange={(v) => setEditField("phases", "reversionEndMin", v)} min={0} max={360} />
+                  </div>
+
+                  <p className="edit-section-label">Entry filters</p>
+                  <div className="edit-grid">
+                    <NumField label="Displacement size ratio" hint="Candle true range must be at least this x the ~10-bar average." value={editForm.entry.displacementSizeRatio} onChange={(v) => setEditField("entry", "displacementSizeRatio", v)} step={0.05} min={0.5} max={5} />
+                    <NumField label="Displacement prev ratio" hint="Candle true range must be at least this x the previous bar's." value={editForm.entry.displacementPrevRatio} onChange={(v) => setEditField("entry", "displacementPrevRatio", v)} step={0.05} min={0} max={5} />
+                    <NumField label="Max wick ratio" hint="Total wick / range must be under this to count as a clean displacement (0-1)." value={editForm.entry.maxWickRatio} onChange={(v) => setEditField("entry", "maxWickRatio", v)} step={0.05} min={0} max={1} />
+                    <NumField label="Structure lookback (min)" hint="How far back it scans for swing highs/lows." value={editForm.entry.structureLookbackMin} onChange={(v) => setEditField("entry", "structureLookbackMin", v)} min={2} max={240} />
+                    <NumField label="Swing strength" hint="Bars required on each side to confirm a pivot." value={editForm.entry.swingStrength} onChange={(v) => setEditField("entry", "swingStrength", v)} min={1} max={10} />
+                    <NumField label="Break buffer (pts)" hint="Price must clear structure by this many points to count as a real break." value={editForm.entry.breakBufferPoints} onChange={(v) => setEditField("entry", "breakBufferPoints", v)} step={0.25} min={0} max={50} />
+                    <NumField label="Min extension (pts)" hint="Minimum move away from the open before a reversion trade is valid." value={editForm.entry.minExtensionPoints} onChange={(v) => setEditField("entry", "minExtensionPoints", v)} min={0} max={500} />
+                  </div>
+
+                  <p className="edit-section-label">Risk</p>
+                  <div className="edit-grid">
+                    <NumField label="Stop (pts)" hint="Points of adverse move before the trade is cut." value={editForm.risk.stopPoints} onChange={(v) => setEditField("risk", "stopPoints", v)} min={1} max={500} />
+                    <NumField label="Target (pts)" hint="Points of favorable move before the trade is cashed in." value={editForm.risk.targetPoints} onChange={(v) => setEditField("risk", "targetPoints", v)} min={1} max={1000} />
+                    <NumField label="Contracts per trade" hint="How many contracts each trade uses — multiplies the dollar stop/target directly." value={editForm.risk.contractsPerTrade} onChange={(v) => setEditField("risk", "contractsPerTrade", v)} min={1} max={10} />
+                    <NumField label="Max trades/day" hint="Hard cap on entries per day." value={editForm.risk.maxTradesPerDay} onChange={(v) => setEditField("risk", "maxTradesPerDay", v)} min={1} max={20} />
+                    <NumField label="Stop after N losses" hint="Quit for the day after this many consecutive losses." value={editForm.risk.stopAfterConsecutiveLosses} onChange={(v) => setEditField("risk", "stopAfterConsecutiveLosses", v)} min={1} max={10} />
+                    <NumField label="Daily profit cap ($)" hint="Stop trading for the day once profit reaches this." value={editForm.risk.dailyProfitCap} onChange={(v) => setEditField("risk", "dailyProfitCap", v)} min={0} max={100000} />
+                    <NumField label="Daily loss cap ($)" hint="Stop trading for the day once loss reaches this." value={editForm.risk.dailyLossCap} onChange={(v) => setEditField("risk", "dailyLossCap", v)} min={0} max={100000} />
+                  </div>
+
+                  <p className="edit-section-label">Full-Strategy Scaling (Portfolio) — use this to scale up account count</p>
+                  <div className="edit-grid">
+                    <BoolField
+                      label="Simulate multiple accounts"
+                      hint="Runs N accounts of THIS SAME strategy (not session/phase-split like the 'Accounts' field above the backtest button). Every account trades identically unless staggered below."
+                      value={!!editForm.portfolio}
+                      onChange={togglePortfolio}
+                    />
+                    {editForm.portfolio && (
+                      <>
+                        <NumField
+                          label="Account count"
+                          hint="How many accounts to run in parallel."
+                          value={editForm.portfolio.accountCount}
+                          onChange={(v) => setPortfolioField("accountCount", v)}
+                          min={1}
+                          max={20}
+                        />
+                        <NumField
+                          label="Stagger (days)"
+                          hint="Offsets each account's start by this many days. 0 = every account trades the exact same days — they are fully correlated, not diversified: a bad losing stretch busts all of them together, same day, since it's the same instrument and signal. A nonzero stagger is the only thing in this simulation that represents real diversification (different accounts hit their eval/bust points on different days)."
+                          value={editForm.portfolio.staggerDays}
+                          onChange={(v) => setPortfolioField("staggerDays", v)}
+                          min={0}
+                          max={30}
+                        />
+                        <BoolField
+                          label="One trade per account per day"
+                          hint="Restricts each account to only its first trade of the day (ignores maxTradesPerDay above for this simulation)."
+                          value={editForm.portfolio.oneTradePerDay}
+                          onChange={(v) => setPortfolioField("oneTradePerDay", v)}
+                        />
+                        {editForm.portfolio.staggerDays === 0 && (
+                          <p className="edit-field-warning">
+                            ⚠️ Stagger is 0 — every account is fully correlated (same trades, same days). The
+                            "Portfolio" backtest total below is real dollars × account count, but it is NOT
+                            diversified risk: all accounts bust together in a bad stretch, same as running one
+                            account, just with more capital and more eval fees at stake simultaneously.
+                          </p>
+                        )}
+                      </>
+                    )}
+                  </div>
+
+                  <p className="edit-section-label">Eval simulation</p>
+                  <div className="edit-grid">
+                    <NumField label="Account size ($)" hint="Simulated prop-firm account starting balance." value={editForm.eval.accountSize} onChange={(v) => setEditField("eval", "accountSize", v)} step={1000} min={1000} max={1000000} />
+                    <NumField label="Profit target ($)" hint="Profit needed to pass the eval." value={editForm.eval.profitTarget} onChange={(v) => setEditField("eval", "profitTarget", v)} step={100} min={100} max={100000} />
+                    <NumField label="Trailing max drawdown ($)" hint="Balance drop from peak that busts the account — a single trade's max loss must stay under this." value={editForm.eval.trailingMaxDrawdown} onChange={(v) => setEditField("eval", "trailingMaxDrawdown", v)} step={100} min={100} max={100000} />
+                    <NumField label="Winning days for payout" hint="Days (each clearing the profit threshold below) needed, once funded, before a payout becomes eligible — Topstep Standard Path is 5 days, not a cumulative-dollar target." value={editForm.eval.minWinningDaysForPayout ?? 5} onChange={(v) => setEditField("eval", "minWinningDaysForPayout", v)} min={1} max={60} />
+                    <NumField label="Winning day profit ($)" hint="Minimum net P&L a day needs to count toward the winning-days requirement above." value={editForm.eval.minWinningDayProfit ?? 150} onChange={(v) => setEditField("eval", "minWinningDayProfit", v)} step={10} min={0} max={100000} />
+                    <NumField label="Payout share (0-1)" hint="Fraction of profit-since-last-payout paid out when a payout triggers (Topstep is 0.9 = 90% trader / 10% firm, for accounts opened on/after Jan 12, 2026)." value={editForm.eval.payoutShareRatio ?? 0.9} onChange={(v) => setEditField("eval", "payoutShareRatio", v)} step={0.05} min={0} max={1} />
+                    <NumField label="Max payout per event ($)" hint="Hard cap on a single payout, regardless of the share calculation." value={editForm.eval.maxPayoutPerEvent ?? 2000} onChange={(v) => setEditField("eval", "maxPayoutPerEvent", v)} step={100} min={0} max={1000000} />
+                  </div>
+                </div>
+              )}
+
+              {result && !editing && (
                 <div className="bt-results">
                   <div className="bt-results-header">
                     <h3>Simulation — {resultFor}</h3>
@@ -249,20 +969,243 @@ export default function StrategiesPage() {
                         : "○ Synthetic sample data — import real NQ bars for meaningful results"}
                     </span>
                   </div>
-                  <div className="stat-grid">
-                    <div className="stat-card"><div className="label">Success Rate</div><div className={`value ${result.winRate >= 50 ? "positive" : "negative"}`}>{result.winRate.toFixed(1)}%</div></div>
-                    <div className="stat-card"><div className="label">Net P&amp;L</div><div className={`value ${result.netPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(result.netPnl)}</div></div>
-                    <div className="stat-card"><div className="label">Return %</div><div className={`value ${result.netPnlPct >= 0 ? "positive" : "negative"}`}>{result.netPnlPct.toFixed(2)}%</div></div>
-                    <div className="stat-card"><div className="label">Total Gained</div><div className="value positive">{fmtMoney(result.totalGained)}</div></div>
-                    <div className="stat-card"><div className="label">Total Lost</div><div className="value negative">{fmtMoney(-result.totalLost)}</div></div>
-                    <div className="stat-card"><div className="label">Trades (W/L)</div><div className="value">{result.totalTrades} ({result.wins}/{result.losses})</div></div>
-                    <div className="stat-card"><div className="label">Eval Pass Rate</div><div className={`value ${result.evalPassRate >= 33 ? "positive" : "negative"}`}>{result.evalPassRate.toFixed(1)}%</div></div>
-                    <div className="stat-card"><div className="label">Max Drawdown</div><div className="value negative">{fmtMoney(-result.maxDrawdown)}</div></div>
-                    <div className="stat-card"><div className="label">Days (profitable)</div><div className="value">{result.tradingDays} ({result.profitableDays})</div></div>
-                    <div className="stat-card"><div className="label">Best / Worst Day</div><div className="value">{fmtMoney(result.bestDay)} / {fmtMoney(result.worstDay)}</div></div>
-                    <div className="stat-card"><div className="label">Cap Hits (+/−)</div><div className="value">{result.daysHitProfitCap} / {result.daysHitLossCap}</div></div>
-                    <div className="stat-card"><div className="label">Avg Days to Eval Result</div><div className="value">{result.avgDaysToEvalResult}</div></div>
+                  <p className="bt-data-range">
+                    {result.dataRangeStart && result.dataRangeEnd ? (
+                      <>
+                        Backtest period: <strong>{result.dataRangeStart}</strong> to{" "}
+                        <strong>{result.dataRangeEnd}</strong> ({result.dataRangeYears.toFixed(1)} year
+                        {result.dataRangeYears !== 1 ? "s" : ""}, {result.tradingDays} trading days)
+                        {result.dataRangeYears < 1 && (
+                          <span className="bt-data-range-warning">
+                            {" "}
+                            — under a year of data. Every dollar figure below is a total over just this window, not
+                            an annual estimate. Treat these results as low-confidence until more history is
+                            available.
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      "No trading days in range."
+                    )}
+                  </p>
+                  <div className="bt-results-header">
+                    <h3>While in Eval <Hint text="Trades made while the simulated account was still trying to hit the eval profit target." /></h3>
                   </div>
+                  <div className="stat-grid">
+                    <StatCard
+                      label="Win Rate"
+                      hint="Of the trades taken during the eval stage, the percentage that hit the profit target instead of the stop-loss."
+                      value={`${result.evalStage.winRate.toFixed(1)}%`}
+                      tone={result.evalStage.winRate >= 50 ? "positive" : "negative"}
+                    />
+                    <StatCard
+                      label="Net P&L"
+                      hint="Dollars won minus dollars lost across all eval-stage trades. Virtual account money, not real cash."
+                      value={fmtMoney(result.evalStage.netPnl)}
+                      tone={result.evalStage.netPnl >= 0 ? "positive" : "negative"}
+                    />
+                    <StatCard
+                      label="Trades (W/L)"
+                      hint="Total eval-stage trades, and how many were wins vs losses."
+                      value={`${result.evalStage.trades} (${result.evalStage.wins}/${result.evalStage.losses})`}
+                    />
+                  </div>
+
+                  <div className="bt-results-header" style={{ marginTop: 20 }}>
+                    <h3>Once Funded <Hint text="Trades made after the account reached funded status — this performance is what actually generates real payouts." /></h3>
+                  </div>
+                  <div className="stat-grid">
+                    <StatCard
+                      label="Win Rate"
+                      hint="Of the trades taken after reaching funded, the percentage that won."
+                      value={`${result.fundedStage.winRate.toFixed(1)}%`}
+                      tone={result.fundedStage.winRate >= 50 ? "positive" : "negative"}
+                    />
+                    <StatCard
+                      label="Net P&L"
+                      hint="Dollars won minus lost across funded-stage trades. Still account money — real cash only moves via payouts below."
+                      value={fmtMoney(result.fundedStage.netPnl)}
+                      tone={result.fundedStage.netPnl >= 0 ? "positive" : "negative"}
+                    />
+                    <StatCard
+                      label="Trades (W/L)"
+                      hint="Total funded-stage trades, and how many were wins vs losses."
+                      value={`${result.fundedStage.trades} (${result.fundedStage.wins}/${result.fundedStage.losses})`}
+                    />
+                  </div>
+
+                  {(() => {
+                    // Below reflects exactly the number of accounts set in
+                    // the "Accounts" field (top of the page) — when it's 1,
+                    // that's just this single account's real economics; when
+                    // it's N > 1, result.sessionSplit already has the N
+                    // accounts' real economics correctly aggregated (see
+                    // "Combined Bottom Line" further below), so this section
+                    // sums the SAME numbers instead of ignoring accountCount
+                    // and always showing the 1-account figures.
+                    const split = result.sessionSplit;
+                    const bottomLine = split ? split.totalRealWorldNetPnl : result.realWorldNetPnl;
+                    const feesPaid = split ? split.totalFeesPaid : result.realWorldFeesPaid;
+                    const cashPayouts = split ? split.totalCashPayouts : result.realWorldCashPayouts;
+                    const attemptsBought = split
+                      ? split.accounts.reduce((s, a) => s + a.attemptsBought, 0)
+                      : result.chronologicalAttempts;
+                    const timesFunded = split
+                      ? split.accounts.reduce((s, a) => s + a.timesFunded, 0)
+                      : result.timesFunded;
+                    const accountCountLabel = split ? split.accountCount : 1;
+                    // Accounts sharing the same session+phase trade IDENTICAL
+                    // signals on the identical instrument — fully correlated,
+                    // not diversified. Flag it when 2+ accounts land in the
+                    // same bucket (always true once accountCount exceeds the
+                    // number of distinct session/phase slots available).
+                    const correlatedGroupSize = split
+                      ? Math.max(
+                          ...Object.values(
+                            split.accounts.reduce<Record<string, number>>((acc, a) => {
+                              const key = `${a.sessionOpen}|${a.phaseFilter ?? "both"}`;
+                              acc[key] = (acc[key] ?? 0) + 1;
+                              return acc;
+                            }, {})
+                          )
+                        )
+                      : 1;
+
+                    return (
+                      <>
+                        <div className="bt-results-header" style={{ marginTop: 20 }}>
+                          <h3>
+                            Real Money{accountCountLabel > 1 ? ` — Session Split, ${accountCountLabel} Accounts` : ""}{" "}
+                            <Hint text="Actual money in and out of your pocket: $50 per eval/reactivation, and once funded, 5 winning days of $150+ each unlock a payout at 90% share (10% to the firm), capped at $2,000 per event — Topstep's actual Standard Path rule, not a cumulative-dollar target. After every payout the drawdown buffer resets to $0, so the very next losing day can bust the account outright. Verify these against the firm's current rules. If 'Session Split (Accts)' above is set >1, most of those accounts trade a RESTRICTED SLICE of the strategy (one session or phase), not the full thing — this section can total LESS than one full account. For true N-accounts-each-running-the-whole-strategy scaling, use the separate 'Portfolio' section below (enable it under Edit)." />
+                          </h3>
+                        </div>
+                        <div className="stat-grid">
+                          <StatCard
+                            label="Bottom Line"
+                            hint="Payouts received minus fees paid, summed across every account — the actual cash result of running this strategy over the whole period. Positive = profitable."
+                            value={fmtMoney(bottomLine)}
+                            tone={bottomLine >= 0 ? "positive" : "negative"}
+                          />
+                          <StatCard
+                            label="Fees Paid"
+                            hint="Every $50 spent buying an eval or reactivating after busting an account, summed across every account."
+                            value={fmtMoney(-feesPaid)}
+                            tone="negative"
+                          />
+                          <StatCard
+                            label="Payouts Received"
+                            hint="Real cash withdrawn from funded accounts, summed across every account. Each payout is 50% of the funded profit at the moment it triggers, capped at $2,000 — so it's usually less than $2,000 (e.g. a payout triggering at $3,600 profit pays $1,800). It also only counts when no single day made over half the profit."
+                            value={fmtMoney(cashPayouts)}
+                            tone="positive"
+                          />
+                          <StatCard
+                            label="Accounts Bought"
+                            hint="How many evals were purchased in total across every account — every bust means buying another."
+                            value={`${attemptsBought}`}
+                          />
+                          <StatCard
+                            label="Reached Funded"
+                            hint="How many of those attempts made it through the eval to a funded account, across every account."
+                            value={`${timesFunded}`}
+                          />
+                        </div>
+                        {correlatedGroupSize > 1 && (
+                          <p className="edit-field-warning" style={{ marginTop: 10 }}>
+                            ⚠️ {correlatedGroupSize} of these accounts share the same session/phase, meaning they
+                            trade identical signals on the identical instrument — fully correlated, not
+                            diversified. These totals are real dollars summed across accounts, but a bad losing
+                            stretch busts every account in that group on the same day.
+                          </p>
+                        )}
+                      </>
+                    );
+                  })()}
+
+                  <details className="bt-pooled-details">
+                    <summary>Pooled stats (all {result.totalTrades} trades on one never-resetting account — not real economics, kept for reference)</summary>
+                    <div className="stat-grid" style={{ marginTop: 12 }}>
+                      <div className="stat-card" title="Percent of individual TRADES that hit target instead of stop — NOT the same as Eval Pass Rate below. A strategy can have a low trade win rate and still be very profitable (prop-firm math: payouts are large, a blown eval only costs a small fee), or a high win rate and still not clear evals reliably. Don't judge a strategy by this number alone."><div className="label">Trade Win Rate</div><div className={`value ${result.winRate >= 50 ? "positive" : "negative"}`}>{result.winRate.toFixed(1)}%</div></div>
+                      <div className="stat-card"><div className="label">Net P&amp;L</div><div className={`value ${result.netPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(result.netPnl)}</div></div>
+                      <div className="stat-card"><div className="label">Return %</div><div className={`value ${result.netPnlPct >= 0 ? "positive" : "negative"}`}>{result.netPnlPct.toFixed(2)}%</div></div>
+                      <div className="stat-card"><div className="label">Total Gained</div><div className="value positive">{fmtMoney(result.totalGained)}</div></div>
+                      <div className="stat-card"><div className="label">Total Lost</div><div className="value negative">{fmtMoney(-result.totalLost)}</div></div>
+                      <div className="stat-card"><div className="label">Trades (W/L)</div><div className="value">{result.totalTrades} ({result.wins}/{result.losses})</div></div>
+                      <div className="stat-card" title="Percent of possible eval START DATES that would go on to pass the eval (hit the profit target before busting the trailing drawdown) — a simplified probability sweep, NOT the same as Trade Win Rate above, and separate from the real chronological attempt-by-attempt simulation feeding the Real Money numbers. Use this as a rough 'how consistently does this clear an eval' signal, not a literal win-rate."><div className="label">Eval Pass Rate</div><div className={`value ${result.evalPassRate >= 33 ? "positive" : "negative"}`}>{result.evalPassRate.toFixed(1)}%</div></div>
+                      <div className="stat-card"><div className="label">Max Drawdown</div><div className="value negative">{fmtMoney(-result.maxDrawdown)}</div></div>
+                      <div className="stat-card"><div className="label">Days (profitable)</div><div className="value">{result.tradingDays} ({result.profitableDays})</div></div>
+                      <div className="stat-card"><div className="label">Best / Worst Day</div><div className="value">{fmtMoney(result.bestDay)} / {fmtMoney(result.worstDay)}</div></div>
+                      <div className="stat-card"><div className="label">Cap Hits (+/−)</div><div className="value">{result.daysHitProfitCap} / {result.daysHitLossCap}</div></div>
+                      <div className="stat-card"><div className="label">Avg Days to Eval Result</div><div className="value">{result.avgDaysToEvalResult}</div></div>
+                      {result.incompleteTrades > 0 && (
+                        <div className="stat-card"><div className="label">Excluded (unresolved)</div><div className="value">{result.incompleteTrades}</div></div>
+                      )}
+                    </div>
+                    {result.incompleteTrades > 0 && (
+                      <p style={{ marginTop: 8, opacity: 0.7, fontSize: "0.85em" }}>
+                        {result.incompleteTrades} trade(s) never hit their stop or target before the available bar data ran out and were excluded from every stat above — the bracket is never flattened early or faked with a made-up exit price.
+                      </p>
+                    )}
+                  </details>
+
+                  <details className="bt-pooled-details">
+                    <summary>Breakdown by phase &amp; session — spot which entries drag win rate down</summary>
+                    <div style={{ marginTop: 12 }}>
+                      <p style={{ opacity: 0.7, fontSize: "0.85em", marginBottom: 8 }}>By phase</p>
+                      <div className="stat-grid">
+                        {result.byPhase.map((g) => (
+                          <div className="stat-card" key={g.key}>
+                            <div className="label">{g.key}</div>
+                            <div className={`value ${g.winRate >= 50 ? "positive" : "negative"}`}>{g.winRate.toFixed(1)}%</div>
+                            <div style={{ fontSize: "0.8em", opacity: 0.7, marginTop: 4 }}>
+                              {g.trades} trades ({g.wins}/{g.losses}) · {fmtMoney(g.netPnl)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <p style={{ opacity: 0.7, fontSize: "0.85em", margin: "16px 0 8px" }}>By session open</p>
+                      <div className="stat-grid">
+                        {result.bySession.map((g) => (
+                          <div className="stat-card" key={g.key}>
+                            <div className="label">{g.key} ET</div>
+                            <div className={`value ${g.winRate >= 50 ? "positive" : "negative"}`}>{g.winRate.toFixed(1)}%</div>
+                            <div style={{ fontSize: "0.8em", opacity: 0.7, marginTop: 4 }}>
+                              {g.trades} trades ({g.wins}/{g.losses}) · {fmtMoney(g.netPnl)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </details>
+
+                  {result.portfolio && (
+                    <>
+                      <div className="bt-results-header" style={{ marginTop: 20 }}>
+                        <h3>
+                          Full-Strategy Scaling — {result.portfolio.accountCount} Accounts{" "}
+                          <Hint text="Every account here runs the COMPLETE strategy identically (not a restricted session/phase slice like the Session Split section above) — this is the number to look at when you mean 'what if I ran this on N real accounts.'" />
+                        </h3>
+                        <span className="data-source-badge static">
+                          {result.portfolio.oneTradePerDay ? "One trade per account per day" : "Full daily trading per account"}, starts staggered {result.portfolio.staggerDays} day(s) apart
+                        </span>
+                      </div>
+                      <div className="stat-grid">
+                        <div className="stat-card"><div className="label">Total Fees Paid</div><div className="value negative">{fmtMoney(-result.portfolio.feesPaid)}</div></div>
+                        <div className="stat-card"><div className="label">Total Cash Payouts</div><div className="value positive">{fmtMoney(result.portfolio.cashPayouts)}</div></div>
+                        <div className="stat-card"><div className="label">Portfolio Net (payouts − fees)</div><div className={`value ${result.portfolio.netPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(result.portfolio.netPnl)}</div></div>
+                        <div className="stat-card"><div className="label">Evals Bought (all accounts)</div><div className="value">{result.portfolio.attemptsBought}</div></div>
+                        <div className="stat-card"><div className="label">Times Reached Funded</div><div className="value">{result.portfolio.timesFunded}</div></div>
+                      </div>
+                      {result.portfolio.staggerDays === 0 && (
+                        <p className="edit-field-warning" style={{ marginTop: 10 }}>
+                          ⚠️ Stagger is 0 days — every account here trades identically and is fully correlated,
+                          not diversified. This total is real dollars × account count, but the risk is
+                          concentrated: a bad losing stretch busts all {result.portfolio.accountCount} accounts on
+                          the same day, exactly like running one account, just with {result.portfolio.accountCount}
+                          {" "}× the capital and eval fees on the line at once.
+                        </p>
+                      )}
+                    </>
+                  )}
 
                   {result.trades.length > 0 && (
                     <div className="table-wrap">
@@ -288,6 +1231,120 @@ export default function StrategiesPage() {
                       </table>
                     </div>
                   )}
+
+                  {result.sessionSplit && (
+                    <>
+                      <div className="bt-results-header" style={{ marginTop: 20 }}>
+                        <h3>
+                          {result.sessionSplit.accountCount} Accounts, Session Round-Robin{" "}
+                          <Hint text="With 2+ accounts: account 1 trades only the main session's continuation phase, account 2 trades only its reversion phase (back toward the session's open). Remaining accounts round-robin the strategy's other sessions. Each account is its own independent eval/funded lifecycle — its own fees, payouts, busts." />
+                        </h3>
+                      </div>
+                      <div className="stat-grid">
+                        <StatCard
+                          label="Combined Bottom Line"
+                          hint="Total real cash across every account: all payouts received minus all fees paid."
+                          value={fmtMoney(result.sessionSplit.totalRealWorldNetPnl)}
+                          tone={result.sessionSplit.totalRealWorldNetPnl >= 0 ? "positive" : "negative"}
+                        />
+                        <StatCard
+                          label="Total Fees Paid"
+                          hint="Every $50 spent buying or re-buying an eval, summed across all accounts."
+                          value={fmtMoney(-result.sessionSplit.totalFeesPaid)}
+                          tone="negative"
+                        />
+                        <StatCard
+                          label="Total Payouts"
+                          hint="Real cash withdrawn, summed across all accounts."
+                          value={fmtMoney(result.sessionSplit.totalCashPayouts)}
+                          tone="positive"
+                        />
+                        <StatCard
+                          label="Total Trades"
+                          hint="Trades taken across every account combined."
+                          value={`${result.sessionSplit.totalTrades}`}
+                        />
+                      </div>
+                      <div className="table-wrap" style={{ marginTop: 12 }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Account</th>
+                              <th>Session</th>
+                              <th>Trades (W/L)</th>
+                              <th>Win Rate</th>
+                              <th>Fees</th>
+                              <th>Payouts</th>
+                              <th>Bottom Line</th>
+                              <th>Funded</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {result.sessionSplit.accounts.map((a) => (
+                              <tr key={a.accountIndex}>
+                                <td>#{a.accountIndex + 1}</td>
+                                <td>{a.sessionOpen} ET{a.phaseFilter ? ` (${a.phaseFilter} only)` : ""}</td>
+                                <td>{a.trades} ({a.wins}/{a.losses})</td>
+                                <td className={a.winRate >= 50 ? "positive" : "negative"}>{a.winRate.toFixed(1)}%</td>
+                                <td className="negative">{fmtMoney(-a.feesPaid)}</td>
+                                <td className="positive">{fmtMoney(a.cashPayouts)}</td>
+                                <td className={a.realWorldNetPnl >= 0 ? "positive" : "negative"}>{fmtMoney(a.realWorldNetPnl)}</td>
+                                <td>{a.timesFunded}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {optimizeResult && (
+                <div className="bt-results">
+                  <p className="bt-explainer">
+                    Claude proposed parameter tweaks each round based on how prior variants actually performed against
+                    your real historical data. <strong>Profitable</strong> simply means the real-money bottom line
+                    (payouts minus fees) came out positive. This run is saved automatically — find it anytime under
+                    the Optimizations tab.
+                  </p>
+                  {optimizeResult.warning && (
+                    <div className="test-status test-status-error">{optimizeResult.warning}</div>
+                  )}
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>What was tried <Hint text="Claude's one-sentence hypothesis for why this variant might do better." /></th>
+                          <th>Win Rate <Hint text="Percentage of all trades that won." /></th>
+                          <th>Bottom Line <Hint text="Real cash: payouts received minus fees paid. Positive = profitable." /></th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...optimizeResult.history]
+                          .sort((a, b) => b.fitness - a.fitness)
+                          .map((c, i) => (
+                            <tr key={i}>
+                              <td>{i === 0 ? "🏆" : i + 1}</td>
+                              <td>{c.rationale}</td>
+                              <td>{c.result.winRate.toFixed(1)}%</td>
+                              <td>
+                                <span className={`badge ${c.result.realWorldNetPnl > 0 ? "win" : "loss"}`}>
+                                  {fmtMoney(c.result.realWorldNetPnl)}{c.result.realWorldNetPnl > 0 ? " Profitable" : ""}
+                                </span>
+                              </td>
+                              <td>
+                                <button className="btn" onClick={() => useOptimizedConfig(c.config)}>
+                                  Use This Config
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </>

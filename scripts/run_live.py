@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from jj_bot.alerts import send_crash_alert_for_exception
 from jj_bot.config import load_config
 
 
@@ -31,6 +32,10 @@ def main() -> None:
         from jj_bot.live_runner_ibkr import IBKRLiveRunner
 
         runner = IBKRLiveRunner(cfg)
+    elif cfg.broker == "ninjatrader":
+        from jj_bot.live_runner_ninjatrader import NinjaTraderLiveRunner
+
+        runner = NinjaTraderLiveRunner(cfg)
     elif cfg.broker == "tradovate":
         if cfg.tradovate.env != "demo":
             raise SystemExit("TRADOVATE_ENV must be 'demo'. Refusing to start.")
@@ -38,10 +43,18 @@ def main() -> None:
 
         runner = LiveRunner(cfg)
     else:
-        raise SystemExit(f"Unknown BROKER '{cfg.broker}'. Use 'ibkr' or 'tradovate'.")
+        raise SystemExit(f"Unknown BROKER '{cfg.broker}'. Use 'ibkr', 'ninjatrader', or 'tradovate'.")
 
     runner.start()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
+    except SystemExit:
+        raise
+    except BaseException as exc:
+        send_crash_alert_for_exception("scripts/run_live.py main()", exc)
+        raise

@@ -5,9 +5,11 @@ __pycache__/
 *.log
 .venv/
 venv/
+topstep_sim_state_*.json
 
 # Node / Next.js (dashboard)
 dashboard/node_modules/
 dashboard/.next/
 dashboard/out/
 dashboard/.vercel/
+logs/

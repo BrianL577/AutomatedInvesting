@@ -15,13 +15,29 @@ strategy:
   break_buffer_points: 1.0       # close must clear structure by this much to avoid noise breaks
 
 risk:
+  # Reverted from the AI-Optimize "Row #1" geometry (45pt/35pt on 3 contracts):
+  # that config's $2,700 max single-trade loss exceeded the real Topstep
+  # trailing drawdown limit ($2,000 below), meaning a single loss would
+  # guaranteed-bust the eval. This 25pt/38pt/2-contract sizing is deliberately
+  # designed around the real account numbers: $1,000 loss x 2 losing days =
+  # exactly the $2,000 drawdown limit; $1,520 gain x 2 winning days = $3,040,
+  # clearing the $3,000 profit target with margin. Per user instruction.
+  #
+  # NOTE on Topstep's Consistency Target: best single day must stay <=50% of
+  # the $3,000 profit target ($1,500) or "the Profit Target increases" —
+  # confirmed this does NOT fail the account, it's a soft constraint, not a
+  # bust condition. $1,520 slightly exceeds $1,500 (per user's own
+  # confirmation from a Topstep trader — small overage accounts for fees).
+  # The exact escalation formula (how much the target increases) is NOT
+  # currently known or modeled — confirm with Topstep before assuming 2
+  # winning days still cleanly passes under a raised target.
   stop_points: 25
   target_points: 38              # ~1:1.5 R:R as in the video
-  max_trades_per_day: 4
+  max_trades_per_day: 1          # one trade per account per day, per user instruction
   stop_after_consecutive_losses: 2
-  contracts_per_trade: 1
+  contracts_per_trade: 2         # 25pts=-$1000, 38pts=+$1520 at $20/point — never 1 contract
   # Daily rate limiter: stop trading for the day once running P&L touches
-  # either cap. Not stated in the transcript — set per user instruction.
+  # either cap. Sized to the real Topstep account rules above.
   daily_profit_cap: 1520
   daily_loss_cap: 1000
 
@@ -30,8 +46,28 @@ instrument:
   tick_size: 0.25
   tick_value: 5.0                # USD per tick, NQ
 
-topstep_eval:                    # used only by the backtester's prop-firm-style simulation
+topstep_eval:                    # used by the backtester AND the live TopstepEvalSimulator
   account_size: 50000
   profit_target: 3000
   trailing_max_drawdown: 2000
   daily_loss_limit: null         # set if your eval enforces one
+  # Confirmed against a real Topstep Standard Path account — see
+  # jj_bot/topstep_eval_sim.py and dashboard/lib/backtester.ts for the
+  # rule mechanics these numbers feed into.
+  eval_fee: 49
+  reactivation_fee: 49
+  monthly_fee: 49
+  activation_fee: 149
+  # Topstep's alternate pricing plan (pricier monthly, $0 activation fee) —
+  # the sim switches from Standard to this once your empirical pass rate
+  # reaches pass_rate_switch_threshold. Standard beginner advice: use the
+  # cheap plan until you're consistently passing, then switch.
+  no_activation_fee_monthly_fee: 95
+  pass_rate_switch_threshold: 0.33
+  payout_share: 0.9
+  max_payout_per_event: 2000
+  max_payout_balance_share: 0.5
+  min_winning_days_for_payout: 5
+  min_winning_day_profit: 150
+  consistency_path_min_days: 3
+  consistency_path_max_best_day_share: 0.4

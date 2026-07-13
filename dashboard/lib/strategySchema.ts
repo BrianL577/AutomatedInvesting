@@ -21,8 +21,52 @@ export const StrategyConfigSchema = z
         // Wall-clock ET times, "HH:MM" 24h
         open: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
         hardCutoff: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+        // Extra session windows traded the same way (own open-candle anchor,
+        // own phase windows relative to that open). Daily trade caps, loss
+        // caps, and consecutive-loss stops span ALL sessions in the day.
+        // e.g. London open 03:00-04:30 ET alongside the NY 09:30 session.
+        additionalSessions: z
+          .array(
+            z
+              .object({
+                open: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+                hardCutoff: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+              })
+              .strict()
+          )
+          .max(3)
+          .optional(),
       })
       .strict(),
+    // Day-level filters. News/red-folder day handling: there is no reliable
+    // offline economic calendar, so verified news dates must be supplied
+    // explicitly (from ForexFactory/CME calendar etc.) — days listed in
+    // excludeDates are skipped entirely, exactly like JJ's "don't trade
+    // red-folder days without the pre-news anchor" guidance simplified to
+    // its safe form (skip the day).
+    filters: z
+      .object({
+        excludeDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(500).optional(),
+      })
+      .strict()
+      .optional(),
+    // Portfolio-of-accounts simulation (how prop traders actually scale:
+    // several accounts run in parallel, often one trade per account per
+    // day, staggered so they don't all bust/pass in lockstep).
+    portfolio: z
+      .object({
+        accountCount: z.number().int().min(1).max(20),
+        // Account i starts its eval i*staggerDays trading days later.
+        // 0 = all accounts identical (they bust/pass together — the same
+        // daily P&L stream hits every account, so stagger is what actually
+        // diversifies outcomes).
+        staggerDays: z.number().int().min(0).max(30),
+        // Restrict each account to only the first trade of each day
+        // (overrides risk.maxTradesPerDay for the portfolio simulation).
+        oneTradePerDay: z.boolean(),
+      })
+      .strict()
+      .optional(),
     phases: z
       .object({
         continuationEndMin: z.number().min(0).max(120),
@@ -58,6 +102,65 @@ export const StrategyConfigSchema = z
         accountSize: z.number().min(1000).max(1000000),
         profitTarget: z.number().min(100).max(100000),
         trailingMaxDrawdown: z.number().min(100).max(100000),
+        // Real-world prop-firm economics — optional/backward-compatible so
+        // older saved strategies (and AI-generated configs that omit them)
+        // still validate; runBacktest() applies defaults when absent.
+        // Verified against Topstep's actual published Standard Path rules
+        // (help.topstep.com) as of this writing — confirm against their
+        // current rules before trusting the "real-world" dollar figures for
+        // a real decision, since prop firms change these over time.
+        //
+        // Topstep's Combine is a MONTHLY SUBSCRIPTION ($49/mo Standard
+        // Path, confirmed against a real account) that keeps charging
+        // regardless of busts, PLUS a SEPARATE per-attempt fee charged
+        // every time you buy or reactivate a Combine (evalFeeDollars /
+        // reactivationFeeDollars below) — the two are additive, confirmed
+        // directly by the trader whose account this was checked against.
+        monthlyFeeDollars: z.number().min(0).max(10000).optional(),
+        // One-time fee charged once when you pass and activate the funded
+        // account, ONLY on the Standard plan (Topstep: $149). The
+        // No-Activation-Fee plan (below) charges $0 here instead.
+        fundedActivationFeeDollars: z.number().min(0).max(10000).optional(),
+        // Topstep's alternate pricing plan: pricier monthly, but $0
+        // activation fee when you pass. The simulation switches from
+        // Standard to this plan once the empirical pass rate reaches
+        // passRateSwitchThreshold — standard beginner advice: use the
+        // cheap plan while still busting most evals, switch once passing
+        // consistently, since the activation fee saved outweighs the
+        // higher monthly cost at that point.
+        noActivationFeeMonthlyFeeDollars: z.number().min(0).max(10000).optional(),
+        passRateSwitchThreshold: z.number().min(0).max(1).optional(),
+        // Per-attempt fee (initial purchase / each bust-reactivation) — see
+        // monthlyFeeDollars above, these are additive, not either/or.
+        evalFeeDollars: z.number().min(0).max(10000).optional(),
+        reactivationFeeDollars: z.number().min(0).max(10000).optional(),
+        // No longer used by the payout mechanic (see minWinningDaysForPayout
+        // below) — kept only so older saved strategies with this field set
+        // still pass validation.
+        fundedProfitThreshold: z.number().min(0).max(1000000).optional(),
+        payoutShareRatio: z.number().min(0).max(1).optional(),
+        maxPayoutPerEvent: z.number().min(0).max(1000000).optional(),
+        // A single payout request also can't exceed this share of the
+        // account's CURRENT balance (Topstep: 50%), separate from and in
+        // addition to maxPayoutPerEvent/payoutShareRatio above.
+        maxPayoutBalanceShare: z.number().min(0).max(1).optional(),
+        // FUNDED-STAGE payout eligibility only has TWO paths — Combines
+        // have a totally different Consistency Target (profitTarget-based,
+        // see the Consistency Target comment on walkAccountEconomics in
+        // backtester.ts; confirmed by Topstep support this does NOT apply
+        // once funded, there's no "profit target" on a funded account).
+        // Standard path: N days each clearing $X net P&L (defaults: 5
+        // days, $150 — Topstep's actual current published numbers).
+        minWinningDaysForPayout: z.number().int().min(1).max(60).optional(),
+        minWinningDayProfit: z.number().min(0).max(100000).optional(),
+        // Consistency path (funded-stage only, faster but stricter):
+        // reach payout eligibility in as few as N trading days (default 3)
+        // as long as your single best day stays <= this share of total
+        // profit since the last payout (default 0.40 = Topstep's "40% or
+        // less"). Whichever path — Standard or Consistency — is reached
+        // first triggers the payout.
+        consistencyPathMinDays: z.number().int().min(1).max(60).optional(),
+        consistencyPathMaxBestDayShare: z.number().min(0).max(1).optional(),
       })
       .strict(),
   })
@@ -71,19 +174,43 @@ export type SavedStrategy = {
   source: "default" | "ai" | "manual";
   prompt?: string | null;
   created_at: string;
+  // Whether the live Python bot (jj_bot/config.py) is currently trading
+  // this strategy. At most one strategy is active at a time.
+  is_active?: boolean;
 };
 
-/** JJ's strategy, exactly as encoded in the Python bot's config.yaml. */
+/** JJ's strategy: the Python bot's config.yaml rules, updated with the
+ * session structure he described in his interview — every session open
+ * (8:30 news, 9:30 NY AM, 2pm NY PM, 8pm Asian) is treated as a new "fair
+ * price" anchor: one continuation trade off the opening move, then
+ * reversions back toward the open. Static stops/targets, no runners, no
+ * breakeven — per the interview, static risk is what the prop-firm math
+ * rewards. */
 export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
   name: "JJ NY-Session Strategy (Default)",
   description:
-    "High-timeframe mean reversion, low-timeframe continuation anchored to the 9:30 ET open. " +
-    "Continuation trades in the opening candle's direction for the first 10 minutes, then mean " +
-    "reversion back toward the opening price until 90 minutes in. Entries require a displacement " +
-    "candle (large true range, small wicks) that breaks and closes through recent swing structure. " +
-    "Fixed 25pt stop / 38pt target (1:1.5 R:R), max 4 trades/day, stop after 2 consecutive losses, " +
-    "$1,520 daily profit cap / $1,000 daily loss cap.",
-  session: { open: "09:30", hardCutoff: "11:00" },
+    "Session-anchored continuation + mean reversion, per JJ's interview. Each session open sets a 'fair " +
+    "price': continuation trades in the opening candle's direction for the first 10 minutes, then mean " +
+    "reversion back toward the opening price until 90 minutes in. Trades the 8:30 ET news window, the " +
+    "9:30 NY open, the 2:00pm NY PM session, and the 8:00pm Asian open — more sessions means more " +
+    "attempts per day. Entries require a displacement candle (large true range, small wicks) that breaks " +
+    "and closes through recent swing structure. Static bracket exits, never moved: 25pt stop / 38pt " +
+    "target on 2 contracts ($1,000 / $1,520 on NQ), one trade per account per day — the trade runs to " +
+    "either the full stop or the full target, no early exits. Sized deliberately around the real " +
+    "Topstep account rules: $1,000 loss x 2 losing days = the $2,000 trailing drawdown limit exactly; " +
+    "$1,520 gain x 2 winning days = $3,040, clearing the $3,000 profit target with margin. $1,520 " +
+    "slightly exceeds Topstep's Consistency Target (best day <= 50% of profit target, i.e. <= $1,500) " +
+    "but does not fail the account, per Topstep's rule — it's a soft constraint (profit target " +
+    "increases), not a bust condition. The exact escalation formula isn't modeled here.",
+  session: {
+    open: "09:30",
+    hardCutoff: "11:00",
+    additionalSessions: [
+      { open: "08:30", hardCutoff: "09:15" }, // news continuation + reversions
+      { open: "14:00", hardCutoff: "15:30" }, // NY PM session
+      { open: "20:00", hardCutoff: "21:30" }, // Asian session open
+    ],
+  },
   phases: {
     continuationEndMin: 10,
     reversionEndMin: 90,
@@ -102,9 +229,13 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
   risk: {
     stopPoints: 25,
     targetPoints: 38,
-    maxTradesPerDay: 4,
+    maxTradesPerDay: 1,
     stopAfterConsecutiveLosses: 2,
-    contractsPerTrade: 1,
+    contractsPerTrade: 2,
+    // $1,520 = targetPoints x contracts x $20/pt, per the description above.
+    // Slightly exceeds Topstep's Consistency Target ($1,500 = 50% of the
+    // $3,000 profit target) — confirmed this is a soft constraint (profit
+    // target increases), not a bust condition, so kept per user instruction.
     dailyProfitCap: 1520,
     dailyLossCap: 1000,
   },
@@ -112,6 +243,20 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
     accountSize: 50000,
     profitTarget: 3000,
     trailingMaxDrawdown: 2000,
+    // Topstep Standard Path, 50K account, signed up on/after Jan 12, 2026
+    // (flat 90/10 split from dollar one — no first-$10k-at-100% bonus).
+    // Payout eligibility is 5 winning days (each >= $150 net P&L), NOT a
+    // cumulative-dollar threshold — see minWinningDaysForPayout below.
+    payoutShareRatio: 0.9,
+    maxPayoutPerEvent: 2000,
+    minWinningDaysForPayout: 5,
+    minWinningDayProfit: 150,
+    // Real Topstep Standard Path pricing for the 50K Combine, confirmed
+    // against the trader's own active subscription — NOT the $95/mo "No
+    // Activation Fee Path" figure. Confirm before trusting for a real
+    // decision, since these can change.
+    monthlyFeeDollars: 49,
+    fundedActivationFeeDollars: 149,
   },
 };
 
@@ -119,11 +264,111 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
 export const INSTRUMENT = { symbol: "NQ", tickSize: 0.25, tickValue: 5.0 };
 export const DOLLARS_PER_POINT = INSTRUMENT.tickValue / INSTRUMENT.tickSize; // $20/pt on NQ
 
+/** Hard survivability floor, shared by every path that can produce or save a
+ * config (AI-Optimize, generate-strategy, strategy-chat, manual edits): a
+ * single losing trade must never be able to exceed the eval's own trailing
+ * drawdown limit, or the very first loss can bust the account outright
+ * regardless of the strategy's long-run edge. Returns null if safe, or an
+ * explanation string if not. */
+export function survivabilityViolation(cfg: Pick<StrategyConfig, "risk" | "eval">): string | null {
+  const maxSingleTradeLoss = cfg.risk.stopPoints * cfg.risk.contractsPerTrade * DOLLARS_PER_POINT;
+  if (maxSingleTradeLoss > cfg.eval.trailingMaxDrawdown) {
+    return (
+      `A single losing trade (${cfg.risk.stopPoints}pt stop x ${cfg.risk.contractsPerTrade} contracts x ` +
+      `$${DOLLARS_PER_POINT}/pt = $${maxSingleTradeLoss.toLocaleString()}) exceeds the eval's trailing ` +
+      `drawdown limit ($${cfg.eval.trailingMaxDrawdown.toLocaleString()}) — one bad trade would bust the ` +
+      `account outright, regardless of the strategy's win rate.`
+    );
+  }
+  return null;
+}
+
 /**
  * JSON Schema handed to Claude's structured-output format. Mirrors the zod
  * schema's shape; numeric bounds are enforced by zod after parsing (the
  * structured-outputs grammar doesn't support min/max).
  */
+/** A proposed tweak on top of a base config, for the AI-guided optimizer
+ * (see app/api/optimize/route.ts). Only touches the parameters that affect
+ * WHICH trades get taken (phases/entry) — deliberately excludes risk
+ * (stop/target/contracts/trade-caps/$ caps), session, eval, filters, and
+ * portfolio. Risk sizing is the user's own locked rule (e.g. exactly 2
+ * contracts, 25pt stop / 38pt target, one trade/day), not a search
+ * dimension — the optimizer can only ever make the entry signal more or
+ * less selective, never change what a trade costs or pays. All fields
+ * optional: only include what you're changing from the base. */
+export const StrategyVariantSchema = z
+  .object({
+    rationale: z.string().max(300),
+    phases: z
+      .object({
+        continuationEndMin: z.number().min(0).max(120).optional(),
+        reversionEndMin: z.number().min(0).max(360).optional(),
+        tradeContinuation: z.boolean().optional(),
+        tradeReversion: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    entry: z
+      .object({
+        displacementSizeRatio: z.number().min(0.5).max(5).optional(),
+        displacementPrevRatio: z.number().min(0).max(5).optional(),
+        maxWickRatio: z.number().min(0).max(1).optional(),
+        structureLookbackMin: z.number().min(2).max(240).optional(),
+        swingStrength: z.number().int().min(1).max(10).optional(),
+        breakBufferPoints: z.number().min(0).max(50).optional(),
+        minExtensionPoints: z.number().min(0).max(500).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export type StrategyVariant = z.infer<typeof StrategyVariantSchema>;
+
+export const STRATEGY_VARIANT_BATCH_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    variants: {
+      type: "array",
+      description: "Proposed parameter tweaks to try next, each a partial diff on top of the current best config.",
+      items: {
+        type: "object",
+        properties: {
+          rationale: { type: "string", description: "One sentence: what this variant changes and why, given the results so far" },
+          phases: {
+            type: "object",
+            properties: {
+              continuationEndMin: { type: "number" },
+              reversionEndMin: { type: "number" },
+              tradeContinuation: { type: "boolean" },
+              tradeReversion: { type: "boolean" },
+            },
+            additionalProperties: false,
+          },
+          entry: {
+            type: "object",
+            properties: {
+              displacementSizeRatio: { type: "number" },
+              displacementPrevRatio: { type: "number" },
+              maxWickRatio: { type: "number" },
+              structureLookbackMin: { type: "number" },
+              swingStrength: { type: "integer" },
+              breakBufferPoints: { type: "number" },
+              minExtensionPoints: { type: "number" },
+            },
+            additionalProperties: false,
+          },
+        },
+        required: ["rationale"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["variants"],
+  additionalProperties: false,
+} as const;
+
 export const STRATEGY_JSON_SCHEMA = {
   type: "object",
   properties: {
@@ -134,8 +379,49 @@ export const STRATEGY_JSON_SCHEMA = {
       properties: {
         open: { type: "string", description: 'Session anchor time in ET, 24h "HH:MM", e.g. "09:30"' },
         hardCutoff: { type: "string", description: 'No new entries after this ET time, 24h "HH:MM"' },
+        additionalSessions: {
+          type: "array",
+          // no maxItems: the structured-outputs grammar rejects it; zod's .max(3) enforces the cap after parsing
+          description:
+            "Optional extra session windows traded the same way with their own open-candle anchor (e.g. London open 03:00-04:30 ET). Daily trade/loss caps span all sessions. Omit unless the user asks for extra sessions.",
+          items: {
+            type: "object",
+            properties: {
+              open: { type: "string", description: 'ET "HH:MM"' },
+              hardCutoff: { type: "string", description: 'ET "HH:MM"' },
+            },
+            required: ["open", "hardCutoff"],
+            additionalProperties: false,
+          },
+        },
       },
       required: ["open", "hardCutoff"],
+      additionalProperties: false,
+    },
+    filters: {
+      type: "object",
+      description:
+        "Optional day-level filters. Only include if the user supplies specific dates — never invent news dates.",
+      properties: {
+        excludeDates: {
+          type: "array",
+          // no maxItems: the structured-outputs grammar rejects it; zod's .max(500) enforces the cap after parsing
+          description: 'Dates to skip entirely (red-folder news days etc.), "YYYY-MM-DD". Only use dates the user explicitly provided.',
+          items: { type: "string" },
+        },
+      },
+      additionalProperties: false,
+    },
+    portfolio: {
+      type: "object",
+      description:
+        "Optional portfolio-of-accounts simulation: N accounts run in parallel with staggered eval start dates, optionally one trade per account per day. Include only if the user describes running multiple accounts.",
+      properties: {
+        accountCount: { type: "integer", description: "Number of accounts run in parallel (1-20)" },
+        staggerDays: { type: "integer", description: "Account i starts its eval i*staggerDays trading days later (0-30). 0 means all accounts move in lockstep." },
+        oneTradePerDay: { type: "boolean", description: "Restrict each account to only the first trade of each day" },
+      },
+      required: ["accountCount", "staggerDays", "oneTradePerDay"],
       additionalProperties: false,
     },
     phases: {

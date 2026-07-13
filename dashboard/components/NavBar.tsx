@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { createClient } from "../lib/supabase/server";
 import SignOutButton from "./SignOutButton";
+import NavTabs from "./NavTabs";
 
 export default async function NavBar() {
   const supabase = createClient();
@@ -11,11 +12,17 @@ export default async function NavBar() {
   return (
     <nav className="navbar">
       <div className="navbar-inner">
-        <div className="navbar-links">
-          <Link href="/">Dashboard</Link>
-          <Link href="/strategies">Strategy Creator</Link>
-          {user && <Link href="/accounts">My Accounts</Link>}
-        </div>
+        {user ? (
+          <NavTabs
+            tabs={[
+              { href: "/", label: "Dashboard" },
+              { href: "/strategies", label: "Strategy Creator" },
+              { href: "/accounts", label: "My Accounts" },
+            ]}
+          />
+        ) : (
+          <div className="navbar-links" />
+        )}
         <div className="navbar-auth">
           {user ? (
             <>

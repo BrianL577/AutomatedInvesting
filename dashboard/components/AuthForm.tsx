@@ -7,7 +7,7 @@ import { createClient } from "../lib/supabase/client";
 export default function AuthForm({ mode }: { mode: "signin" | "signup" }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const next = searchParams.get("next") || "/strategies";
+  const next = searchParams.get("next") || "/";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

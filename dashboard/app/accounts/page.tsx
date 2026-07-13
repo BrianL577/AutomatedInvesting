@@ -141,10 +141,11 @@ export default function AccountsPage() {
       {accounts.length > 0 && (
         <div className="test-panel" style={{ marginTop: 20 }}>
           <div className="test-panel-header">
-            <h2>Use these in your bot host</h2>
+            <h2>Automatically used by the bot</h2>
             <p>
-              Copy this into your Railway (or wherever <code>scripts/run_live.py</code> runs) environment variables
-              as <code>IBKR_ACCOUNT_NAMES</code> (or <code>TRADOVATE_ACCOUNT_NAMES</code> if using Tradovate):
+              The bot reads these account names directly from here at startup (via Supabase) — no need to also set
+              <code> IBKR_ACCOUNT_NAMES</code>, <code>TRADOVATE_ACCOUNT_NAMES</code>, or <code>NT_ACCOUNT_NAME</code>
+              on your bot host unless you want to override what&apos;s saved here.
             </p>
           </div>
           <code className="env-copy">{namesForEnv}</code>
