@@ -783,6 +783,55 @@ export function runSessionSplitBacktest(cfg: StrategyConfig, bars: Bar[], accoun
   let totalTrades = 0;
   let incompleteTrades = 0;
 
+  // Every account is a pure function of (session window, phase filter) — two
+  // accounts with the same pair produce byte-identical trades/economics
+  // (no staggering here, unlike Portfolio). With one session configured,
+  // every account past the first two shares the SAME pair, so without this
+  // cache an N-account request redoes the full day-by-day simulation N
+  // times instead of once — the actual cause of FUNCTION_INVOCATION_TIMEOUT
+  // once N got large. Cache computes each unique pair exactly once.
+  type CachedAccount = {
+    trades: SimTrade[];
+    incompleteTrades: number;
+    dailyPnl: number[];
+    econ: ReturnType<typeof walkAccountEconomics>;
+  };
+  const cache = new Map<string, CachedAccount>();
+
+  function computeForWindow(w: { open: string; hardCutoff: string }, accountCfg: StrategyConfig, phaseFilter: "continuation" | "reversion" | null): CachedAccount {
+    const key = `${w.open}|${w.hardCutoff}|${phaseFilter ?? "both"}`;
+    const hit = cache.get(key);
+    if (hit) return hit;
+
+    const dailyPnl: number[] = [];
+    const trades: SimTrade[] = [];
+    let dayIncompleteTotal = 0;
+
+    for (const day of days) {
+      const dayBars = byDay.get(day)!.sort((a, b) => a.t.localeCompare(b.t));
+      // Fresh per-day risk state — this account only ever plays one
+      // session/day, so its own trade caps/loss caps apply within just
+      // that window, same as a single-session strategy would.
+      const state: DayRiskState = { tradesCount: 0, consecutiveLosses: 0, dayPnlDollars: 0 };
+      const { trades: dayTrades, incompleteTrades: dayIncomplete } = simulateSession(
+        dayBars,
+        accountCfg,
+        hhmmToMinutes(w.open),
+        hhmmToMinutes(w.hardCutoff),
+        state,
+        w.open
+      );
+      trades.push(...dayTrades);
+      dayIncompleteTotal += dayIncomplete;
+      dailyPnl.push(dayTrades.reduce((s, t) => s + t.pnlDollars, 0));
+    }
+
+    const econ = walkAccountEconomics(accountCfg, dailyPnl, 0);
+    const result: CachedAccount = { trades, incompleteTrades: dayIncompleteTotal, dailyPnl, econ };
+    cache.set(key, result);
+    return result;
+  }
+
   for (let i = 0; i < accountCount; i++) {
     let w: { open: string; hardCutoff: string };
     let phaseFilter: "continuation" | "reversion" | null = null;
@@ -802,29 +851,8 @@ export function runSessionSplitBacktest(cfg: StrategyConfig, bars: Bar[], accoun
       w = sessionWindows[i % M];
     }
 
-    const dailyPnl: number[] = [];
-    const accountTrades: SimTrade[] = [];
-
-    for (const day of days) {
-      const dayBars = byDay.get(day)!.sort((a, b) => a.t.localeCompare(b.t));
-      // Fresh per-day risk state — this account only ever plays one
-      // session/day, so its own trade caps/loss caps apply within just
-      // that window, same as a single-session strategy would.
-      const state: DayRiskState = { tradesCount: 0, consecutiveLosses: 0, dayPnlDollars: 0 };
-      const { trades, incompleteTrades: dayIncomplete } = simulateSession(
-        dayBars,
-        accountCfg,
-        hhmmToMinutes(w.open),
-        hhmmToMinutes(w.hardCutoff),
-        state,
-        w.open
-      );
-      accountTrades.push(...trades);
-      incompleteTrades += dayIncomplete;
-      dailyPnl.push(trades.reduce((s, t) => s + t.pnlDollars, 0));
-    }
-
-    const econ = walkAccountEconomics(accountCfg, dailyPnl, 0);
+    const { trades: accountTrades, incompleteTrades: accountIncomplete, econ } = computeForWindow(w, accountCfg, phaseFilter);
+    incompleteTrades += accountIncomplete;
     const wins = accountTrades.filter((t) => t.win).length;
     const pooledNetPnl = accountTrades.reduce((s, t) => s + t.pnlDollars, 0);
 
