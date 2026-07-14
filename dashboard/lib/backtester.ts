@@ -109,6 +109,11 @@ export type BacktestResult = {
   realWorldNetPnl: number; // $ (payouts - fees; the actual money that changed hands)
   chronologicalAttempts: number; // how many eval attempts were actually bought, in order
   timesFunded: number; // how many times an attempt reached the funded stage
+  // Of every time this account got funded (including ones that later
+  // busted having withdrawn $0), what fraction ever cashed out at least
+  // one payout — per user's exact definition: 4 busted-funded + 5
+  // still-active funded = 9 total, 1 ever cashed out = 1/9 (~11.1%).
+  fundedPayoutRate: number; // 0-100
   // Trading performance split by account phase (using the single
   // non-portfolio account's chronological timeline) — NOT pooled across
   // account resets like totalGained/totalLost/netPnl above. This answers
@@ -463,6 +468,12 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
   let cashPayouts = 0;
   let attemptsBought = 0;
   let fundedCount = 0;
+  // How many distinct funded attempts ever achieved AT LEAST ONE payout —
+  // denominator is fundedCount (every time ever funded, including ones
+  // that busted with $0 withdrawn), not attemptsBought. Per user's exact
+  // definition: 4 busted-funded + 5 still-active funded = 9 total funded
+  // attempts; only 1 of those ever cashed out = 1/9 funded payout rate.
+  let fundedAttemptsWithPayout = 0;
   // Per-day phase for THIS account's timeline, index-aligned to `series`:
   // "eval" = this day's P&L happened while still working toward the profit
   // target; "funded" = after reaching it. Days before startDay or after the
@@ -505,6 +516,7 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
     let profitSincePayout = 0;
     let daysSincePayout = 0;
     let bestDaySincePayout = -Infinity;
+    let thisAttemptGotPayout = false;
     // Topstep Consistency Target, exact formula confirmed by a Topstep
     // trader: New Profit Target = Best Day / 0.5 (a full recalculation off
     // the single best day so far this attempt, not a step/proportional
@@ -572,6 +584,10 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
           );
           if (payout > 0) {
             cashPayouts += payout;
+            if (!thisAttemptGotPayout) {
+              fundedAttemptsWithPayout++;
+              thisAttemptGotPayout = true;
+            }
             // Real rule: Maximum Loss Limit resets to $0 the moment funds
             // are withdrawn — zero drawdown buffer until the balance
             // climbs again, so the very next losing day can bust the
@@ -591,7 +607,7 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
     if (funded) needsFreshSubscription = true;
     if (!busted) break; // ran out of data mid-attempt, nothing more to simulate
   }
-  return { feesPaid, cashPayouts, attemptsBought, fundedCount, dayPhase };
+  return { feesPaid, cashPayouts, attemptsBought, fundedCount, fundedAttemptsWithPayout, dayPhase };
 }
 
 /** Groups bars by ET calendar day, dropping any date in
@@ -671,6 +687,7 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
   const cashPayouts = single.cashPayouts;
   const chronologicalAttempts = single.attemptsBought;
   const timesFunded = single.fundedCount;
+  const fundedPayoutRate = timesFunded ? round2((single.fundedAttemptsWithPayout / timesFunded) * 100) : 0;
 
   // Split every trade into eval-stage vs funded-stage using the single
   // account's chronological day phases, so "Success Rate"/"Net P&L"/etc can
@@ -801,7 +818,13 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
     maxDrawdown: round2(maxDrawdown),
     evalAttempts: attempts,
     evalPasses: passes,
-    evalPassRate: attempts ? round2((passes / attempts) * 100) : 0,
+    // Real definition (per user): evals WON / evals PURCHASED, from the
+    // actual chronological attempt-by-attempt run (chronologicalAttempts/
+    // timesFunded below) — NOT the probability-sweep evalAttempts/
+    // evalPasses above (kept for reference in Pooled stats only, a
+    // different "how likely is any given start day to eventually pass"
+    // metric, not "how many of my real purchased evals passed").
+    evalPassRate: chronologicalAttempts ? round2((timesFunded / chronologicalAttempts) * 100) : 0,
     avgDaysToEvalResult: daysToResult.length
       ? round2(daysToResult.reduce((a, x) => a + x, 0) / daysToResult.length)
       : 0,
@@ -812,6 +835,7 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
     realWorldNetPnl: round2(cashPayouts - feesPaid),
     chronologicalAttempts,
     timesFunded,
+    fundedPayoutRate,
     evalStage,
     fundedStage,
     portfolio,

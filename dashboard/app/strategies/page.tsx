@@ -1108,6 +1108,22 @@ export default function StrategiesPage() {
                             hint="How many of those attempts made it through the eval to a funded account, across every account."
                             value={`${timesFunded}`}
                           />
+                          {!split && (
+                            <>
+                              <StatCard
+                                label="Eval Pass Rate"
+                                hint="Evals WON / evals PURCHASED, from this actual chronological run — e.g. purchased 10, passed 5 = 50%. Not the same as the probability-sweep 'Eval Pass Rate' shown in Pooled stats below, which answers a different question (how likely is any given start day to eventually pass)."
+                                value={`${result.evalPassRate.toFixed(1)}%`}
+                                tone={result.evalPassRate >= 33 ? "positive" : "negative"}
+                              />
+                              <StatCard
+                                label="Funded Payout Rate"
+                                hint="Of every time you ever reached funded (including ones that later busted having withdrawn $0), what fraction cashed out at least one payout. E.g. 9 total fundings (4 busted, 5 still active), only 1 ever paid out = 1/9 (~11%)."
+                                value={`${result.fundedPayoutRate.toFixed(1)}%`}
+                                tone={result.fundedPayoutRate >= 33 ? "positive" : "negative"}
+                              />
+                            </>
+                          )}
                         </div>
                         {correlatedGroupSize > 1 && (
                           <p className="edit-field-warning" style={{ marginTop: 10 }}>

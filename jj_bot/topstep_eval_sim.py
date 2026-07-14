@@ -18,11 +18,11 @@ from typing import Optional
 logger = logging.getLogger("jj_bot.topstep_sim")
 
 _STATE_FIELDS = (
-    "attempts_bought", "funded_count", "fees_paid", "cash_payouts",
+    "attempts_bought", "funded_count", "funded_attempts_with_payout", "fees_paid", "cash_payouts",
     "_eval_days_since_bill", "_needs_fresh_subscription", "_first_attempt",
     "balance", "high_water", "floor", "funded", "best_day_so_far",
     "effective_profit_target", "winning_days_since_payout", "profit_since_payout",
-    "days_since_payout", "best_day_since_payout",
+    "days_since_payout", "best_day_since_payout", "_this_attempt_got_payout",
     "_current_monthly_fee", "_current_activation_fee",
 )
 
@@ -73,6 +73,7 @@ class TopstepEvalSimulator:
         self.state_path = state_path
         self.attempts_bought = 0
         self.funded_count = 0
+        self.funded_attempts_with_payout = 0
         self.fees_paid = 0.0
         self.cash_payouts = 0.0
         self._eval_days_since_bill = cfg.trading_days_per_month  # bill immediately
@@ -142,6 +143,7 @@ class TopstepEvalSimulator:
         self.profit_since_payout = 0.0
         self.days_since_payout = 0
         self.best_day_since_payout = float("-inf")
+        self._this_attempt_got_payout = False
 
         plan_name = "No-Activation-Fee" if self._current_activation_fee == 0 else "Standard"
         logger.info(
@@ -219,6 +221,9 @@ class TopstepEvalSimulator:
                 path = "Standard" if standard_eligible else "Consistency"
                 if payout > 0:
                     self.cash_payouts += payout
+                    if not self._this_attempt_got_payout:
+                        self.funded_attempts_with_payout += 1
+                        self._this_attempt_got_payout = True
                     # Real rule: Maximum Loss Limit resets to $0 the moment
                     # funds are withdrawn.
                     self.floor = self.balance
@@ -234,8 +239,23 @@ class TopstepEvalSimulator:
 
         logger.info(
             "%s Day close: pnl=$%.2f balance=$%.2f floor=$%.2f funded=%s target=$%.2f | "
-            "net real money so far: $%.2f (payouts $%.2f - fees $%.2f)",
+            "net real money so far: $%.2f (payouts $%.2f - fees $%.2f) | "
+            "eval pass rate: %.1f%% (%d/%d) | funded payout rate: %.1f%% (%d/%d)",
             self._tag(), day_pnl, self.balance, self.floor, self.funded, self.effective_profit_target,
             self.cash_payouts - self.fees_paid, self.cash_payouts, self.fees_paid,
+            self.eval_pass_rate, self.funded_count, self.attempts_bought,
+            self.funded_payout_rate, self.funded_attempts_with_payout, self.funded_count,
         )
         self._save_state()
+
+    @property
+    def eval_pass_rate(self) -> float:
+        """Evals WON / evals PURCHASED — e.g. purchased 10, passed 5 = 50%."""
+        return (self.funded_count / self.attempts_bought * 100) if self.attempts_bought else 0.0
+
+    @property
+    def funded_payout_rate(self) -> float:
+        """Of every time ever funded (including ones that later busted
+        having withdrawn $0), what fraction ever cashed out at least one
+        payout."""
+        return (self.funded_attempts_with_payout / self.funded_count * 100) if self.funded_count else 0.0
