@@ -129,15 +129,26 @@ class StrategyEngine:
         self.pivot_lows = [p for p in self.pivot_lows if p.timestamp >= cutoff]
 
     def _nearest_structure(self, direction: Direction) -> Optional[float]:
-        """Nearest relevant swing level to break-and-close through."""
+        """Nearest relevant swing level to break-and-close through.
+
+        Confirmed pivots need swing_strength bars of pullback on both sides,
+        so on a clean, monotonic trend (no pullback yet to confirm a pivot in
+        the trend direction) they never form in time. Fall back to the
+        extreme of the bars seen so far this session, so a real break of
+        structure can still be recognized before a pivot has confirmed."""
+        prior_bars = self.day_bars[:-1]
         if direction == Direction.SHORT:
-            if not self.pivot_lows:
+            if self.pivot_lows:
+                return min(p.price for p in self.pivot_lows)
+            if not prior_bars:
                 return None
-            return min(p.price for p in self.pivot_lows)
+            return min(b.low for b in prior_bars)
         else:
-            if not self.pivot_highs:
+            if self.pivot_highs:
+                return max(p.price for p in self.pivot_highs)
+            if not prior_bars:
                 return None
-            return max(p.price for p in self.pivot_highs)
+            return max(b.high for b in prior_bars)
 
     def _is_displacement(self, bar: Bar) -> bool:
         """A displacement candle: true-range notably larger than both the
@@ -168,6 +179,21 @@ class StrategyEngine:
         if bar.wick_ratio > self.strategy_cfg.max_wick_ratio:
             return False
         return True
+
+    def _htf_bias(self) -> Optional[Direction]:
+        """Higher-timeframe bias confluence: no separate HTF data feed is
+        available, so approximate it by aggregating the most recent
+        htf_bar_minutes 1-min bars into one synthetic candle and reading its
+        direction. This is a grading confluence only, never a gate."""
+        n = self.strategy_cfg.htf_bar_minutes
+        if len(self.day_bars) < n:
+            return None
+        recent = self.day_bars[-n:]
+        if recent[-1].close > recent[0].open:
+            return Direction.LONG
+        if recent[-1].close < recent[0].open:
+            return Direction.SHORT
+        return None
 
     def _break_of_structure(self, bar: Bar, direction: Direction) -> tuple[bool, Optional[float]]:
         """Break-of-structure requires the close to clear the nearest swing
@@ -252,14 +278,31 @@ class StrategyEngine:
         if mins <= self.strategy_cfg.continuation_end_minutes:
             self.phase = Phase.CONTINUATION
             direction = self.continuation_direction
-            if direction is None or not self._is_displacement(bar):
+            if direction is None:
                 return None
+            # Break of structure is the mandatory trigger — no BOS, no trade.
+            # Displacement and HTF bias are secondary confirming factors that
+            # only upgrade the setup grade; their absence must not block entry.
             bos, level = self._break_of_structure(bar, direction)
             if not bos:
                 return None
+            displaced = self._is_displacement(bar)
+            htf_aligned = self._htf_bias() == direction
+            confluences = sum([displaced, htf_aligned])
+            if confluences == 2:
+                grade = SetupGrade.A_PLUS
+            elif confluences == 1:
+                grade = SetupGrade.A
+            else:
+                grade = SetupGrade.B_PLUS
+            reason = (
+                f"Continuation of {direction.value} opening flow, "
+                f"{'displacement + ' if displaced else ''}"
+                f"{'HTF-aligned + ' if htf_aligned else ''}"
+                f"close through structure {level:.2f}"
+            )
             signal = self._build_signal(
-                bar, direction, Phase.CONTINUATION, SetupGrade.A,
-                reason=f"Continuation of {direction.value} opening flow, displacement + close through structure {level:.2f}",
+                bar, direction, Phase.CONTINUATION, grade, reason=reason,
             )
             self.position_open = True
             return signal
@@ -270,21 +313,29 @@ class StrategyEngine:
             if abs(extension) < self.strategy_cfg.min_extension_points:
                 return None
             direction = Direction.SHORT if extension > 0 else Direction.LONG
-            if not self._is_displacement(bar):
-                return None
+            # Break of structure is the mandatory trigger — no BOS, no trade.
+            # Displacement and HTF bias are secondary confirming factors that
+            # only upgrade the setup grade.
             bos, level = self._break_of_structure(bar, direction)
             if not bos:
                 return None
-            grade = (
-                SetupGrade.A_PLUS
-                if abs(extension) >= 1.5 * self.strategy_cfg.min_extension_points
-                else SetupGrade.A
-            )
+            displaced = self._is_displacement(bar)
+            htf_aligned = self._htf_bias() == direction
+            confluences = sum([displaced, htf_aligned])
+            if confluences == 2:
+                grade = SetupGrade.A_PLUS
+            elif confluences == 1:
+                grade = SetupGrade.A
+            else:
+                grade = SetupGrade.B_PLUS
             signal = self._build_signal(
                 bar, direction, Phase.REVERSION, grade,
                 reason=(
                     f"Mean reversion toward open {self.open_price:.2f} "
-                    f"(extended {extension:+.2f} pts), displacement + close through structure {level:.2f}"
+                    f"(extended {extension:+.2f} pts), "
+                    f"{'displacement + ' if displaced else ''}"
+                    f"{'HTF-aligned + ' if htf_aligned else ''}"
+                    f"close through structure {level:.2f}"
                 ),
             )
             self.position_open = True
