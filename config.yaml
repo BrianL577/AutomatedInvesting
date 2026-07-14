@@ -13,6 +13,7 @@ strategy:
   structure_lookback: 30         # minutes to look back for swing high/low ("structure")
   swing_strength: 2              # bars on each side required to confirm a pivot
   break_buffer_points: 1.0       # close must clear structure by this much to avoid noise breaks
+  htf_bar_minutes: 5             # bars aggregated into a synthetic higher-timeframe candle for bias confluence
 
 risk:
   # Reverted from the AI-Optimize "Row #1" geometry (45pt/35pt on 3 contracts):

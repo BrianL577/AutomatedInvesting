@@ -180,6 +180,21 @@ class StrategyEngine:
             return False
         return True
 
+    def _htf_bias(self) -> Optional[Direction]:
+        """Higher-timeframe bias confluence: no separate HTF data feed is
+        available, so approximate it by aggregating the most recent
+        htf_bar_minutes 1-min bars into one synthetic candle and reading its
+        direction. This is a grading confluence only, never a gate."""
+        n = self.strategy_cfg.htf_bar_minutes
+        if len(self.day_bars) < n:
+            return None
+        recent = self.day_bars[-n:]
+        if recent[-1].close > recent[0].open:
+            return Direction.LONG
+        if recent[-1].close < recent[0].open:
+            return Direction.SHORT
+        return None
+
     def _break_of_structure(self, bar: Bar, direction: Direction) -> tuple[bool, Optional[float]]:
         """Break-of-structure requires the close to clear the nearest swing
         level by more than a small buffer, so marginal/noise breaks (a close
@@ -266,16 +281,25 @@ class StrategyEngine:
             if direction is None:
                 return None
             # Break of structure is the mandatory trigger — no BOS, no trade.
-            # Displacement is a secondary confirming factor that only
-            # upgrades the setup grade; its absence must not block entry.
+            # Displacement and HTF bias are secondary confirming factors that
+            # only upgrade the setup grade; their absence must not block entry.
             bos, level = self._break_of_structure(bar, direction)
             if not bos:
                 return None
             displaced = self._is_displacement(bar)
-            grade = SetupGrade.A if displaced else SetupGrade.B_PLUS
+            htf_aligned = self._htf_bias() == direction
+            confluences = sum([displaced, htf_aligned])
+            if confluences == 2:
+                grade = SetupGrade.A_PLUS
+            elif confluences == 1:
+                grade = SetupGrade.A
+            else:
+                grade = SetupGrade.B_PLUS
             reason = (
                 f"Continuation of {direction.value} opening flow, "
-                f"{'displacement + ' if displaced else ''}close through structure {level:.2f}"
+                f"{'displacement + ' if displaced else ''}"
+                f"{'HTF-aligned + ' if htf_aligned else ''}"
+                f"close through structure {level:.2f}"
             )
             signal = self._build_signal(
                 bar, direction, Phase.CONTINUATION, grade, reason=reason,
@@ -290,16 +314,17 @@ class StrategyEngine:
                 return None
             direction = Direction.SHORT if extension > 0 else Direction.LONG
             # Break of structure is the mandatory trigger — no BOS, no trade.
-            # Displacement and extension size are secondary confirming
-            # factors that only upgrade the setup grade.
+            # Displacement and HTF bias are secondary confirming factors that
+            # only upgrade the setup grade.
             bos, level = self._break_of_structure(bar, direction)
             if not bos:
                 return None
             displaced = self._is_displacement(bar)
-            big_extension = abs(extension) >= 1.5 * self.strategy_cfg.min_extension_points
-            if displaced and big_extension:
+            htf_aligned = self._htf_bias() == direction
+            confluences = sum([displaced, htf_aligned])
+            if confluences == 2:
                 grade = SetupGrade.A_PLUS
-            elif displaced or big_extension:
+            elif confluences == 1:
                 grade = SetupGrade.A
             else:
                 grade = SetupGrade.B_PLUS
@@ -308,7 +333,9 @@ class StrategyEngine:
                 reason=(
                     f"Mean reversion toward open {self.open_price:.2f} "
                     f"(extended {extension:+.2f} pts), "
-                    f"{'displacement + ' if displaced else ''}close through structure {level:.2f}"
+                    f"{'displacement + ' if displaced else ''}"
+                    f"{'HTF-aligned + ' if htf_aligned else ''}"
+                    f"close through structure {level:.2f}"
                 ),
             )
             self.position_open = True

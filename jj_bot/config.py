@@ -147,6 +147,7 @@ class StrategyConfig:
     structure_lookback: int
     swing_strength: int
     break_buffer_points: float = 1.0
+    htf_bar_minutes: int = 5
 
 
 @dataclass
