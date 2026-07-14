@@ -517,6 +517,7 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
     let daysSincePayout = 0;
     let bestDaySincePayout = -Infinity;
     let thisAttemptGotPayout = false;
+    let balanceAtLastPayout = 0;
     // Topstep Consistency Target, exact formula confirmed by a Topstep
     // trader: New Profit Target = Best Day / 0.5 (a full recalculation off
     // the single best day so far this attempt, not a step/proportional
@@ -560,6 +561,13 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
         feesPaid += activationFee;
         winningDaysSincePayout = 0;
         profitSincePayout = 0;
+        // Confirmed directly: a payout REMOVES the requested amount from
+        // the account balance (it's not just a drawdown-buffer reset) —
+        // the next payout requires balance to climb back ABOVE this
+        // post-payout reference point, not merely back to it. Starts at
+        // the funding balance itself (the first "reference" you have to
+        // climb above).
+        balanceAtLastPayout = balance;
       }
       if (funded) {
         profitSincePayout += dayPnl;
@@ -576,14 +584,25 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
           daysSincePayout >= consistencyPathMinDays &&
           profitSincePayout > 0 &&
           bestDaySincePayout <= profitSincePayout * consistencyPathMaxBestDayShare;
+        // Confirmed directly: eligibility ALSO requires balance to be
+        // strictly above the post-previous-payout reference, not just
+        // hitting the day-count criteria — a day-count-eligible cycle with
+        // a big loss mixed in that leaves balance below that reference
+        // does not unlock a payout yet.
+        const aboveLastPayoutBalance = balance > balanceAtLastPayout;
 
-        if (standardPathEligible || consistencyPathEligible) {
+        if ((standardPathEligible || consistencyPathEligible) && aboveLastPayoutBalance) {
           const payout = Math.max(
             0,
             Math.min(maxPayout, profitSincePayout * payoutShare, balance * maxPayoutBalanceShare)
           );
           if (payout > 0) {
             cashPayouts += payout;
+            // Confirmed directly: the payout amount is REMOVED from the
+            // account balance immediately, not just a drawdown-buffer
+            // reset — e.g. request $2,000 on a $4,000 balance leaves $2,000.
+            balance -= payout;
+            balanceAtLastPayout = balance;
             if (!thisAttemptGotPayout) {
               fundedAttemptsWithPayout++;
               thisAttemptGotPayout = true;

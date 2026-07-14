@@ -23,7 +23,7 @@ _STATE_FIELDS = (
     "balance", "high_water", "floor", "funded", "best_day_so_far",
     "effective_profit_target", "winning_days_since_payout", "profit_since_payout",
     "days_since_payout", "best_day_since_payout", "_this_attempt_got_payout",
-    "_current_monthly_fee", "_current_activation_fee",
+    "_balance_at_last_payout", "_current_monthly_fee", "_current_activation_fee",
 )
 
 
@@ -144,6 +144,7 @@ class TopstepEvalSimulator:
         self.days_since_payout = 0
         self.best_day_since_payout = float("-inf")
         self._this_attempt_got_payout = False
+        self._balance_at_last_payout = 0.0
 
         plan_name = "No-Activation-Fee" if self._current_activation_fee == 0 else "Standard"
         logger.info(
@@ -192,6 +193,11 @@ class TopstepEvalSimulator:
             self.profit_since_payout = 0.0
             self.days_since_payout = 0
             self.best_day_since_payout = float("-inf")
+            # Confirmed directly: a payout removes the requested amount
+            # from balance; the NEXT payout requires balance to climb back
+            # ABOVE this reference, not merely back to it. Starts at the
+            # funding balance itself.
+            self._balance_at_last_payout = self.balance
             logger.info(
                 "%s FUNDED! (attempt #%d, cleared $%.2f target) Total fees paid so far: $%.2f",
                 self._tag(), self.attempts_bought, self.effective_profit_target, self.fees_paid,
@@ -211,8 +217,12 @@ class TopstepEvalSimulator:
                 and self.profit_since_payout > 0
                 and self.best_day_since_payout <= self.profit_since_payout * self.cfg.consistency_path_max_best_day_share
             )
+            # Confirmed directly: eligibility ALSO requires balance to be
+            # strictly above the post-previous-payout reference, not just
+            # hitting the day-count criteria.
+            above_last_payout_balance = self.balance > self._balance_at_last_payout
 
-            if standard_eligible or consistency_eligible:
+            if (standard_eligible or consistency_eligible) and above_last_payout_balance:
                 payout = max(0.0, min(
                     self.cfg.max_payout_per_event,
                     self.profit_since_payout * self.cfg.payout_share,
@@ -221,6 +231,12 @@ class TopstepEvalSimulator:
                 path = "Standard" if standard_eligible else "Consistency"
                 if payout > 0:
                     self.cash_payouts += payout
+                    # Confirmed directly: the payout amount is REMOVED from
+                    # the account balance immediately, not just a
+                    # drawdown-buffer reset — e.g. request $2,000 on a
+                    # $4,000 balance leaves $2,000.
+                    self.balance -= payout
+                    self._balance_at_last_payout = self.balance
                     if not self._this_attempt_got_payout:
                         self.funded_attempts_with_payout += 1
                         self._this_attempt_got_payout = True
