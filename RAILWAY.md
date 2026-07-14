@@ -59,6 +59,15 @@ BOT_API_HOST=0.0.0.0
 BOT_API_PORT=8787
 BOT_API_CORS_ORIGINS=https://your-dashboard.vercel.app
 
+# Enables /api/ai-job on the Bot API service — the dashboard's AI strategy
+# chat dispatches its (slow, extended-thinking) Claude calls here instead of
+# running them inline on Vercel, since Vercel Hobby hard-caps serverless
+# functions at 10s. Same key you'd put in the dashboard's own
+# ANTHROPIC_API_KEY — get one at https://platform.claude.com/. Set the
+# dashboard's BOT_API_URL (Vercel env var, see dashboard/.env.example) to
+# this Railway service's public URL.
+ANTHROPIC_API_KEY=
+
 # Crash alert email (optional, but recommended for an unattended worker)
 SMTP_USER=you@gmail.com
 SMTP_PASSWORD=<Gmail App Password from myaccount.google.com/apppasswords>
