@@ -263,14 +263,22 @@ class StrategyEngine:
         if mins <= self.strategy_cfg.continuation_end_minutes:
             self.phase = Phase.CONTINUATION
             direction = self.continuation_direction
-            if direction is None or not self._is_displacement(bar):
+            if direction is None:
                 return None
+            # Break of structure is the mandatory trigger — no BOS, no trade.
+            # Displacement is a secondary confirming factor that only
+            # upgrades the setup grade; its absence must not block entry.
             bos, level = self._break_of_structure(bar, direction)
             if not bos:
                 return None
+            displaced = self._is_displacement(bar)
+            grade = SetupGrade.A if displaced else SetupGrade.B_PLUS
+            reason = (
+                f"Continuation of {direction.value} opening flow, "
+                f"{'displacement + ' if displaced else ''}close through structure {level:.2f}"
+            )
             signal = self._build_signal(
-                bar, direction, Phase.CONTINUATION, SetupGrade.A,
-                reason=f"Continuation of {direction.value} opening flow, displacement + close through structure {level:.2f}",
+                bar, direction, Phase.CONTINUATION, grade, reason=reason,
             )
             self.position_open = True
             return signal
@@ -281,21 +289,26 @@ class StrategyEngine:
             if abs(extension) < self.strategy_cfg.min_extension_points:
                 return None
             direction = Direction.SHORT if extension > 0 else Direction.LONG
-            if not self._is_displacement(bar):
-                return None
+            # Break of structure is the mandatory trigger — no BOS, no trade.
+            # Displacement and extension size are secondary confirming
+            # factors that only upgrade the setup grade.
             bos, level = self._break_of_structure(bar, direction)
             if not bos:
                 return None
-            grade = (
-                SetupGrade.A_PLUS
-                if abs(extension) >= 1.5 * self.strategy_cfg.min_extension_points
-                else SetupGrade.A
-            )
+            displaced = self._is_displacement(bar)
+            big_extension = abs(extension) >= 1.5 * self.strategy_cfg.min_extension_points
+            if displaced and big_extension:
+                grade = SetupGrade.A_PLUS
+            elif displaced or big_extension:
+                grade = SetupGrade.A
+            else:
+                grade = SetupGrade.B_PLUS
             signal = self._build_signal(
                 bar, direction, Phase.REVERSION, grade,
                 reason=(
                     f"Mean reversion toward open {self.open_price:.2f} "
-                    f"(extended {extension:+.2f} pts), displacement + close through structure {level:.2f}"
+                    f"(extended {extension:+.2f} pts), "
+                    f"{'displacement + ' if displaced else ''}close through structure {level:.2f}"
                 ),
             )
             self.position_open = True
