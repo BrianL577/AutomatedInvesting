@@ -284,22 +284,26 @@ function simulateSession(
   // Confirmed pivots need swingStrength bars of pullback on both sides, so on
   // a clean, monotonic trend (no pullback yet to confirm a pivot in the trend
   // direction) they never form in time. Fall back to the extreme of the bars
-  // seen so far this session, so a real break of structure can still be
-  // recognized before a pivot has confirmed — mirrors strategy.py.
-  const nearestStructure = (dir: "long" | "short"): number | null => {
+  // seen so far, so a real break of structure can still be recognized before
+  // a pivot has confirmed — bounded to the same structureLookbackMin window
+  // pivots use, not the whole seen[] history. Without this bound, a session
+  // whose scan window starts well before its own open (see lookbackBuffer
+  // above) could anchor the fallback to a stale extreme from outside the
+  // intended lookback window — mirrors strategy.py.
+  const nearestStructure = (dir: "long" | "short", barMinutes: number): number | null => {
+    const cutoff = barMinutes - cfg.entry.structureLookbackMin;
+    const prior = seen.slice(0, -1).filter((b) => etParts(b.t).minutes >= cutoff);
     if (dir === "short") {
       if (pivotLows.length) return Math.min(...pivotLows.map((p) => p.price));
-      const prior = seen.slice(0, -1);
       return prior.length ? Math.min(...prior.map((b) => b.l)) : null;
     }
     if (pivotHighs.length) return Math.max(...pivotHighs.map((p) => p.price));
-    const prior = seen.slice(0, -1);
     return prior.length ? Math.max(...prior.map((b) => b.h)) : null;
   };
 
-  const breakOfStructure = (bar: Bar, dir: "long" | "short"): number | null => {
+  const breakOfStructure = (bar: Bar, dir: "long" | "short", barMinutes: number): number | null => {
     const buffer = cfg.entry.breakBufferPoints;
-    const level = nearestStructure(dir);
+    const level = nearestStructure(dir, barMinutes);
     if (level === null) return null;
     if (dir === "short") return bar.c < level - buffer ? level : null;
     return bar.c > level + buffer ? level : null;
@@ -391,7 +395,7 @@ function simulateSession(
     // Break of structure is the mandatory trigger — no BOS, no trade.
     // Displacement and HTF bias are secondary confluences that only upgrade
     // the setup grade; their absence must not block entry.
-    const level = breakOfStructure(bar, dir);
+    const level = breakOfStructure(bar, dir, minutes);
     if (level === null) continue;
     const displaced = isDisplacement(seen.length - 1);
     const htfAligned = htfBias() === dir;

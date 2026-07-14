@@ -134,9 +134,16 @@ class StrategyEngine:
         Confirmed pivots need swing_strength bars of pullback on both sides,
         so on a clean, monotonic trend (no pullback yet to confirm a pivot in
         the trend direction) they never form in time. Fall back to the
-        extreme of the bars seen so far this session, so a real break of
-        structure can still be recognized before a pivot has confirmed."""
-        prior_bars = self.day_bars[:-1]
+        extreme of the bars seen so far, so a real break of structure can
+        still be recognized before a pivot has confirmed — but bounded to the
+        same structure_lookback window pivots use, not the whole day_bars
+        history. Without this bound, a live process that started well before
+        the session's own anchor (day_bars holds every bar since the
+        calendar-day reset, not just bars since this session opened) could
+        anchor the fallback to a stale extreme from outside the intended
+        lookback window, silently blocking a live break of structure."""
+        cutoff = self.day_bars[-1].timestamp - timedelta(minutes=self.strategy_cfg.structure_lookback)
+        prior_bars = [b for b in self.day_bars[:-1] if b.timestamp >= cutoff]
         if direction == Direction.SHORT:
             if self.pivot_lows:
                 return min(p.price for p in self.pivot_lows)
