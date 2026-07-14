@@ -277,13 +277,24 @@ class StrategyEngine:
         if bar.timestamp >= cutoff_dt:
             self.phase = Phase.DONE_FOR_DAY
             return None
+
+        # Keep `phase` current every bar regardless of whether a position is
+        # open, so it reflects the actual time-of-day window rather than
+        # freezing at whatever it was when the last trade opened — a bar
+        # that never reaches the entry logic below (because position_open is
+        # True) must still update this for anyone reading it live.
+        mins = minutes_since(open_dt, bar.timestamp)
+        if mins <= self.strategy_cfg.continuation_end_minutes:
+            self.phase = Phase.CONTINUATION
+        elif mins <= self.strategy_cfg.reversion_end_minutes:
+            self.phase = Phase.REVERSION
+        else:
+            self.phase = Phase.DONE_FOR_DAY
+
         if self.position_open:
             return None
 
-        mins = minutes_since(open_dt, bar.timestamp)
-
         if mins <= self.strategy_cfg.continuation_end_minutes:
-            self.phase = Phase.CONTINUATION
             direction = self.continuation_direction
             if direction is None:
                 return None
@@ -315,7 +326,6 @@ class StrategyEngine:
             return signal
 
         if mins <= self.strategy_cfg.reversion_end_minutes:
-            self.phase = Phase.REVERSION
             extension = bar.close - self.open_price
             if abs(extension) < self.strategy_cfg.min_extension_points:
                 return None
@@ -348,5 +358,4 @@ class StrategyEngine:
             self.position_open = True
             return signal
 
-        self.phase = Phase.DONE_FOR_DAY
         return None
