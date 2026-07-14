@@ -129,15 +129,26 @@ class StrategyEngine:
         self.pivot_lows = [p for p in self.pivot_lows if p.timestamp >= cutoff]
 
     def _nearest_structure(self, direction: Direction) -> Optional[float]:
-        """Nearest relevant swing level to break-and-close through."""
+        """Nearest relevant swing level to break-and-close through.
+
+        Confirmed pivots need swing_strength bars of pullback on both sides,
+        so on a clean, monotonic trend (no pullback yet to confirm a pivot in
+        the trend direction) they never form in time. Fall back to the
+        extreme of the bars seen so far this session, so a real break of
+        structure can still be recognized before a pivot has confirmed."""
+        prior_bars = self.day_bars[:-1]
         if direction == Direction.SHORT:
-            if not self.pivot_lows:
+            if self.pivot_lows:
+                return min(p.price for p in self.pivot_lows)
+            if not prior_bars:
                 return None
-            return min(p.price for p in self.pivot_lows)
+            return min(b.low for b in prior_bars)
         else:
-            if not self.pivot_highs:
+            if self.pivot_highs:
+                return max(p.price for p in self.pivot_highs)
+            if not prior_bars:
                 return None
-            return max(p.price for p in self.pivot_highs)
+            return max(b.high for b in prior_bars)
 
     def _is_displacement(self, bar: Bar) -> bool:
         """A displacement candle: true-range notably larger than both the
