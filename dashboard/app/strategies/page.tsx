@@ -43,6 +43,22 @@ async function readJson(res: Response): Promise<any> {
   }
 }
 
+/** Poll GET /api/strategy-chat/status until the bot-API-hosted AI job
+ * finishes (see app/api/strategy-chat/route.ts for why the chat turn is
+ * split into kickoff + poll instead of one long-lived request). ~2s
+ * interval, gives up after ~5 minutes. */
+async function pollJobUntilDone(jobId: string): Promise<{ reply: string; config: any }> {
+  const maxAttempts = 150;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const res = await fetch(`/api/strategy-chat/status?jobId=${encodeURIComponent(jobId)}`);
+    const data = await readJson(res);
+    if (!res.ok) throw new Error(data.error || "Chat failed");
+    if (data.status === "done") return data;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw new Error("Timed out waiting for the AI response.");
+}
+
 function fmtMoney(n: number): string {
   const sign = n < 0 ? "-" : "";
   return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -207,8 +223,13 @@ export default function StrategiesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: nextChat.map(({ role, content }) => ({ role, content })) }),
       });
-      const data = await readJson(res);
-      if (!res.ok) throw new Error(data.error || "Chat failed");
+      const kickoff = await readJson(res);
+      if (!res.ok) throw new Error(kickoff.error || "Chat failed");
+      // The actual Claude call runs on the bot API host (see
+      // app/api/strategy-chat/route.ts) so it isn't bound by Vercel's
+      // per-request timeout — poll for the result instead of waiting on a
+      // single long-lived response.
+      const data = await pollJobUntilDone(kickoff.jobId);
       const withReply: ChatMessage[] = [...nextChat, { role: "assistant", content: data.reply, config: data.config ?? null }];
       setChat(withReply);
       // If Claude attached a concrete config, immediately test it against the

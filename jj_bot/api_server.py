@@ -15,11 +15,36 @@ Endpoints:
                               the automation pipeline is actually wired up
   GET  /api/trades        -> same trade log the dashboard reads directly,
                               exposed here too for convenience/debugging
+  POST /api/ai-job        -> starts a long-running Anthropic Messages API
+                              call in a background thread and returns a
+                              job_id immediately. Exists because Vercel
+                              Hobby hard-caps serverless functions at 10s
+                              (ignoring any maxDuration set in the Next.js
+                              route code) while Claude calls with extended
+                              thinking routinely take longer — this host has
+                              no such limit, so the dashboard dispatches the
+                              slow call here and polls GET /api/ai-job/{id}
+                              instead of waiting on it inline. This endpoint
+                              is a dumb proxy: it forwards whatever request
+                              body it's given straight to
+                              api.anthropic.com/v1/messages and hands back
+                              the raw response — all prompt/schema logic
+                              stays in the dashboard's TypeScript code, not
+                              duplicated here.
+  GET  /api/ai-job/{id}   -> poll a job started above: {"status": "pending"}
+                              while running, or {"status": "done", "result":
+                              <raw Anthropic response>} / {"status": "error",
+                              "error": "..."} once finished.
 """
 from __future__ import annotations
 
 import os
+import threading
+import time
+import uuid
+from typing import Any
 
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -90,3 +115,78 @@ def trades():
     dollar_per_point = cfg.instrument.tick_value / cfg.instrument.tick_size
     logger = TradeLogger(dollar_per_point=dollar_per_point)
     return {"trades": logger._read()}
+
+
+class AIJobRequest(BaseModel):
+    # Raw Anthropic Messages API request body (model, max_tokens, system,
+    # messages, thinking, output_config, ...) — passed through verbatim, see
+    # module docstring.
+    body: dict[str, Any]
+
+
+_AI_JOBS: dict[str, dict[str, Any]] = {}
+_AI_JOBS_LOCK = threading.Lock()
+_AI_JOB_TTL_SECONDS = 30 * 60  # prune finished jobs after 30 min
+
+
+def _prune_ai_jobs() -> None:
+    cutoff = time.time() - _AI_JOB_TTL_SECONDS
+    stale = [jid for jid, job in _AI_JOBS.items() if job.get("created_at", 0) < cutoff]
+    for jid in stale:
+        del _AI_JOBS[jid]
+
+
+def _run_ai_job(job_id: str, body: dict[str, Any], api_key: str) -> None:
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json=body,
+            # Generous — this background thread isn't bound by any per-request
+            # platform timeout the way the dashboard's own serverless
+            # functions are, so there's no need to cut this close.
+            timeout=280,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        with _AI_JOBS_LOCK:
+            created_at = _AI_JOBS.get(job_id, {}).get("created_at", time.time())
+            _AI_JOBS[job_id] = {"status": "done", "result": result, "created_at": created_at}
+    except requests.RequestException as exc:
+        resp_obj = getattr(exc, "response", None)
+        detail = resp_obj.text if resp_obj is not None else str(exc)
+        status_code = resp_obj.status_code if resp_obj is not None else None
+        with _AI_JOBS_LOCK:
+            created_at = _AI_JOBS.get(job_id, {}).get("created_at", time.time())
+            _AI_JOBS[job_id] = {
+                "status": "error",
+                "error": detail,
+                "status_code": status_code,
+                "created_at": created_at,
+            }
+
+
+@app.post("/api/ai-job")
+def create_ai_job(req: AIJobRequest):
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set on the bot API host.")
+    job_id = uuid.uuid4().hex
+    with _AI_JOBS_LOCK:
+        _prune_ai_jobs()
+        _AI_JOBS[job_id] = {"status": "pending", "created_at": time.time()}
+    threading.Thread(target=_run_ai_job, args=(job_id, req.body, api_key), daemon=True).start()
+    return {"job_id": job_id}
+
+
+@app.get("/api/ai-job/{job_id}")
+def get_ai_job(job_id: str):
+    with _AI_JOBS_LOCK:
+        job = _AI_JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired job_id")
+    return job
