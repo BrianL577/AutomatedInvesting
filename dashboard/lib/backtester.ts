@@ -39,6 +39,10 @@ export type SimTrade = {
   pnlPoints: number;
   pnlDollars: number;
   reason: string;
+  // Break of structure is the only mandatory entry trigger. Displacement and
+  // HTF bias are secondary confluences that upgrade the grade but never gate
+  // entry: A+ = both aligned, A = one aligned, B+ = BOS alone.
+  grade: "A+" | "A" | "B+";
 };
 
 /** Win rate / P&L broken down by a grouping key (phase or session), so a
@@ -272,16 +276,40 @@ function simulateSession(
     return true;
   };
 
+  // Confirmed pivots need swingStrength bars of pullback on both sides, so on
+  // a clean, monotonic trend (no pullback yet to confirm a pivot in the trend
+  // direction) they never form in time. Fall back to the extreme of the bars
+  // seen so far this session, so a real break of structure can still be
+  // recognized before a pivot has confirmed — mirrors strategy.py.
+  const nearestStructure = (dir: "long" | "short"): number | null => {
+    if (dir === "short") {
+      if (pivotLows.length) return Math.min(...pivotLows.map((p) => p.price));
+      const prior = seen.slice(0, -1);
+      return prior.length ? Math.min(...prior.map((b) => b.l)) : null;
+    }
+    if (pivotHighs.length) return Math.max(...pivotHighs.map((p) => p.price));
+    const prior = seen.slice(0, -1);
+    return prior.length ? Math.max(...prior.map((b) => b.h)) : null;
+  };
+
   const breakOfStructure = (bar: Bar, dir: "long" | "short"): number | null => {
     const buffer = cfg.entry.breakBufferPoints;
-    if (dir === "short") {
-      if (!pivotLows.length) return null;
-      const level = Math.min(...pivotLows.map((p) => p.price));
-      return bar.c < level - buffer ? level : null;
-    }
-    if (!pivotHighs.length) return null;
-    const level = Math.max(...pivotHighs.map((p) => p.price));
+    const level = nearestStructure(dir);
+    if (level === null) return null;
+    if (dir === "short") return bar.c < level - buffer ? level : null;
     return bar.c > level + buffer ? level : null;
+  };
+
+  // HTF bias confluence: no separate HTF data feed exists, so approximate by
+  // aggregating the most recent htfBarMinutes 1-min bars into one synthetic
+  // candle and reading its direction. Grading confluence only, never a gate.
+  const htfBias = (): "long" | "short" | null => {
+    const n = cfg.entry.htfBarMinutes;
+    if (seen.length < n) return null;
+    const recent = seen.slice(-n);
+    if (recent[recent.length - 1].c > recent[0].o) return "long";
+    if (recent[recent.length - 1].c < recent[0].o) return "short";
+    return null;
   };
 
   // Per JJ's rule: the bracket is never moved, and a trade only ends by
@@ -355,9 +383,16 @@ function simulateSession(
     }
 
     if (!dir || !phase) continue;
-    if (!isDisplacement(seen.length - 1)) continue;
+    // Break of structure is the mandatory trigger — no BOS, no trade.
+    // Displacement and HTF bias are secondary confluences that only upgrade
+    // the setup grade; their absence must not block entry.
     const level = breakOfStructure(bar, dir);
     if (level === null) continue;
+    const displaced = isDisplacement(seen.length - 1);
+    const htfAligned = htfBias() === dir;
+    const confluences = Number(displaced) + Number(htfAligned);
+    const grade: SimTrade["grade"] = confluences === 2 ? "A+" : confluences === 1 ? "A" : "B+";
+    reason = `${reason}, ${displaced ? "displacement + " : ""}${htfAligned ? "HTF-aligned + " : ""}close through structure ${level.toFixed(2)}`;
 
     const entry = bar.c;
     const stop = dir === "long" ? entry - cfg.risk.stopPoints : entry + cfg.risk.stopPoints;
@@ -387,7 +422,8 @@ function simulateSession(
       win,
       pnlPoints: Math.round(pnlPoints * 100) / 100,
       pnlDollars: Math.round(pnlDollars * 100) / 100,
-      reason: `${reason}, displacement + close through structure ${level.toFixed(2)}`,
+      reason,
+      grade,
     });
 
     state.tradesCount++;
