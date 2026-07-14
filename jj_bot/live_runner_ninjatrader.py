@@ -10,9 +10,10 @@ NinjaTrader installed) — NinjaTrader has no Linux/headless mode.
 """
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -43,6 +44,15 @@ class _AccountState:
 
 
 class NinjaTraderLiveRunner:
+    # Daily risk counters (trades taken, consecutive losses, running P&L,
+    # rate-limit flags) live only on this object in memory, so a process
+    # restart mid-day would otherwise silently reset every daily limit back
+    # to zero — confirmed live: a restart let the bot re-enter after it
+    # should have already been stopped for the day. Persisted here, keyed by
+    # calendar date, and restored on startup only if the file's date matches
+    # today; a genuinely new day still starts from zero as before.
+    _DAILY_STATE_PATH = Path("daily_risk_state.json")
+
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
         self.client = NinjaTraderClient(cfg.ninjatrader)
@@ -53,6 +63,47 @@ class NinjaTraderLiveRunner:
         self._account_states: dict[str, _AccountState] = {}
         self._topstep_sims: dict[str, TopstepEvalSimulator] = {}
         self._contract: Optional[Contract] = None
+
+    def _save_daily_state(self, day: date) -> None:
+        payload = {
+            "date": day.isoformat(),
+            "trades_today": self.engine.trades_today,
+            "consecutive_losses": self.engine.consecutive_losses,
+            "day_pnl_points": self.engine.day_pnl_points,
+            "rate_limited": self.engine.rate_limited,
+            "accounts": {
+                account: {"day_pnl_dollars": state.day_pnl_dollars, "rate_limited": state.rate_limited}
+                for account, state in self._account_states.items()
+            },
+        }
+        try:
+            self._DAILY_STATE_PATH.write_text(json.dumps(payload))
+        except OSError:
+            logger.exception("Failed to persist daily risk state — limits won't survive a restart right now.")
+
+    def _restore_daily_state_if_same_day(self, day: date) -> None:
+        if not self._DAILY_STATE_PATH.exists():
+            return
+        try:
+            payload = json.loads(self._DAILY_STATE_PATH.read_text())
+        except (OSError, json.JSONDecodeError):
+            logger.exception("Failed to read persisted daily risk state — starting the day fresh.")
+            return
+        if payload.get("date") != day.isoformat():
+            return  # genuinely a new trading day — zeroed state from reset_day() is correct
+        self.engine.trades_today = payload.get("trades_today", 0)
+        self.engine.consecutive_losses = payload.get("consecutive_losses", 0)
+        self.engine.day_pnl_points = payload.get("day_pnl_points", 0.0)
+        self.engine.rate_limited = payload.get("rate_limited", False)
+        for account, saved in (payload.get("accounts") or {}).items():
+            state = self._account_states.get(account)
+            if state is not None:
+                state.day_pnl_dollars = saved.get("day_pnl_dollars", 0.0)
+                state.rate_limited = saved.get("rate_limited", False)
+        logger.info(
+            "Restored today's risk state after restart: trades_today=%d consecutive_losses=%d day_pnl=%.2f rate_limited=%s",
+            self.engine.trades_today, self.engine.consecutive_losses, self.engine.day_pnl_points, self.engine.rate_limited,
+        )
 
     def _topstep_sim_config(self) -> TopstepEvalSimConfig:
         te = self.cfg.topstep_eval
@@ -117,6 +168,7 @@ class NinjaTraderLiveRunner:
         bar = self._to_bar(row)
         day = bar.timestamp.date()
         if self._current_day != day:
+            is_process_startup = self._current_day is None
             logger.info("New trading day: %s — resetting strategy + all account state.", day)
             if self._current_day is not None:
                 # Feed yesterday's realized $ P&L into each account's
@@ -143,7 +195,10 @@ class NinjaTraderLiveRunner:
             self.engine.reset_day()
             for state in self._account_states.values():
                 state.reset_day()
+            if is_process_startup:
+                self._restore_daily_state_if_same_day(day)
             self._current_day = day
+            self._save_daily_state(day)
 
         logger.info(
             "Bar %s O:%.2f H:%.2f L:%.2f C:%.2f phase=%s",
@@ -231,3 +286,6 @@ class NinjaTraderLiveRunner:
 
         state.order_ids = None
         state.pending_signal = None
+
+        if self._current_day is not None:
+            self._save_daily_state(self._current_day)
