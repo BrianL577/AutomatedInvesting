@@ -51,7 +51,10 @@ class TopstepEvalSimConfig:
     # switch once passing consistently since the activation fee saved then
     # outweighs the higher monthly cost.
     no_activation_fee_monthly_fee: float = 95
-    pass_rate_switch_threshold: float = 0.33
+    # Default to 0.0 (always use the No-Activation-Fee plan, from attempt
+    # #1) per explicit user instruction — they'd rather pay the higher
+    # monthly fee than ever pay the $149 activation fee.
+    pass_rate_switch_threshold: float = 0.0
     # Funded-stage payout math.
     payout_share: float = 0.9
     max_payout_per_event: float = 2000
@@ -101,8 +104,12 @@ class TopstepEvalSimulator:
             if not self.state_path.exists():
                 return False
             data = json.loads(self.state_path.read_text())
-            for field_name in _STATE_FIELDS:
-                setattr(self, field_name, data[field_name])
+            # Validate every field is present before mutating self — an old
+            # state file missing newly-added fields must leave self
+            # untouched (truly fresh), not partially applied.
+            values = {field_name: data[field_name] for field_name in _STATE_FIELDS}
+            for field_name, value in values.items():
+                setattr(self, field_name, value)
             return True
         except Exception:
             logger.warning("%s Could not load saved state from %s — starting fresh.", self._tag(), self.state_path)

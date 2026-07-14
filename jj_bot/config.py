@@ -180,7 +180,7 @@ class TopstepEvalConfig:
     monthly_fee: float = 49
     activation_fee: float = 149
     no_activation_fee_monthly_fee: float = 95
-    pass_rate_switch_threshold: float = 0.33
+    pass_rate_switch_threshold: float = 0.0
     payout_share: float = 0.9
     max_payout_per_event: float = 2000
     max_payout_balance_share: float = 0.5

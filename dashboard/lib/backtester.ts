@@ -452,7 +452,7 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
   const monthlyFeeStandard = cfg.eval.monthlyFeeDollars ?? 49;
   const monthlyFeeNoActivation = cfg.eval.noActivationFeeMonthlyFeeDollars ?? 95;
   const activationFeeStandard = cfg.eval.fundedActivationFeeDollars ?? 149;
-  const passRateSwitchThreshold = cfg.eval.passRateSwitchThreshold ?? 0.33;
+  const passRateSwitchThreshold = cfg.eval.passRateSwitchThreshold ?? 0.0;
   const payoutShare = cfg.eval.payoutShareRatio ?? 0.9;
   const maxPayout = cfg.eval.maxPayoutPerEvent ?? 2000;
   const maxPayoutBalanceShare = cfg.eval.maxPayoutBalanceShare ?? 0.5;

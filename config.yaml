@@ -63,7 +63,7 @@ topstep_eval:                    # used by the backtester AND the live TopstepEv
   # reaches pass_rate_switch_threshold. Standard beginner advice: use the
   # cheap plan until you're consistently passing, then switch.
   no_activation_fee_monthly_fee: 95
-  pass_rate_switch_threshold: 0.33
+  pass_rate_switch_threshold: 0.0
   payout_share: 0.9
   max_payout_per_event: 2000
   max_payout_balance_share: 0.5
