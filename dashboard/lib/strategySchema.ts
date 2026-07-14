@@ -84,7 +84,10 @@ export const StrategyConfigSchema = z
         swingStrength: z.number().int().min(1).max(10),
         breakBufferPoints: z.number().min(0).max(50),
         minExtensionPoints: z.number().min(0).max(500),
-        htfBarMinutes: z.number().int().min(1).max(60),
+        // Added after some strategies were already saved to Supabase without
+        // this field — default it instead of requiring it, so pre-existing
+        // saved strategies don't fail validation (400 "failed validation").
+        htfBarMinutes: z.number().int().min(1).max(60).default(5),
       })
       .strict(),
     risk: z
