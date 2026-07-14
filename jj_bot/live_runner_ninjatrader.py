@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .config import AppConfig
+from .config import AppConfig, reload_strategy_and_risk
 from .models import Bar, Direction, Signal, TradeResult
 from .ninjatrader_client import BracketOrderIds, Contract, NinjaTraderClient
 from .strategy import StrategyEngine
@@ -125,6 +125,21 @@ class NinjaTraderLiveRunner:
                     sim = self._topstep_sims.get(state.account)
                     if sim is not None:
                         sim.record_day(state.day_pnl_dollars)
+            # Pick up a strategy switched on the dashboard since this
+            # process started — only at this once-a-day boundary, never
+            # mid-session, so a strategy swap never lands on top of an
+            # already-open position or a bracket sized under the old
+            # strategy's stop/target.
+            try:
+                new_strategy, new_risk = reload_strategy_and_risk(self.cfg.config_path)
+                if new_strategy != self.cfg.strategy or new_risk != self.cfg.risk:
+                    logger.info("Active strategy/risk changed since startup — applying for the new trading day.")
+                self.cfg.strategy = new_strategy
+                self.cfg.risk = new_risk
+                self.engine.strategy_cfg = new_strategy
+                self.engine.risk_cfg = new_risk
+            except Exception:
+                logger.exception("Failed to reload active strategy for the new trading day — keeping prior config.")
             self.engine.reset_day()
             for state in self._account_states.values():
                 state.reset_day()
