@@ -10,13 +10,17 @@ NinjaTrader installed) — NinjaTrader has no Linux/headless mode.
 """
 from __future__ import annotations
 
+import ctypes
+import json
+import os
+import sys
 import threading
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
-from .config import AppConfig
+from .config import AppConfig, reload_strategy_and_risk
 from .models import Bar, Direction, Signal, TradeResult
 from .ninjatrader_client import BracketOrderIds, Contract, NinjaTraderClient
 from .strategy import StrategyEngine
@@ -25,6 +29,17 @@ from .trade_logger import TradeLogger
 from .logging_setup import setup_logging
 
 logger = setup_logging()
+
+
+def _pid_is_running(pid: int) -> bool:
+    """Windows-safe liveness check for a PID (os.kill(pid, 0) doesn't work
+    the same way on Windows, so use OpenProcess instead)."""
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if handle:
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    return False
 
 
 @dataclass
@@ -43,6 +58,23 @@ class _AccountState:
 
 
 class NinjaTraderLiveRunner:
+    # Daily risk counters (trades taken, consecutive losses, running P&L,
+    # rate-limit flags) live only on this object in memory, so a process
+    # restart mid-day would otherwise silently reset every daily limit back
+    # to zero — confirmed live: a restart let the bot re-enter after it
+    # should have already been stopped for the day. Persisted here, keyed by
+    # calendar date, and restored on startup only if the file's date matches
+    # today; a genuinely new day still starts from zero as before.
+    _DAILY_STATE_PATH = Path("daily_risk_state.json")
+
+    # Single-instance guard. Confirmed live: running a second copy of
+    # run_live.py (e.g. a leftover terminal + the scheduled task both alive)
+    # let two processes each think they were under the daily trade/loss cap
+    # independently, stacking multiple brackets on the same signal. This
+    # lock makes a second instance refuse to start instead of silently
+    # trading alongside the first one.
+    _LOCK_PATH = Path("run_live.lock")
+
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
         self.client = NinjaTraderClient(cfg.ninjatrader)
@@ -53,6 +85,91 @@ class NinjaTraderLiveRunner:
         self._account_states: dict[str, _AccountState] = {}
         self._topstep_sims: dict[str, TopstepEvalSimulator] = {}
         self._contract: Optional[Contract] = None
+        self._holds_lock = False
+
+    def _acquire_single_instance_lock(self) -> None:
+        if self._LOCK_PATH.exists():
+            try:
+                old_pid = int(self._LOCK_PATH.read_text().strip())
+            except (ValueError, OSError):
+                old_pid = None
+            if old_pid is not None and _pid_is_running(old_pid):
+                logger.error(
+                    "Another instance is already running (PID %d, lock file %s). "
+                    "Refusing to start a second instance — check Task Manager / Task Scheduler "
+                    "before forcing this.",
+                    old_pid, self._LOCK_PATH,
+                )
+                sys.exit(1)
+            logger.warning(
+                "Stale lock file found (PID %s no longer running) — removing and continuing.",
+                old_pid,
+            )
+        self._LOCK_PATH.write_text(str(os.getpid()))
+        self._holds_lock = True
+
+    def _release_single_instance_lock(self) -> None:
+        if not self._holds_lock:
+            return
+        try:
+            if self._LOCK_PATH.exists() and self._LOCK_PATH.read_text().strip() == str(os.getpid()):
+                self._LOCK_PATH.unlink()
+        except OSError:
+            logger.exception("Failed to remove lock file on shutdown — remove %s manually before next start.", self._LOCK_PATH)
+        self._holds_lock = False
+
+    def _save_daily_state(self, day: date) -> None:
+        payload = {
+            "date": day.isoformat(),
+            "trades_today": self.engine.trades_today,
+            "consecutive_losses": self.engine.consecutive_losses,
+            "day_pnl_points": self.engine.day_pnl_points,
+            "rate_limited": self.engine.rate_limited,
+            "accounts": {
+                account: {"day_pnl_dollars": state.day_pnl_dollars, "rate_limited": state.rate_limited}
+                for account, state in self._account_states.items()
+            },
+        }
+        # Atomic write: write to a temp file, then replace() the real file
+        # in one filesystem op. Avoids the PermissionError / partial-write
+        # corruption seen when something else (a second instance, an
+        # antivirus scan, etc.) briefly holds the file open.
+        tmp_path = self._DAILY_STATE_PATH.with_suffix(".json.tmp")
+        try:
+            tmp_path.write_text(json.dumps(payload))
+            tmp_path.replace(self._DAILY_STATE_PATH)
+        except OSError:
+            logger.exception("Failed to persist daily risk state — limits won't survive a restart right now.")
+        finally:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+
+    def _restore_daily_state_if_same_day(self, day: date) -> None:
+        if not self._DAILY_STATE_PATH.exists():
+            return
+        try:
+            payload = json.loads(self._DAILY_STATE_PATH.read_text())
+        except (OSError, json.JSONDecodeError):
+            logger.exception("Failed to read persisted daily risk state — starting the day fresh.")
+            return
+        if payload.get("date") != day.isoformat():
+            return  # genuinely a new trading day — zeroed state from reset_day() is correct
+        self.engine.trades_today = payload.get("trades_today", 0)
+        self.engine.consecutive_losses = payload.get("consecutive_losses", 0)
+        self.engine.day_pnl_points = payload.get("day_pnl_points", 0.0)
+        self.engine.rate_limited = payload.get("rate_limited", False)
+        for account, saved in (payload.get("accounts") or {}).items():
+            state = self._account_states.get(account)
+            if state is not None:
+                state.day_pnl_dollars = saved.get("day_pnl_dollars", 0.0)
+                state.rate_limited = saved.get("rate_limited", False)
+        logger.info(
+            "Restored today's risk state after restart: trades_today=%d consecutive_losses=%d day_pnl=%.2f rate_limited=%s",
+            self.engine.trades_today, self.engine.consecutive_losses, self.engine.day_pnl_points, self.engine.rate_limited,
+        )
 
     def _topstep_sim_config(self) -> TopstepEvalSimConfig:
         te = self.cfg.topstep_eval
@@ -76,6 +193,13 @@ class NinjaTraderLiveRunner:
         )
 
     def start(self) -> None:
+        self._acquire_single_instance_lock()
+        try:
+            self._start_inner()
+        finally:
+            self._release_single_instance_lock()
+
+    def _start_inner(self) -> None:
         logger.info("Connecting to NinjaTrader ATI ...")
         self.client.connect()
         self._account_states = {a: _AccountState(account=a) for a in self.client.accounts}
@@ -117,6 +241,7 @@ class NinjaTraderLiveRunner:
         bar = self._to_bar(row)
         day = bar.timestamp.date()
         if self._current_day != day:
+            is_process_startup = self._current_day is None
             logger.info("New trading day: %s — resetting strategy + all account state.", day)
             if self._current_day is not None:
                 # Feed yesterday's realized $ P&L into each account's
@@ -125,10 +250,28 @@ class NinjaTraderLiveRunner:
                     sim = self._topstep_sims.get(state.account)
                     if sim is not None:
                         sim.record_day(state.day_pnl_dollars)
+            # Pick up a strategy switched on the dashboard since this
+            # process started — only at this once-a-day boundary, never
+            # mid-session, so a strategy swap never lands on top of an
+            # already-open position or a bracket sized under the old
+            # strategy's stop/target.
+            try:
+                new_strategy, new_risk = reload_strategy_and_risk(self.cfg.config_path)
+                if new_strategy != self.cfg.strategy or new_risk != self.cfg.risk:
+                    logger.info("Active strategy/risk changed since startup — applying for the new trading day.")
+                self.cfg.strategy = new_strategy
+                self.cfg.risk = new_risk
+                self.engine.strategy_cfg = new_strategy
+                self.engine.risk_cfg = new_risk
+            except Exception:
+                logger.exception("Failed to reload active strategy for the new trading day — keeping prior config.")
             self.engine.reset_day()
             for state in self._account_states.values():
                 state.reset_day()
+            if is_process_startup:
+                self._restore_daily_state_if_same_day(day)
             self._current_day = day
+            self._save_daily_state(day)
 
         logger.info(
             "Bar %s O:%.2f H:%.2f L:%.2f C:%.2f phase=%s",
@@ -216,3 +359,6 @@ class NinjaTraderLiveRunner:
 
         state.order_ids = None
         state.pending_signal = None
+
+        if self._current_day is not None:
+            self._save_daily_state(self._current_day)
