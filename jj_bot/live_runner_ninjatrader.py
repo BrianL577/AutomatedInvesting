@@ -362,6 +362,15 @@ class NinjaTraderLiveRunner:
 
         signal = state.pending_signal
         exit_price = float(row["price"])
+        # Filled quantity from the exit leg — critical for correct P&L.
+        # Confirmed live: this was previously ignored entirely, so a
+        # 2-contract trade's dollar P&L (and therefore the daily loss/
+        # profit cap check) was silently computed as if only 1 contract
+        # had been traded, understating real risk by the contract count.
+        try:
+            filled_qty = int(float(row.get("qty") or self.cfg.risk.contracts_per_trade))
+        except (TypeError, ValueError):
+            filled_qty = self.cfg.risk.contracts_per_trade
         # Determine win/loss by which known exit level the fill price is
         # actually closer to, rather than trying to identify which specific
         # leg (stop vs. target) filled — we no longer have a reliable
@@ -380,7 +389,7 @@ class NinjaTraderLiveRunner:
         self.trade_logger.log_trade(result, account_name=account)
         self.engine.record_trade_result(win, pnl_points=pnl_points)
 
-        pnl_dollars = pnl_points * self.dollar_per_point
+        pnl_dollars = pnl_points * self.dollar_per_point * filled_qty
         state.day_pnl_dollars += pnl_dollars
         if state.day_pnl_dollars >= self.cfg.risk.daily_profit_cap:
             state.rate_limited = True
@@ -390,8 +399,8 @@ class NinjaTraderLiveRunner:
             logger.info("Account %s hit daily loss cap ($%.2f) — done for the day.", account, state.day_pnl_dollars)
 
         logger.info(
-            "Trade closed on %s: %s pnl=%.2f pts ($%.2f) win=%s day_pnl=$%.2f",
-            account, signal.direction.value, pnl_points, pnl_dollars, win, state.day_pnl_dollars,
+            "Trade closed on %s: %s qty=%d pnl=%.2f pts ($%.2f) win=%s day_pnl=$%.2f",
+            account, signal.direction.value, filled_qty, pnl_points, pnl_dollars, win, state.day_pnl_dollars,
         )
 
         state.order_ids = None
