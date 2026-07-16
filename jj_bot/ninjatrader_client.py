@@ -206,6 +206,18 @@ def _read_csv_rows(path: Path) -> list[dict]:
     if not path.exists() or path.stat().st_size == 0:
         return []
     with open(path, newline="") as f:
-        return list(csv.DictReader(f, fieldnames=["timestamp", "open", "high", "low", "close", "volume"])) \
-            if path.name == "bars.csv" else \
-            list(csv.DictReader(f, fieldnames=["timestamp", "order_id", "account", "action", "price", "qty"]))
+        if path.name == "bars.csv":
+            return list(csv.DictReader(f, fieldnames=["timestamp", "open", "high", "low", "close", "volume"]))
+        # fills.csv: NinjaTrader's Order.Name is never populated for orders
+        # placed via ATI's OIF interface (confirmed live — every jjbot-*
+        # order showed a blank Name in the Orders grid, so the old
+        # order_id-keyed matching in _on_fill() could never succeed and
+        # every fill was silently dropped, including real money-losing
+        # trades). Order.Oco IS reliably populated for ATI orders — see the
+        # Log tab entries like Oco='jjbot-oco-...' throughout a live
+        # session — so the exporter now writes that instead, plus
+        # order_state so the caller can ignore the auto-cancelled leg of
+        # an OCO pair rather than misreading it as a second fill.
+        return list(csv.DictReader(f, fieldnames=[
+            "timestamp", "oco_id", "account", "action", "price", "qty", "order_state",
+        ]))
