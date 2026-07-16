@@ -36,6 +36,7 @@ using System.IO;
 using NinjaTrader.Cbi;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.NinjaScript.Indicators;
+using System.Linq;
 #endregion
 
 namespace NinjaTrader.NinjaScript.Indicators
@@ -79,7 +80,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             else if (State == State.DataLoaded)
             {
-                account = Account.All.Find(a => a.Name == AccountName);
+                account = Account.All.FirstOrDefault(a => a.Name == AccountName);
                 if (account != null)
                     account.ExecutionUpdate += OnExecutionUpdate;
             }
