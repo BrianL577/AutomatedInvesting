@@ -10,7 +10,10 @@ NinjaTrader installed) — NinjaTrader has no Linux/headless mode.
 """
 from __future__ import annotations
 
+import ctypes
 import json
+import os
+import sys
 import threading
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -26,6 +29,17 @@ from .trade_logger import TradeLogger
 from .logging_setup import setup_logging
 
 logger = setup_logging()
+
+
+def _pid_is_running(pid: int) -> bool:
+    """Windows-safe liveness check for a PID (os.kill(pid, 0) doesn't work
+    the same way on Windows, so use OpenProcess instead)."""
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if handle:
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    return False
 
 
 @dataclass
@@ -53,6 +67,14 @@ class NinjaTraderLiveRunner:
     # today; a genuinely new day still starts from zero as before.
     _DAILY_STATE_PATH = Path("daily_risk_state.json")
 
+    # Single-instance guard. Confirmed live: running a second copy of
+    # run_live.py (e.g. a leftover terminal + the scheduled task both alive)
+    # let two processes each think they were under the daily trade/loss cap
+    # independently, stacking multiple brackets on the same signal. This
+    # lock makes a second instance refuse to start instead of silently
+    # trading alongside the first one.
+    _LOCK_PATH = Path("run_live.lock")
+
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
         self.client = NinjaTraderClient(cfg.ninjatrader)
@@ -63,6 +85,62 @@ class NinjaTraderLiveRunner:
         self._account_states: dict[str, _AccountState] = {}
         self._topstep_sims: dict[str, TopstepEvalSimulator] = {}
         self._contract: Optional[Contract] = None
+        self._holds_lock = False
+
+    def _acquire_single_instance_lock(self) -> None:
+        if self._LOCK_PATH.exists():
+            try:
+                old_pid = int(self._LOCK_PATH.read_text().strip())
+            except (ValueError, OSError):
+                old_pid = None
+            if old_pid is not None and _pid_is_running(old_pid):
+                logger.error(
+                    "Another instance is already running (PID %d, lock file %s). "
+                    "Refusing to start a second instance — check Task Manager / Task Scheduler "
+                    "before forcing this.",
+                    old_pid, self._LOCK_PATH,
+                )
+                sys.exit(1)
+            logger.warning(
+                "Stale lock file found (PID %s no longer running) — removing and continuing.",
+                old_pid,
+            )
+            try:
+                self._LOCK_PATH.unlink()
+            except OSError:
+                # The file may be owned by a different user/session (e.g. a
+                # prior run under Task Scheduler's SYSTEM/other-user
+                # context) and not deletable by this user. Don't crash the
+                # whole bot over a lock-file permission issue — log it
+                # loudly and continue rather than exiting, since a false
+                # "can't start" is worse than a rare missed duplicate check
+                # here (the PID-liveness check above already confirmed the
+                # old owner is dead).
+                logger.exception(
+                    "Could not remove stale lock file %s — you may need to delete it manually "
+                    "(e.g. 'del %s' from an elevated prompt). Continuing anyway since the prior "
+                    "owner (PID %s) is confirmed not running.",
+                    self._LOCK_PATH, self._LOCK_PATH, old_pid,
+                )
+        try:
+            self._LOCK_PATH.write_text(str(os.getpid()))
+            self._holds_lock = True
+        except OSError:
+            logger.exception(
+                "Could not write lock file %s — single-instance protection is NOT active "
+                "for this run. Fix file permissions before relying on this safeguard.",
+                self._LOCK_PATH,
+            )
+
+    def _release_single_instance_lock(self) -> None:
+        if not self._holds_lock:
+            return
+        try:
+            if self._LOCK_PATH.exists() and self._LOCK_PATH.read_text().strip() == str(os.getpid()):
+                self._LOCK_PATH.unlink()
+        except OSError:
+            logger.exception("Failed to remove lock file on shutdown — remove %s manually before next start.", self._LOCK_PATH)
+        self._holds_lock = False
 
     def _save_daily_state(self, day: date) -> None:
         payload = {
@@ -76,10 +154,22 @@ class NinjaTraderLiveRunner:
                 for account, state in self._account_states.items()
             },
         }
+        # Atomic write: write to a temp file, then replace() the real file
+        # in one filesystem op. Avoids the PermissionError / partial-write
+        # corruption seen when something else (a second instance, an
+        # antivirus scan, etc.) briefly holds the file open.
+        tmp_path = self._DAILY_STATE_PATH.with_suffix(".json.tmp")
         try:
-            self._DAILY_STATE_PATH.write_text(json.dumps(payload))
+            tmp_path.write_text(json.dumps(payload))
+            tmp_path.replace(self._DAILY_STATE_PATH)
         except OSError:
             logger.exception("Failed to persist daily risk state — limits won't survive a restart right now.")
+        finally:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
 
     def _restore_daily_state_if_same_day(self, day: date) -> None:
         if not self._DAILY_STATE_PATH.exists():
@@ -127,6 +217,13 @@ class NinjaTraderLiveRunner:
         )
 
     def start(self) -> None:
+        self._acquire_single_instance_lock()
+        try:
+            self._start_inner()
+        finally:
+            self._release_single_instance_lock()
+
+    def _start_inner(self) -> None:
         logger.info("Connecting to NinjaTrader ATI ...")
         self.client.connect()
         self._account_states = {a: _AccountState(account=a) for a in self.client.accounts}
