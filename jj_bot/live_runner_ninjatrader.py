@@ -105,8 +105,32 @@ class NinjaTraderLiveRunner:
                 "Stale lock file found (PID %s no longer running) — removing and continuing.",
                 old_pid,
             )
-        self._LOCK_PATH.write_text(str(os.getpid()))
-        self._holds_lock = True
+            try:
+                self._LOCK_PATH.unlink()
+            except OSError:
+                # The file may be owned by a different user/session (e.g. a
+                # prior run under Task Scheduler's SYSTEM/other-user
+                # context) and not deletable by this user. Don't crash the
+                # whole bot over a lock-file permission issue — log it
+                # loudly and continue rather than exiting, since a false
+                # "can't start" is worse than a rare missed duplicate check
+                # here (the PID-liveness check above already confirmed the
+                # old owner is dead).
+                logger.exception(
+                    "Could not remove stale lock file %s — you may need to delete it manually "
+                    "(e.g. 'del %s' from an elevated prompt). Continuing anyway since the prior "
+                    "owner (PID %s) is confirmed not running.",
+                    self._LOCK_PATH, self._LOCK_PATH, old_pid,
+                )
+        try:
+            self._LOCK_PATH.write_text(str(os.getpid()))
+            self._holds_lock = True
+        except OSError:
+            logger.exception(
+                "Could not write lock file %s — single-instance protection is NOT active "
+                "for this run. Fix file permissions before relying on this safeguard.",
+                self._LOCK_PATH,
+            )
 
     def _release_single_instance_lock(self) -> None:
         if not self._holds_lock:
