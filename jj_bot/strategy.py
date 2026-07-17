@@ -93,9 +93,16 @@ class StrategyEngine:
         self.rate_limited = False
 
     def _dollar_per_point(self) -> float:
+        # Per-contract dollar value times contracts_per_trade — the daily
+        # profit/loss cap check below is against real account dollars, and
+        # config.yaml explicitly runs 2 contracts/trade ("never 1
+        # contract"), so omitting this multiplier would let the cap take
+        # 2x the intended points move to trip (confirmed: the live runner's
+        # own per-fill P&L calc already applies this same multiplier via
+        # filled_qty — this was the one place still missing it).
         if self.instrument_cfg is None or self.instrument_cfg.tick_size <= 0:
             return 1.0
-        return self.instrument_cfg.tick_value / self.instrument_cfg.tick_size
+        return (self.instrument_cfg.tick_value / self.instrument_cfg.tick_size) * self.risk_cfg.contracts_per_trade
 
     def record_trade_result(self, win: bool, pnl_points: float = 0.0) -> None:
         self.trades_today += 1

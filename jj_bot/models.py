@@ -83,3 +83,9 @@ class TradeResult:
     exit_timestamp: datetime
     win: bool
     pnl_points: float
+    # Actual filled quantity for this trade. Defaults to 1 so existing
+    # single-contract callers (e.g. backtest.py) are unaffected; live
+    # callers should pass the real filled qty so TradeLogger's persisted
+    # $ P&L (what the dashboard displays) isn't silently understated for
+    # multi-contract trades.
+    qty: int = 1

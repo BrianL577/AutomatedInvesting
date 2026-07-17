@@ -173,12 +173,12 @@ class LiveRunner:
                 win = pnl_points > 0
                 result = TradeResult(
                     signal=signal, exit_price=exit_price, exit_timestamp=datetime.now(),
-                    win=win, pnl_points=pnl_points,
+                    win=win, pnl_points=pnl_points, qty=self.cfg.risk.contracts_per_trade,
                 )
                 self.trade_logger.log_trade(result, account_name=state.account.name)
                 self.engine.record_trade_result(win, pnl_points=pnl_points)
 
-                pnl_dollars = pnl_points * self.dollar_per_point
+                pnl_dollars = pnl_points * self.dollar_per_point * self.cfg.risk.contracts_per_trade
                 state.day_pnl_dollars += pnl_dollars
                 if state.day_pnl_dollars >= self.cfg.risk.daily_profit_cap:
                     state.rate_limited = True
