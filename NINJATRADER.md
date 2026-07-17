@@ -1,11 +1,12 @@
 # Running against NinjaTrader (free sim account)
 
 NinjaTrader gives you a free, no-funding-required simulated futures account
-(`Sim101`) with real NQ market data and a much friendlier signup than IBKR.
-The tradeoff: **NinjaTrader is Windows-only desktop software** — there's no
-Linux or headless mode, so unlike IBKR/Tradovate, you cannot host this on
-Railway. The bot has to run on the same Windows machine as NinjaTrader (or a
-Windows VPS with NinjaTrader installed and always running).
+(`Sim101`, or a TopStep demo account) with real NQ market data and an easy
+signup. The tradeoff: **NinjaTrader is Windows-only desktop software** —
+there's no Linux or headless mode, so unlike Tradovate, you cannot host
+this on Railway. The bot has to run on the same Windows machine as
+NinjaTrader (or a Windows VPS with NinjaTrader installed and always
+running).
 
 `BROKER=ninjatrader` in `.env` selects this broker. Everything else
 (strategy engine, dashboard, Strategy Creator, Supabase trade log) is
@@ -16,7 +17,7 @@ identical regardless of broker.
 1. Download NinjaTrader 8 from ninjatrader.com (free) and create an account
    — no funding required, this is just a software license signup.
 2. Launch NinjaTrader. It comes with a `Sim101` simulated account by
-   default — no separate paper-account activation step like IBKR.
+   default — no separate paper-account activation step needed.
 3. Open a chart for the NQ front-month contract (e.g. search "NQ 12-26" —
    use whatever the current front-month contract is) at a 1-minute
    timeframe.
@@ -62,11 +63,11 @@ data), and `fills.csv`.
    - **Account Name**: your sim account (e.g. `DEMO8217187` or `Sim101`) — must match the account name saved on the dashboard's My Accounts page, or `NT_ACCOUNT_NAMES` if set.
    - **Export History**: leave **OFF** on this chart — this is the live
      trading chart; historical export is a separate, optional step (§6).
-7. Leave the chart open with the indicator attached — this is what keeps
-   `bars.csv`/`fills.csv` updating live, similar to how IB Gateway has to
-   stay logged in for IBKR. Because "Days to load" is small, `bars.csv`
-   starts filling with genuinely live bars within a minute or two, not
-   after a long historical replay.
+7. Leave the chart open with the indicator attached and NinjaTrader
+   connected — this is what keeps `bars.csv`/`fills.csv` updating live.
+   Because "Days to load" is small, `bars.csv` starts filling with
+   genuinely live bars within a minute or two, not after a long historical
+   replay.
 
 ## 4. Configure the bot
 
@@ -80,7 +81,7 @@ NT_INSTRUMENT=NQ 12-26
 
 `NT_INSTRUMENT` must be the exact NinjaTrader instrument name for the
 current front-month contract (ATI has no contract-lookup command, unlike
-IBKR/Tradovate) — update this each time the front-month contract rolls
+Tradovate) — update this each time the front-month contract rolls
 (quarterly for NQ).
 
 ## 5. Test the connection
@@ -204,6 +205,5 @@ regardless of which machine runs the bot — see `README.md`.
 ## Moving to Tradovate/TopStep later
 
 Nothing about the strategy engine, backtester, or dashboard is
-NinjaTrader-specific — switch `BROKER=tradovate` (or back to `ibkr`) and
-fill in that broker's env vars whenever you're ready; everything else keeps
-working unchanged.
+NinjaTrader-specific — switch `BROKER=tradovate` and fill in that broker's
+env vars whenever you're ready; everything else keeps working unchanged.

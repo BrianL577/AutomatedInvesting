@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run the strategy live against a paper trading account.
 
-Broker is selected via BROKER env var (or config.broker) — "ibkr" (default,
-free paper trading via TWS/IB Gateway) or "tradovate" (requires a funded
-live account + paid API add-on; demo env only).
+Broker is selected via BROKER env var (or config.broker) — "ninjatrader"
+(default, via the free ATI + companion NinjaScript exporter) or "tradovate"
+(requires a funded live account + paid API add-on; demo env only).
 
 Usage:
     python scripts/run_live.py --symbol NQ
@@ -28,11 +28,7 @@ def main() -> None:
     if args.symbol:
         cfg.instrument.symbol = args.symbol
 
-    if cfg.broker == "ibkr":
-        from jj_bot.live_runner_ibkr import IBKRLiveRunner
-
-        runner = IBKRLiveRunner(cfg)
-    elif cfg.broker == "ninjatrader":
+    if cfg.broker == "ninjatrader":
         from jj_bot.live_runner_ninjatrader import NinjaTraderLiveRunner
 
         runner = NinjaTraderLiveRunner(cfg)
@@ -43,7 +39,7 @@ def main() -> None:
 
         runner = LiveRunner(cfg)
     else:
-        raise SystemExit(f"Unknown BROKER '{cfg.broker}'. Use 'ibkr', 'ninjatrader', or 'tradovate'.")
+        raise SystemExit(f"Unknown BROKER '{cfg.broker}'. Use 'ninjatrader' or 'tradovate'.")
 
     runner.start()
 

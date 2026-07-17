@@ -35,22 +35,26 @@ with it, trades appear live. See `supabase/schema.sql`:
 
 ## 3. Set environment variables (on both services)
 
-**If using IBKR (default, `BROKER=ibkr`)**: you also need an IB Gateway
-process reachable from the worker — read `IBKR.md` first, since this
-usually means a *third* Railway service (a community IB Gateway+IBC Docker
-image) that the worker connects to over Railway's private networking.
-`IBKR_HOST` then points at that service's internal hostname, not
-`127.0.0.1`.
+**Note:** NinjaTrader (`BROKER=ninjatrader`) cannot be hosted on Railway —
+NinjaTrader is Windows-only desktop software with no headless/Linux mode,
+so a NinjaTrader-based trading worker must run on your own Windows machine
+(or a Windows VPS with NinjaTrader installed) instead of Railway. This
+Railway setup is for `BROKER=tradovate` only.
 
-In each Railway service → Variables, add everything from `.env.example`:
+In each Railway service → Variables, add everything from `.env.example`,
+once you've funded a live Tradovate account and bought API access:
 
 ```
-BROKER=ibkr
-
-IBKR_HOST=<your ib-gateway service's internal hostname>
-IBKR_PORT=4002
-IBKR_CLIENT_ID=1
-IBKR_ACCOUNT_NAMES=DU1234567
+BROKER=tradovate
+TRADOVATE_ENV=demo
+TRADOVATE_USERNAME=...
+TRADOVATE_PASSWORD=...
+TRADOVATE_APP_ID=...
+TRADOVATE_APP_VERSION=1.0
+TRADOVATE_CID=...
+TRADOVATE_SEC=...
+TRADOVATE_DEVICE_ID=jj-bot-01
+TRADOVATE_ACCOUNT_NAMES=DEMO12345,DEMO67890
 
 SUPABASE_URL=https://xxxx.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=...
@@ -74,30 +78,15 @@ SMTP_PASSWORD=<Gmail App Password from myaccount.google.com/apppasswords>
 ALERT_EMAIL_TO=you@gmail.com
 ```
 
-Or, once you've funded a live Tradovate account and bought API access:
-
-```
-BROKER=tradovate
-TRADOVATE_ENV=demo
-TRADOVATE_USERNAME=...
-TRADOVATE_PASSWORD=...
-TRADOVATE_APP_ID=...
-TRADOVATE_APP_VERSION=1.0
-TRADOVATE_CID=...
-TRADOVATE_SEC=...
-TRADOVATE_DEVICE_ID=jj-bot-01
-TRADOVATE_ACCOUNT_NAMES=DEMO12345,DEMO67890
-```
-
 **Never put these in chat, a commit, or anywhere public** — set them
 directly in Railway's Variables UI.
 
 ## 4. Deploy and verify
 
 1. Deploy both/all services.
-2. Check the worker's logs — for IBKR it should log `Connecting to IBKR at
-   ...`, then `Trading N paper account(s): [...]`, then `Streaming live
-   bars.` (Tradovate: `Authenticating with Tradovate...` instead.)
+2. Check the worker's logs — it should log `Authenticating with
+   Tradovate...`, then `Trading N paper account(s): [...]`, then
+   `Streaming live bars.`
 3. Before market open, run a connection test to confirm the pipeline
    actually reaches your account (from your own machine, pointed at the
    same `.env` values, or via the Bot API service once deployed):
@@ -117,15 +106,13 @@ directly in Railway's Variables UI.
 
 ## Notes
 
-- The worker process holds a live connection to your broker (IB Gateway
-  socket, or Tradovate's WebSocket market data feed) and runs for as long
-  as Railway keeps the service alive. Railway restarts crashed services
-  automatically — that's the main reason to run this here instead of a
-  machine you might close.
-- This trades every account listed in `IBKR_ACCOUNT_NAMES` /
-  `TRADOVATE_ACCOUNT_NAMES`. Each account has its own $1,520 profit cap /
-  $1,000 loss cap (`config.yaml` → `risk.daily_profit_cap` /
-  `daily_loss_cap`) and stops trading independently once it hits either.
-- Paper only: IBKR refuses to run if any resolved account isn't a paper
-  account (IDs must start with `DU`/`DF`); `TRADOVATE_ENV` must stay
-  `demo`.
+- The worker process holds a live connection to Tradovate's WebSocket
+  market data feed and runs for as long as Railway keeps the service alive.
+  Railway restarts crashed services automatically — that's the main reason
+  to run this here instead of a machine you might close.
+- This trades every account listed in `TRADOVATE_ACCOUNT_NAMES`. Each
+  account has its own $1,520 profit cap / $1,000 loss cap (`config.yaml` →
+  `risk.daily_profit_cap` / `daily_loss_cap`) and stops trading
+  independently once it hits either.
+- Demo only: `TRADOVATE_ENV` must stay `demo` — this bot refuses to run
+  against a live Tradovate account.
