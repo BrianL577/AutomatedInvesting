@@ -36,6 +36,7 @@ using System.IO;
 using NinjaTrader.Cbi;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.NinjaScript.Indicators;
+using System.Linq;
 #endregion
 
 namespace NinjaTrader.NinjaScript.Indicators
@@ -79,7 +80,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             else if (State == State.DataLoaded)
             {
-                account = Account.All.Find(a => a.Name == AccountName);
+                account = Account.All.FirstOrDefault(a => a.Name == AccountName);
                 if (account != null)
                     account.ExecutionUpdate += OnExecutionUpdate;
             }
@@ -118,10 +119,19 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void OnExecutionUpdate(object sender, ExecutionEventArgs e)
         {
+            // Order.Name is never populated for orders placed via ATI's OIF
+            // interface (confirmed live — every jjbot-* order showed a blank
+            // Name in the Orders grid, so matching fills by order_id could
+            // never succeed and every fill was silently dropped). Order.Oco
+            // IS reliably populated, so the Python side now matches on that
+            // instead — see jj_bot/ninjatrader_client.py's fills.csv reader.
+            // OrderState lets the caller ignore the auto-cancelled leg of an
+            // OCO pair instead of misreading it as a second fill.
             string line = string.Format(
-                "{0:yyyy-MM-ddTHH:mm:ss},{1},{2},{3},{4},{5}\n",
-                e.Execution.Time, e.Execution.Order.Name, AccountName,
-                e.Execution.Order.OrderAction, e.Execution.Price, e.Execution.Quantity);
+                "{0:yyyy-MM-ddTHH:mm:ss},{1},{2},{3},{4},{5},{6}\n",
+                e.Execution.Time, e.Execution.Order.Oco, AccountName,
+                e.Execution.Order.OrderAction, e.Execution.Price, e.Execution.Quantity,
+                e.Execution.Order.OrderState);
             File.AppendAllText(fillsPath, line);
         }
     }
