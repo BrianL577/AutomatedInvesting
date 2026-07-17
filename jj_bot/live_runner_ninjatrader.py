@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from .config import AppConfig, reload_strategy_and_risk
 from .models import Bar, Direction, Signal, TradeResult
@@ -29,6 +30,13 @@ from .trade_logger import TradeLogger
 from .logging_setup import setup_logging
 
 logger = setup_logging()
+
+# bars.csv timestamps are naive but represent America/New_York local time
+# (matching config.yaml's strategy.timezone and session_open) — convert to
+# Pacific before taking the calendar date so the trading day boundary
+# (risk resets, done_for_day) rolls over at midnight PST, not midnight ET.
+_BAR_SOURCE_TZ = ZoneInfo("America/New_York")
+_TRADING_DAY_TZ = ZoneInfo("America/Los_Angeles")
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -263,7 +271,7 @@ class NinjaTraderLiveRunner:
 
     def _on_bar(self, row: dict) -> None:
         bar = self._to_bar(row)
-        day = bar.timestamp.date()
+        day = bar.timestamp.replace(tzinfo=_BAR_SOURCE_TZ).astimezone(_TRADING_DAY_TZ).date()
         if self._current_day != day:
             is_process_startup = self._current_day is None
             logger.info("New trading day: %s — resetting strategy + all account state.", day)
