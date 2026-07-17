@@ -59,6 +59,12 @@ class StrategyEngine:
     open_bar: Optional[Bar] = None
     open_price: Optional[float] = None
     phase: Phase = Phase.WAITING_FOR_OPEN
+    # Fixed at anchor time and reused for every later bar in the session —
+    # NOT recomputed per bar — so an overnight session (e.g. open 21:00,
+    # cutoff 02:30 the next calendar day) doesn't have its window silently
+    # recomputed against a later bar's own (now rolled-over) calendar date.
+    open_dt: Optional[datetime] = None
+    cutoff_dt: Optional[datetime] = None
 
     pivot_highs: list[_Pivot] = field(default_factory=list)
     pivot_lows: list[_Pivot] = field(default_factory=list)
@@ -74,6 +80,8 @@ class StrategyEngine:
         self.day_bars = []
         self.open_bar = None
         self.open_price = None
+        self.open_dt = None
+        self.cutoff_dt = None
         self.phase = Phase.WAITING_FOR_OPEN
         self.pivot_highs = []
         self.pivot_lows = []
@@ -107,9 +115,20 @@ class StrategyEngine:
         t = parse_hhmm(self.strategy_cfg.session_open)
         return dt.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
 
-    def _hard_cutoff_time(self, dt: datetime) -> datetime:
+    def _hard_cutoff_time(self, open_dt: datetime) -> datetime:
+        """Cutoff relative to the session's own open_dt, not an arbitrary
+        bar's calendar date — an overnight session (e.g. open 21:00, cutoff
+        02:30) has a cutoff time-of-day that is numerically *earlier* than
+        the open; naively replacing hour/minute on the same date as the
+        bar would land the cutoff hours *before* the open (confirmed live:
+        every bar from the moment of anchoring onward saw itself as already
+        past cutoff), so roll to the next calendar day whenever the cutoff
+        time-of-day is at or before the open time-of-day."""
         t = parse_hhmm(self.strategy_cfg.hard_cutoff)
-        return dt.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+        cutoff = open_dt.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+        if cutoff <= open_dt:
+            cutoff += timedelta(days=1)
+        return cutoff
 
     def _update_pivots(self) -> None:
         n = len(self.day_bars)
@@ -240,10 +259,8 @@ class StrategyEngine:
         self.day_bars.append(bar)
         self._update_pivots()
 
-        open_dt = self._session_open_time(bar.timestamp)
-        cutoff_dt = self._hard_cutoff_time(bar.timestamp)
-
         if self.open_bar is None:
+            open_dt = self._session_open_time(bar.timestamp)
             if bar.timestamp < open_dt:
                 return None
             # First bar at or after the session open anchors "fair price" —
@@ -256,11 +273,14 @@ class StrategyEngine:
             # Anchoring on a later bar than the true 09:30 candle uses a
             # stale-ish open price on a late restart, but that's still far
             # better than never anchoring at all.
+            cutoff_dt = self._hard_cutoff_time(open_dt)
             if bar.timestamp >= cutoff_dt:
                 self.phase = Phase.DONE_FOR_DAY
                 return None
             self.open_bar = bar
             self.open_price = bar.open
+            self.open_dt = open_dt
+            self.cutoff_dt = cutoff_dt
             self.continuation_direction = Direction.SHORT if not bar.is_green else Direction.LONG
             self.phase = Phase.CONTINUATION
             return None
@@ -274,7 +294,7 @@ class StrategyEngine:
         if self.consecutive_losses >= self.risk_cfg.stop_after_consecutive_losses:
             self.phase = Phase.DONE_FOR_DAY
             return None
-        if bar.timestamp >= cutoff_dt:
+        if bar.timestamp >= self.cutoff_dt:
             self.phase = Phase.DONE_FOR_DAY
             return None
 
@@ -283,7 +303,7 @@ class StrategyEngine:
         # freezing at whatever it was when the last trade opened — a bar
         # that never reaches the entry logic below (because position_open is
         # True) must still update this for anyone reading it live.
-        mins = minutes_since(open_dt, bar.timestamp)
+        mins = minutes_since(self.open_dt, bar.timestamp)
         if mins <= self.strategy_cfg.continuation_end_minutes:
             self.phase = Phase.CONTINUATION
         elif mins <= self.strategy_cfg.reversion_end_minutes:
