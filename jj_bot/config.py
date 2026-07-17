@@ -147,6 +147,7 @@ class StrategyConfig:
     structure_lookback: int
     swing_strength: int
     break_buffer_points: float = 1.0
+    htf_bar_minutes: int = 5
 
 
 @dataclass
@@ -180,7 +181,7 @@ class TopstepEvalConfig:
     monthly_fee: float = 49
     activation_fee: float = 149
     no_activation_fee_monthly_fee: float = 95
-    pass_rate_switch_threshold: float = 0.33
+    pass_rate_switch_threshold: float = 0.0
     payout_share: float = 0.9
     max_payout_per_event: float = 2000
     max_payout_balance_share: float = 0.5
@@ -251,6 +252,22 @@ class AppConfig:
     tradovate: TradovateCreds = field(default_factory=TradovateCreds)
     ibkr: IBKRCreds = field(default_factory=IBKRCreds)
     ninjatrader: NinjaTraderCreds = field(default_factory=NinjaTraderCreds)
+    # Path load_config() was called with, kept so a long-running process can
+    # later call reload_strategy_and_risk() against the same file.
+    config_path: Path = field(default_factory=lambda: REPO_ROOT / "config.yaml")
+
+
+def reload_strategy_and_risk(path: str | Path | None = None) -> tuple[StrategyConfig, RiskConfig]:
+    """Re-reads config.yaml's strategy/risk section and re-applies whatever
+    strategy is currently marked active in Supabase, without touching
+    credentials/.env. Lets a long-running live process pick up a strategy
+    change (e.g. switched active strategy on the dashboard) at a safe
+    boundary (the next new-trading-day reset) without a full restart."""
+    path = Path(path) if path else REPO_ROOT / "config.yaml"
+    with open(path) as f:
+        raw = yaml.safe_load(f)
+    active_strategy, active_risk = _apply_active_strategy(raw["strategy"], raw["risk"])
+    return StrategyConfig(**active_strategy), RiskConfig(**active_risk)
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:
@@ -310,5 +327,6 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         broker=os.getenv("BROKER", "ibkr").strip().lower(),
         tradovate=tradovate_creds,
         ibkr=ibkr_creds,
+        config_path=path,
         ninjatrader=ninjatrader_creds,
     )

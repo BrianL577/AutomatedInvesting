@@ -39,6 +39,10 @@ export type SimTrade = {
   pnlPoints: number;
   pnlDollars: number;
   reason: string;
+  // Break of structure is the only mandatory entry trigger. Displacement and
+  // HTF bias are secondary confluences that upgrade the grade but never gate
+  // entry: A+ = both aligned, A = one aligned, B+ = BOS alone.
+  grade: "A+" | "A" | "B+";
 };
 
 /** Win rate / P&L broken down by a grouping key (phase or session), so a
@@ -109,6 +113,11 @@ export type BacktestResult = {
   realWorldNetPnl: number; // $ (payouts - fees; the actual money that changed hands)
   chronologicalAttempts: number; // how many eval attempts were actually bought, in order
   timesFunded: number; // how many times an attempt reached the funded stage
+  // Of every time this account got funded (including ones that later
+  // busted having withdrawn $0), what fraction ever cashed out at least
+  // one payout — per user's exact definition: 4 busted-funded + 5
+  // still-active funded = 9 total, 1 ever cashed out = 1/9 (~11.1%).
+  fundedPayoutRate: number; // 0-100
   // Trading performance split by account phase (using the single
   // non-portfolio account's chronological timeline) — NOT pooled across
   // account resets like totalGained/totalLost/netPnl above. This answers
@@ -272,16 +281,44 @@ function simulateSession(
     return true;
   };
 
-  const breakOfStructure = (bar: Bar, dir: "long" | "short"): number | null => {
-    const buffer = cfg.entry.breakBufferPoints;
+  // Confirmed pivots need swingStrength bars of pullback on both sides, so on
+  // a clean, monotonic trend (no pullback yet to confirm a pivot in the trend
+  // direction) they never form in time. Fall back to the extreme of the bars
+  // seen so far, so a real break of structure can still be recognized before
+  // a pivot has confirmed — bounded to the same structureLookbackMin window
+  // pivots use, not the whole seen[] history. Without this bound, a session
+  // whose scan window starts well before its own open (see lookbackBuffer
+  // above) could anchor the fallback to a stale extreme from outside the
+  // intended lookback window — mirrors strategy.py.
+  const nearestStructure = (dir: "long" | "short", barMinutes: number): number | null => {
+    const cutoff = barMinutes - cfg.entry.structureLookbackMin;
+    const prior = seen.slice(0, -1).filter((b) => etParts(b.t).minutes >= cutoff);
     if (dir === "short") {
-      if (!pivotLows.length) return null;
-      const level = Math.min(...pivotLows.map((p) => p.price));
-      return bar.c < level - buffer ? level : null;
+      if (pivotLows.length) return Math.min(...pivotLows.map((p) => p.price));
+      return prior.length ? Math.min(...prior.map((b) => b.l)) : null;
     }
-    if (!pivotHighs.length) return null;
-    const level = Math.max(...pivotHighs.map((p) => p.price));
+    if (pivotHighs.length) return Math.max(...pivotHighs.map((p) => p.price));
+    return prior.length ? Math.max(...prior.map((b) => b.h)) : null;
+  };
+
+  const breakOfStructure = (bar: Bar, dir: "long" | "short", barMinutes: number): number | null => {
+    const buffer = cfg.entry.breakBufferPoints;
+    const level = nearestStructure(dir, barMinutes);
+    if (level === null) return null;
+    if (dir === "short") return bar.c < level - buffer ? level : null;
     return bar.c > level + buffer ? level : null;
+  };
+
+  // HTF bias confluence: no separate HTF data feed exists, so approximate by
+  // aggregating the most recent htfBarMinutes 1-min bars into one synthetic
+  // candle and reading its direction. Grading confluence only, never a gate.
+  const htfBias = (): "long" | "short" | null => {
+    const n = cfg.entry.htfBarMinutes;
+    if (seen.length < n) return null;
+    const recent = seen.slice(-n);
+    if (recent[recent.length - 1].c > recent[0].o) return "long";
+    if (recent[recent.length - 1].c < recent[0].o) return "short";
+    return null;
   };
 
   // Per JJ's rule: the bracket is never moved, and a trade only ends by
@@ -355,9 +392,16 @@ function simulateSession(
     }
 
     if (!dir || !phase) continue;
-    if (!isDisplacement(seen.length - 1)) continue;
-    const level = breakOfStructure(bar, dir);
+    // Break of structure is the mandatory trigger — no BOS, no trade.
+    // Displacement and HTF bias are secondary confluences that only upgrade
+    // the setup grade; their absence must not block entry.
+    const level = breakOfStructure(bar, dir, minutes);
     if (level === null) continue;
+    const displaced = isDisplacement(seen.length - 1);
+    const htfAligned = htfBias() === dir;
+    const confluences = Number(displaced) + Number(htfAligned);
+    const grade: SimTrade["grade"] = confluences === 2 ? "A+" : confluences === 1 ? "A" : "B+";
+    reason = `${reason}, ${displaced ? "displacement + " : ""}${htfAligned ? "HTF-aligned + " : ""}close through structure ${level.toFixed(2)}`;
 
     const entry = bar.c;
     const stop = dir === "long" ? entry - cfg.risk.stopPoints : entry + cfg.risk.stopPoints;
@@ -387,7 +431,8 @@ function simulateSession(
       win,
       pnlPoints: Math.round(pnlPoints * 100) / 100,
       pnlDollars: Math.round(pnlDollars * 100) / 100,
-      reason: `${reason}, displacement + close through structure ${level.toFixed(2)}`,
+      reason,
+      grade,
     });
 
     state.tradesCount++;
@@ -447,7 +492,7 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
   const monthlyFeeStandard = cfg.eval.monthlyFeeDollars ?? 49;
   const monthlyFeeNoActivation = cfg.eval.noActivationFeeMonthlyFeeDollars ?? 95;
   const activationFeeStandard = cfg.eval.fundedActivationFeeDollars ?? 149;
-  const passRateSwitchThreshold = cfg.eval.passRateSwitchThreshold ?? 0.33;
+  const passRateSwitchThreshold = cfg.eval.passRateSwitchThreshold ?? 0.0;
   const payoutShare = cfg.eval.payoutShareRatio ?? 0.9;
   const maxPayout = cfg.eval.maxPayoutPerEvent ?? 2000;
   const maxPayoutBalanceShare = cfg.eval.maxPayoutBalanceShare ?? 0.5;
@@ -463,6 +508,12 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
   let cashPayouts = 0;
   let attemptsBought = 0;
   let fundedCount = 0;
+  // How many distinct funded attempts ever achieved AT LEAST ONE payout —
+  // denominator is fundedCount (every time ever funded, including ones
+  // that busted with $0 withdrawn), not attemptsBought. Per user's exact
+  // definition: 4 busted-funded + 5 still-active funded = 9 total funded
+  // attempts; only 1 of those ever cashed out = 1/9 funded payout rate.
+  let fundedAttemptsWithPayout = 0;
   // Per-day phase for THIS account's timeline, index-aligned to `series`:
   // "eval" = this day's P&L happened while still working toward the profit
   // target; "funded" = after reaching it. Days before startDay or after the
@@ -505,6 +556,8 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
     let profitSincePayout = 0;
     let daysSincePayout = 0;
     let bestDaySincePayout = -Infinity;
+    let thisAttemptGotPayout = false;
+    let balanceAtLastPayout = 0;
     // Topstep Consistency Target, exact formula confirmed by a Topstep
     // trader: New Profit Target = Best Day / 0.5 (a full recalculation off
     // the single best day so far this attempt, not a step/proportional
@@ -548,6 +601,13 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
         feesPaid += activationFee;
         winningDaysSincePayout = 0;
         profitSincePayout = 0;
+        // Confirmed directly: a payout REMOVES the requested amount from
+        // the account balance (it's not just a drawdown-buffer reset) —
+        // the next payout requires balance to climb back ABOVE this
+        // post-payout reference point, not merely back to it. Starts at
+        // the funding balance itself (the first "reference" you have to
+        // climb above).
+        balanceAtLastPayout = balance;
       }
       if (funded) {
         profitSincePayout += dayPnl;
@@ -564,14 +624,29 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
           daysSincePayout >= consistencyPathMinDays &&
           profitSincePayout > 0 &&
           bestDaySincePayout <= profitSincePayout * consistencyPathMaxBestDayShare;
+        // Confirmed directly: eligibility ALSO requires balance to be
+        // strictly above the post-previous-payout reference, not just
+        // hitting the day-count criteria — a day-count-eligible cycle with
+        // a big loss mixed in that leaves balance below that reference
+        // does not unlock a payout yet.
+        const aboveLastPayoutBalance = balance > balanceAtLastPayout;
 
-        if (standardPathEligible || consistencyPathEligible) {
+        if ((standardPathEligible || consistencyPathEligible) && aboveLastPayoutBalance) {
           const payout = Math.max(
             0,
             Math.min(maxPayout, profitSincePayout * payoutShare, balance * maxPayoutBalanceShare)
           );
           if (payout > 0) {
             cashPayouts += payout;
+            // Confirmed directly: the payout amount is REMOVED from the
+            // account balance immediately, not just a drawdown-buffer
+            // reset — e.g. request $2,000 on a $4,000 balance leaves $2,000.
+            balance -= payout;
+            balanceAtLastPayout = balance;
+            if (!thisAttemptGotPayout) {
+              fundedAttemptsWithPayout++;
+              thisAttemptGotPayout = true;
+            }
             // Real rule: Maximum Loss Limit resets to $0 the moment funds
             // are withdrawn — zero drawdown buffer until the balance
             // climbs again, so the very next losing day can bust the
@@ -591,7 +666,7 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
     if (funded) needsFreshSubscription = true;
     if (!busted) break; // ran out of data mid-attempt, nothing more to simulate
   }
-  return { feesPaid, cashPayouts, attemptsBought, fundedCount, dayPhase };
+  return { feesPaid, cashPayouts, attemptsBought, fundedCount, fundedAttemptsWithPayout, dayPhase };
 }
 
 /** Groups bars by ET calendar day, dropping any date in
@@ -671,6 +746,7 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
   const cashPayouts = single.cashPayouts;
   const chronologicalAttempts = single.attemptsBought;
   const timesFunded = single.fundedCount;
+  const fundedPayoutRate = timesFunded ? round2((single.fundedAttemptsWithPayout / timesFunded) * 100) : 0;
 
   // Split every trade into eval-stage vs funded-stage using the single
   // account's chronological day phases, so "Success Rate"/"Net P&L"/etc can
@@ -801,7 +877,13 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
     maxDrawdown: round2(maxDrawdown),
     evalAttempts: attempts,
     evalPasses: passes,
-    evalPassRate: attempts ? round2((passes / attempts) * 100) : 0,
+    // Real definition (per user): evals WON / evals PURCHASED, from the
+    // actual chronological attempt-by-attempt run (chronologicalAttempts/
+    // timesFunded below) — NOT the probability-sweep evalAttempts/
+    // evalPasses above (kept for reference in Pooled stats only, a
+    // different "how likely is any given start day to eventually pass"
+    // metric, not "how many of my real purchased evals passed").
+    evalPassRate: chronologicalAttempts ? round2((timesFunded / chronologicalAttempts) * 100) : 0,
     avgDaysToEvalResult: daysToResult.length
       ? round2(daysToResult.reduce((a, x) => a + x, 0) / daysToResult.length)
       : 0,
@@ -812,6 +894,7 @@ export function runBacktest(cfg: StrategyConfig, bars: Bar[]): BacktestResult {
     realWorldNetPnl: round2(cashPayouts - feesPaid),
     chronologicalAttempts,
     timesFunded,
+    fundedPayoutRate,
     evalStage,
     fundedStage,
     portfolio,

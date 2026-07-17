@@ -43,6 +43,22 @@ async function readJson(res: Response): Promise<any> {
   }
 }
 
+/** Poll GET /api/strategy-chat/status until the bot-API-hosted AI job
+ * finishes (see app/api/strategy-chat/route.ts for why the chat turn is
+ * split into kickoff + poll instead of one long-lived request). ~2s
+ * interval, gives up after ~5 minutes. */
+async function pollJobUntilDone(jobId: string): Promise<{ reply: string; config: any }> {
+  const maxAttempts = 150;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const res = await fetch(`/api/strategy-chat/status?jobId=${encodeURIComponent(jobId)}`);
+    const data = await readJson(res);
+    if (!res.ok) throw new Error(data.error || "Chat failed");
+    if (data.status === "done") return data;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw new Error("Timed out waiting for the AI response.");
+}
+
 function fmtMoney(n: number): string {
   const sign = n < 0 ? "-" : "";
   return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -207,8 +223,13 @@ export default function StrategiesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: nextChat.map(({ role, content }) => ({ role, content })) }),
       });
-      const data = await readJson(res);
-      if (!res.ok) throw new Error(data.error || "Chat failed");
+      const kickoff = await readJson(res);
+      if (!res.ok) throw new Error(kickoff.error || "Chat failed");
+      // The actual Claude call runs on the bot API host (see
+      // app/api/strategy-chat/route.ts) so it isn't bound by Vercel's
+      // per-request timeout — poll for the result instead of waiting on a
+      // single long-lived response.
+      const data = await pollJobUntilDone(kickoff.jobId);
       const withReply: ChatMessage[] = [...nextChat, { role: "assistant", content: data.reply, config: data.config ?? null }];
       setChat(withReply);
       // If Claude attached a concrete config, immediately test it against the
@@ -1108,6 +1129,22 @@ export default function StrategiesPage() {
                             hint="How many of those attempts made it through the eval to a funded account, across every account."
                             value={`${timesFunded}`}
                           />
+                          {!split && (
+                            <>
+                              <StatCard
+                                label="Eval Pass Rate"
+                                hint="Evals WON / evals PURCHASED, from this actual chronological run — e.g. purchased 10, passed 5 = 50%. Not the same as the probability-sweep 'Eval Pass Rate' shown in Pooled stats below, which answers a different question (how likely is any given start day to eventually pass)."
+                                value={`${result.evalPassRate.toFixed(1)}%`}
+                                tone={result.evalPassRate >= 33 ? "positive" : "negative"}
+                              />
+                              <StatCard
+                                label="Funded Payout Rate"
+                                hint="Of every time you ever reached funded (including ones that later busted having withdrawn $0), what fraction cashed out at least one payout. E.g. 9 total fundings (4 busted, 5 still active), only 1 ever paid out = 1/9 (~11%)."
+                                value={`${result.fundedPayoutRate.toFixed(1)}%`}
+                                tone={result.fundedPayoutRate >= 33 ? "positive" : "negative"}
+                              />
+                            </>
+                          )}
                         </div>
                         {correlatedGroupSize > 1 && (
                           <p className="edit-field-warning" style={{ marginTop: 10 }}>
@@ -1124,13 +1161,12 @@ export default function StrategiesPage() {
                   <details className="bt-pooled-details">
                     <summary>Pooled stats (all {result.totalTrades} trades on one never-resetting account — not real economics, kept for reference)</summary>
                     <div className="stat-grid" style={{ marginTop: 12 }}>
-                      <div className="stat-card" title="Percent of individual TRADES that hit target instead of stop — NOT the same as Eval Pass Rate below. A strategy can have a low trade win rate and still be very profitable (prop-firm math: payouts are large, a blown eval only costs a small fee), or a high win rate and still not clear evals reliably. Don't judge a strategy by this number alone."><div className="label">Trade Win Rate</div><div className={`value ${result.winRate >= 50 ? "positive" : "negative"}`}>{result.winRate.toFixed(1)}%</div></div>
+                      <div className="stat-card" title="Percent of possible eval START DATES that would go on to pass the eval (hit the profit target before busting the trailing drawdown) — this is what matters: can you pass, not how often any one trade wins. A strategy can lose more trades than it wins and still be very profitable (prop-firm math: payouts are large, a blown eval only costs a small fee)."><div className="label">Eval Pass Rate</div><div className={`value ${result.evalPassRate >= 33 ? "positive" : "negative"}`}>{result.evalPassRate.toFixed(1)}%</div></div>
                       <div className="stat-card"><div className="label">Net P&amp;L</div><div className={`value ${result.netPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(result.netPnl)}</div></div>
                       <div className="stat-card"><div className="label">Return %</div><div className={`value ${result.netPnlPct >= 0 ? "positive" : "negative"}`}>{result.netPnlPct.toFixed(2)}%</div></div>
                       <div className="stat-card"><div className="label">Total Gained</div><div className="value positive">{fmtMoney(result.totalGained)}</div></div>
                       <div className="stat-card"><div className="label">Total Lost</div><div className="value negative">{fmtMoney(-result.totalLost)}</div></div>
                       <div className="stat-card"><div className="label">Trades (W/L)</div><div className="value">{result.totalTrades} ({result.wins}/{result.losses})</div></div>
-                      <div className="stat-card" title="Percent of possible eval START DATES that would go on to pass the eval (hit the profit target before busting the trailing drawdown) — a simplified probability sweep, NOT the same as Trade Win Rate above, and separate from the real chronological attempt-by-attempt simulation feeding the Real Money numbers. Use this as a rough 'how consistently does this clear an eval' signal, not a literal win-rate."><div className="label">Eval Pass Rate</div><div className={`value ${result.evalPassRate >= 33 ? "positive" : "negative"}`}>{result.evalPassRate.toFixed(1)}%</div></div>
                       <div className="stat-card"><div className="label">Max Drawdown</div><div className="value negative">{fmtMoney(-result.maxDrawdown)}</div></div>
                       <div className="stat-card"><div className="label">Days (profitable)</div><div className="value">{result.tradingDays} ({result.profitableDays})</div></div>
                       <div className="stat-card"><div className="label">Best / Worst Day</div><div className="value">{fmtMoney(result.bestDay)} / {fmtMoney(result.worstDay)}</div></div>

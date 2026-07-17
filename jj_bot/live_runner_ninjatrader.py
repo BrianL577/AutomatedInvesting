@@ -349,21 +349,43 @@ class NinjaTraderLiveRunner:
             self.engine.position_open = True
 
     def _on_fill(self, row: dict) -> None:
-        order_id = row.get("order_id")
+        # NinjaTrader's Order.Name is never populated for orders placed via
+        # ATI's OIF interface, so fills.csv now carries the OCO id instead
+        # (Order.Oco IS reliably populated — confirmed in the Log tab on
+        # every live session). Confirmed live: matching on the old
+        # order_id field always fell through to "unrelated execution" and
+        # silently dropped every fill, including real losing trades, with
+        # zero error anywhere — the daily caps and dashboard logging never
+        # actually ran on any NinjaTrader trade until this fix.
+        oco_id = row.get("oco_id")
         account = row.get("account")
+        order_state = (row.get("order_state") or "").strip()
         state = self._account_states.get(account)
         if state is None or state.order_ids is None or state.pending_signal is None:
             return
-
-        if order_id == state.order_ids.take_profit_id:
-            win = True
-        elif order_id == state.order_ids.stop_loss_id:
-            win = False
-        else:
-            return  # entry fill or an unrelated execution
+        if not oco_id or oco_id != state.order_ids.oco_id:
+            return  # entry fill (no OCO id) or an unrelated execution
+        if order_state and order_state.lower() in ("cancelled", "canceled"):
+            return  # the auto-cancelled leg of this OCO pair, not a real fill
 
         signal = state.pending_signal
         exit_price = float(row["price"])
+        # Filled quantity from the exit leg — critical for correct P&L.
+        # Confirmed live: this was previously ignored entirely, so a
+        # 2-contract trade's dollar P&L (and therefore the daily loss/
+        # profit cap check) was silently computed as if only 1 contract
+        # had been traded, understating real risk by the contract count.
+        try:
+            filled_qty = int(float(row.get("qty") or self.cfg.risk.contracts_per_trade))
+        except (TypeError, ValueError):
+            filled_qty = self.cfg.risk.contracts_per_trade
+        # Determine win/loss by which known exit level the fill price is
+        # actually closer to, rather than trying to identify which specific
+        # leg (stop vs. target) filled — we no longer have a reliable
+        # per-leg id to match against, only the shared OCO id.
+        dist_to_target = abs(exit_price - signal.target_price)
+        dist_to_stop = abs(exit_price - signal.stop_price)
+        win = dist_to_target <= dist_to_stop
         pnl_points = (
             exit_price - signal.entry_price if signal.direction == Direction.LONG
             else signal.entry_price - exit_price
@@ -375,7 +397,7 @@ class NinjaTraderLiveRunner:
         self.trade_logger.log_trade(result, account_name=account)
         self.engine.record_trade_result(win, pnl_points=pnl_points)
 
-        pnl_dollars = pnl_points * self.dollar_per_point
+        pnl_dollars = pnl_points * self.dollar_per_point * filled_qty
         state.day_pnl_dollars += pnl_dollars
         if state.day_pnl_dollars >= self.cfg.risk.daily_profit_cap:
             state.rate_limited = True
@@ -385,8 +407,8 @@ class NinjaTraderLiveRunner:
             logger.info("Account %s hit daily loss cap ($%.2f) — done for the day.", account, state.day_pnl_dollars)
 
         logger.info(
-            "Trade closed on %s: %s pnl=%.2f pts ($%.2f) win=%s day_pnl=$%.2f",
-            account, signal.direction.value, pnl_points, pnl_dollars, win, state.day_pnl_dollars,
+            "Trade closed on %s: %s qty=%d pnl=%.2f pts ($%.2f) win=%s day_pnl=$%.2f",
+            account, signal.direction.value, filled_qty, pnl_points, pnl_dollars, win, state.day_pnl_dollars,
         )
 
         state.order_ids = None

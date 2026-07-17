@@ -1,5 +1,15 @@
 /**
- * POST /api/strategy-chat — multi-turn strategy design conversation.
+ * POST /api/strategy-chat — kicks off a multi-turn strategy design
+ * conversation turn and returns immediately with a jobId; the actual
+ * Claude call happens on the always-on bot API host (see
+ * jj_bot/api_server.py's /api/ai-job), not inline in this function.
+ *
+ * Why: Vercel Hobby hard-caps serverless functions at 10s regardless of any
+ * maxDuration set here, but Claude calls with extended thinking on a
+ * conversational strategy question routinely take longer than that —
+ * confirmed live via FUNCTION_INVOCATION_TIMEOUT. Poll
+ * GET /api/strategy-chat/status?jobId=... (see status/route.ts) for the
+ * result instead of waiting on it inline.
  *
  * Unlike /api/generate-strategy (one-shot description -> config), this is a
  * back-and-forth: Claude sees a compact weekly digest of the real
@@ -11,21 +21,16 @@
  *
  * Same security model as generation: the model produces DATA (parameters
  * over the fixed rule library), never code, and every config is
- * re-validated with zod before it reaches the client.
+ * re-validated with zod before it reaches the client (in status/route.ts,
+ * once the job result comes back).
  */
-import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
 import { loadBars } from "../../../lib/bars";
 import { buildWeeklyEdgeSummary } from "../../../lib/weeklySummary";
-import {
-  JJ_DEFAULT_STRATEGY,
-  STRATEGY_JSON_SCHEMA,
-  StrategyConfigSchema,
-  survivabilityViolation,
-} from "../../../lib/strategySchema";
+import { JJ_DEFAULT_STRATEGY, STRATEGY_JSON_SCHEMA } from "../../../lib/strategySchema";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 10;
 
 const MAX_MESSAGES = 24;
 const MAX_MESSAGE_CHARS = 4000;
@@ -58,7 +63,7 @@ The strategy engine is a fixed rule library — you tune parameters, you do not 
 - Session anchor: the 1-minute candle at session.open (ET) defines "fair price" and opening direction. additionalSessions (max 3) can add more windows.
 - Continuation phase (first phases.continuationEndMin minutes): entries in the opening candle's direction.
 - Reversion phase (until phases.reversionEndMin): entries back toward the open once price extended >= entry.minExtensionPoints away.
-- Every entry needs a displacement candle (true range >= entry.displacementSizeRatio x ~10-bar avg TR and >= entry.displacementPrevRatio x previous bar, wick fraction <= entry.maxWickRatio) closing beyond the nearest swing high/low (entry.swingStrength-bar pivots within entry.structureLookbackMin minutes) by more than entry.breakBufferPoints.
+- Break of structure is the ONLY mandatory entry trigger: close beyond the nearest swing high/low (entry.swingStrength-bar pivots within entry.structureLookbackMin minutes, falling back to the session's extreme so far if no pivot has confirmed) by more than entry.breakBufferPoints. Two secondary confluences only upgrade the setup grade, never gate entry: a displacement candle (true range >= entry.displacementSizeRatio x ~10-bar avg TR and >= entry.displacementPrevRatio x previous bar, wick fraction <= entry.maxWickRatio) and HTF bias (direction of a synthetic candle built from the last entry.htfBarMinutes 1-min bars). Grade: A+ = both confluences align, A = one aligns, B+ = BOS alone — all grades are tradeable.
 - Fixed bracket exits: risk.stopPoints / risk.targetPoints. Daily discipline: risk.maxTradesPerDay, risk.stopAfterConsecutiveLosses, +risk.dailyProfitCap / -risk.dailyLossCap dollar caps (NQ = $20/point/contract), no entries after session.hardCutoff.
 - Prop-firm eval sim: eval.accountSize / profitTarget / trailingMaxDrawdown. "Profitable" for this trader means the real-world simulation nets positive dollars after eval fees and funded payouts — not any specific win-rate number.
 - If the trader wants something the engine can't express (VWAP, order flow, live news filters), say so plainly and offer the closest approximation.
@@ -94,9 +99,16 @@ function sanitizeMessages(raw: unknown): ChatMessage[] | null {
 }
 
 export async function POST(req: NextRequest) {
-  if (!process.env.ANTHROPIC_API_KEY) {
+  // Unlike /api/generate-strategy, this route no longer calls Anthropic
+  // directly — it dispatches to the bot API host (see module docstring),
+  // which holds its own ANTHROPIC_API_KEY. Nothing to check for here.
+  const botApiUrl = process.env.BOT_API_URL;
+  if (!botApiUrl) {
     return NextResponse.json(
-      { error: "AI chat requires ANTHROPIC_API_KEY to be set on the server (Vercel env vars)." },
+      {
+        error:
+          "AI chat requires BOT_API_URL (your always-on bot API host, e.g. Railway) to be set on the server — see dashboard/.env.example.",
+      },
       { status: 503 }
     );
   }
@@ -119,86 +131,60 @@ export async function POST(req: NextRequest) {
   const { bars, source } = await loadBars();
   const digest = bars.length ? buildWeeklyEdgeSummary(bars) : "(no historical data imported yet)";
 
-  const client = new Anthropic();
+  const anthropicBody = {
+    model: "claude-opus-4-8",
+    max_tokens: 4096,
+    thinking: { type: "adaptive" },
+    // Identical on every turn of a conversation (digest/reference config
+    // only change when historical data is reimported) — mark cacheable so
+    // repeat turns within the cache TTL bill ~10% of input cost for this
+    // block instead of full price on every message.
+    system: [
+      {
+        type: "text",
+        text:
+          SYSTEM_PROMPT +
+          `\n\nData source: ${source === "supabase" ? "real imported historical bars" : "SYNTHETIC sample data — warn the trader that patterns here are meaningless until real data is imported"}.` +
+          `\n\nWeekly digest (first + last trading day of each week, oldest first):\n${digest}` +
+          `\n\nReference config (JJ's default strategy):\n${JSON.stringify(JJ_DEFAULT_STRATEGY)}`,
+        cache_control: { type: "ephemeral" },
+      },
+    ],
+    output_config: {
+      format: { type: "json_schema", schema: CHAT_JSON_SCHEMA },
+      // No longer needs to bias for speed against a 60s ceiling — the actual
+      // call runs on the bot API host now, which isn't time-boxed. Kept
+      // moderate rather than maxed out purely to keep cost/latency sane.
+      effort: "medium",
+    },
+    messages,
+  };
 
   try {
-    const response = await client.messages.create({
-      model: "claude-opus-4-8",
-      max_tokens: 4096,
-      thinking: { type: "adaptive" },
-      // Identical on every turn of a conversation (digest/reference config
-      // only change when historical data is reimported) — mark cacheable
-      // so repeat turns within the cache TTL bill ~10% of input cost for
-      // this block instead of full price on every message.
-      system: [
-        {
-          type: "text",
-          text:
-            SYSTEM_PROMPT +
-            `\n\nData source: ${source === "supabase" ? "real imported historical bars" : "SYNTHETIC sample data — warn the trader that patterns here are meaningless until real data is imported"}.` +
-            `\n\nWeekly digest (first + last trading day of each week, oldest first):\n${digest}` +
-            `\n\nReference config (JJ's default strategy):\n${JSON.stringify(JJ_DEFAULT_STRATEGY)}`,
-          cache_control: { type: "ephemeral" },
-        },
-      ],
-      // effort (not thinking.budget_tokens, which claude-opus-4-8 rejects)
-      // is how this model bounds adaptive thinking time — "low" keeps
-      // response time predictable against Vercel's 60s function timeout on
-      // requests that invite a lot of reasoning (session/tradeoff
-      // comparisons like this one).
-      output_config: {
-        format: { type: "json_schema", schema: CHAT_JSON_SCHEMA },
-        effort: "low",
-      },
-      messages,
+    const dispatchRes = await fetch(`${botApiUrl.replace(/\/$/, "")}/api/ai-job`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: anthropicBody }),
     });
-
-    if (response.stop_reason === "refusal") {
+    const dispatchText = await dispatchRes.text();
+    let dispatchData: { job_id?: string; detail?: string };
+    try {
+      dispatchData = JSON.parse(dispatchText);
+    } catch {
       return NextResponse.json(
-        { error: "The model declined to respond to this message. Try rephrasing." },
-        { status: 422 }
+        { error: `Bot API host returned a non-JSON response: ${dispatchText.slice(0, 200)}` },
+        { status: 502 }
       );
     }
-
-    const text = response.content.find((b) => b.type === "text");
-    if (!text || text.type !== "text") {
-      return NextResponse.json({ error: "Model returned no reply." }, { status: 502 });
+    if (!dispatchRes.ok || !dispatchData.job_id) {
+      return NextResponse.json(
+        { error: dispatchData.detail || "Failed to start the AI job on the bot API host." },
+        { status: 502 }
+      );
     }
-
-    const parsed = JSON.parse(text.text) as { reply?: unknown; config?: unknown };
-    const reply = typeof parsed.reply === "string" ? parsed.reply : "";
-    if (!reply) {
-      return NextResponse.json({ error: "Model returned an empty reply." }, { status: 502 });
-    }
-
-    let config = null;
-    let finalReply = reply;
-    if (parsed.config !== null && parsed.config !== undefined) {
-      const check = StrategyConfigSchema.safeParse(parsed.config);
-      if (check.success && (check.data.phases.tradeContinuation || check.data.phases.tradeReversion)) {
-        const violation = survivabilityViolation(check.data);
-        if (violation) {
-          // Strip the config rather than fail the whole turn — the
-          // conversation continues and the trader can ask for an adjusted
-          // (safer) version.
-          finalReply += `\n\n⚠️ I generated a config, but withheld it: ${violation}`;
-        } else {
-          config = check.data;
-        }
-      }
-      // An invalid config silently degrades to reply-only — the conversation
-      // continues and the trader can ask for it again.
-    }
-
-    return NextResponse.json({ reply: finalReply, config, dataSource: source });
+    return NextResponse.json({ jobId: dispatchData.job_id, dataSource: source });
   } catch (err: unknown) {
-    if (err instanceof Anthropic.RateLimitError) {
-      return NextResponse.json({ error: "AI is rate-limited right now — try again shortly." }, { status: 429 });
-    }
-    if (err instanceof Anthropic.APIError) {
-      return NextResponse.json({ error: `AI request failed: ${err.message}` }, { status: 502 });
-    }
     const message = err instanceof Error ? err.message : "unknown error";
-    return NextResponse.json({ error: `Chat failed: ${message}` }, { status: 500 });
+    return NextResponse.json({ error: `Could not reach the bot API host: ${message}` }, { status: 502 });
   }
 }

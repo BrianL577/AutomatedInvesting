@@ -11,6 +11,7 @@ written too, so backtests and local runs work without any Supabase setup.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,8 @@ from typing import Optional
 import requests
 
 from .models import TradeResult
+
+logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOG_PATH = REPO_ROOT / "dashboard" / "data" / "trades.json"
@@ -32,21 +35,25 @@ class TradeLogger:
         self.source = source
         if not self.path.exists():
             self.path.write_text("[]")
-
         self.supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
         self.supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
     def _read(self) -> list[dict]:
         try:
             return json.loads(self.path.read_text())
-        except (json.JSONDecodeError, FileNotFoundError):
+        except (json.JSONDecodeError, FileNotFoundError, OSError):
             return []
 
     def _write(self, trades: list[dict]) -> None:
-        self.path.write_text(json.dumps(trades, indent=2, default=str))
+        # Atomic write (temp file + replace) so a collision with another
+        # process/instance holding the file open can't corrupt it, and so a
+        # PermissionError here can be handled by the caller instead of
+        # propagating up uncaught.
+        tmp_path = self.path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(trades, indent=2, default=str))
+        tmp_path.replace(self.path)
 
     def log_trade(self, trade: TradeResult, account_name: Optional[str] = None) -> None:
-        trades = self._read()
         pnl_dollars = round(trade.pnl_points * self.dollar_per_point, 2)
         record = {
             "timestamp": trade.signal.timestamp.isoformat(),
@@ -67,9 +74,29 @@ class TradeLogger:
             "logged_at": datetime.utcnow().isoformat() + "Z",
         }
 
-        local_record = {"id": len(trades) + 1, **record}
-        trades.append(local_record)
-        self._write(trades)
+        # CRITICAL: this is called from _on_fill() on the fills-tailing
+        # background thread. An unhandled exception here silently kills
+        # that thread forever (Python daemon threads just die on an
+        # uncaught exception — no crash, no restart, no entry in the log
+        # file). Confirmed live: this is why the dashboard stopped
+        # receiving trades on 2026-07-13 after a file-write collision from
+        # a duplicate bot instance — the local JSON write threw, the
+        # thread died, and every fill after that point (including real
+        # money-losing trades) went completely unlogged for the rest of
+        # that process's life, with zero visible error anywhere.
+        # Every path below must be exception-safe so a write hiccup costs
+        # us one missed dashboard row, never the whole fills pipeline.
+        try:
+            trades = self._read()
+            local_record = {"id": len(trades) + 1, **record}
+            trades.append(local_record)
+            self._write(trades)
+        except OSError:
+            logger.exception(
+                "Failed to write trade to local dashboard file %s — trade result NOT recorded locally. "
+                "This trade still executed for real; only the dashboard/local log entry is missing.",
+                self.path,
+            )
 
         if self.supabase_url and self.supabase_key:
             self._log_to_supabase(record)
@@ -90,8 +117,12 @@ class TradeLogger:
             resp.raise_for_status()
         except Exception as exc:
             # Never let a Supabase hiccup take down the trading loop — the
-            # local JSON write above already succeeded.
-            print(f"[trade_logger] WARNING: failed to write trade to Supabase: {exc}")
+            # local JSON write above already succeeded (or failed and was
+            # already logged above).
+            logger.warning("Failed to write trade to Supabase: %s", exc)
 
     def clear(self) -> None:
-        self._write([])
+        try:
+            self._write([])
+        except OSError:
+            logger.exception("Failed to clear trade log at %s", self.path)

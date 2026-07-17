@@ -84,6 +84,10 @@ export const StrategyConfigSchema = z
         swingStrength: z.number().int().min(1).max(10),
         breakBufferPoints: z.number().min(0).max(50),
         minExtensionPoints: z.number().min(0).max(500),
+        // Added after some strategies were already saved to Supabase without
+        // this field — default it instead of requiring it, so pre-existing
+        // saved strategies don't fail validation (400 "failed validation").
+        htfBarMinutes: z.number().int().min(1).max(60).default(5),
       })
       .strict(),
     risk: z
@@ -225,6 +229,7 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
     swingStrength: 2,
     breakBufferPoints: 1.0,
     minExtensionPoints: 12,
+    htfBarMinutes: 5,
   },
   risk: {
     stopPoints: 25,
@@ -318,6 +323,7 @@ export const StrategyVariantSchema = z
         swingStrength: z.number().int().min(1).max(10).optional(),
         breakBufferPoints: z.number().min(0).max(50).optional(),
         minExtensionPoints: z.number().min(0).max(500).optional(),
+        htfBarMinutes: z.number().int().min(1).max(60).optional(),
       })
       .strict()
       .optional(),
@@ -356,6 +362,7 @@ export const STRATEGY_VARIANT_BATCH_JSON_SCHEMA = {
               swingStrength: { type: "integer" },
               breakBufferPoints: { type: "number" },
               minExtensionPoints: { type: "number" },
+              htfBarMinutes: { type: "integer" },
             },
             additionalProperties: false,
           },
@@ -445,6 +452,7 @@ export const STRATEGY_JSON_SCHEMA = {
         swingStrength: { type: "integer", description: "Bars required on each side to confirm a swing pivot (typical 2)" },
         breakBufferPoints: { type: "number", description: "Close must clear the structure level by this many points to count as a break" },
         minExtensionPoints: { type: "number", description: "Minimum points price must extend away from the open before a reversion trade is valid" },
+        htfBarMinutes: { type: "integer", description: "1-min bars aggregated into a synthetic higher-timeframe candle for HTF bias confluence (typical 5)" },
       },
       required: [
         "displacementSizeRatio",
@@ -454,6 +462,7 @@ export const STRATEGY_JSON_SCHEMA = {
         "swingStrength",
         "breakBufferPoints",
         "minExtensionPoints",
+        "htfBarMinutes",
       ],
       additionalProperties: false,
     },
