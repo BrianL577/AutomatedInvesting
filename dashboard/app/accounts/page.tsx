@@ -68,9 +68,9 @@ export default function AccountsPage() {
           <h1>My Broker Accounts</h1>
           <p>
             Save the paper trading account name(s) you trade — private to your account, nothing here is shared
-            with other users. Only the account <em>name</em> is stored; your broker login credentials (IBKR
-            username/password, or Tradovate password/CID/SEC) still live only in your bot host&apos;s environment
-            variables, never in this database.
+            with other users. Only the account <em>name</em> is stored; your broker login credentials (Tradovate
+            password/CID/SEC) still live only in your bot host&apos;s environment variables, never in this
+            database.
           </p>
         </div>
       </div>
@@ -79,15 +79,15 @@ export default function AccountsPage() {
         <div className="test-panel-header">
           <h2>Add an account</h2>
           <p>
-            IBKR paper account IDs start with <code>DU</code> (e.g. <code>DU1234567</code>); Tradovate account
-            names look like <code>DEMO12345</code>. One broker login can have several accounts — add all of them
-            here.
+            NinjaTrader sim account names look like <code>DEMO8217187</code> or <code>Sim101</code>; Tradovate
+            account names look like <code>DEMO12345</code>. One broker login can have several accounts — add all
+            of them here.
           </p>
         </div>
         <form onSubmit={addAccount} className="test-panel-row">
           <input
             className="test-input"
-            placeholder="Account name, e.g. DU1234567"
+            placeholder="Account name, e.g. DEMO8217187"
             value={accountName}
             onChange={(e) => setAccountName(e.target.value)}
             required
@@ -144,8 +144,8 @@ export default function AccountsPage() {
             <h2>Automatically used by the bot</h2>
             <p>
               The bot reads these account names directly from here at startup (via Supabase) — no need to also set
-              <code> IBKR_ACCOUNT_NAMES</code>, <code>TRADOVATE_ACCOUNT_NAMES</code>, or <code>NT_ACCOUNT_NAME</code>
-              on your bot host unless you want to override what&apos;s saved here.
+              <code> TRADOVATE_ACCOUNT_NAMES</code> or <code>NT_ACCOUNT_NAME</code> on your bot host unless you
+              want to override what&apos;s saved here.
             </p>
           </div>
           <code className="env-copy">{namesForEnv}</code>

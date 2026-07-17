@@ -10,7 +10,7 @@ at it via the NEXT_PUBLIC_BOT_API_URL env var.
 Endpoints:
   GET  /api/health        -> {"ok": true}
   GET  /api/accounts      -> resolves + lists every configured broker account
-                              (IBKR by default, or Tradovate if BROKER=tradovate)
+                              (NinjaTrader by default, or Tradovate if BROKER=tradovate)
   POST /api/test-trade    -> places one small bracket test order, to confirm
                               the automation pipeline is actually wired up
   GET  /api/trades        -> same trade log the dashboard reads directly,
@@ -83,7 +83,7 @@ def accounts():
         raise HTTPException(status_code=502, detail=str(exc))
     return {
         "broker": cfg.broker,
-        "env": "paper" if cfg.broker == "ibkr" else cfg.tradovate.env,
+        "env": cfg.tradovate.env if cfg.broker == "tradovate" else "paper",
         "accounts": [{"name": n, "active": True} for n in names],
     }
 

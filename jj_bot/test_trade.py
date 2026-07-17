@@ -3,9 +3,8 @@ one small bracket order — the way to confirm "is this actually wired up to
 my account and will it really submit trades" before trusting the live
 strategy runner.
 
-Dispatches on `cfg.broker` ("ibkr" by default — free paper trading, no
-funding required; or "tradovate" if you've funded a live Tradovate account
-and purchased API access).
+Dispatches on `cfg.broker` ("ninjatrader" by default; or "tradovate" if
+you've funded a live Tradovate account and purchased API access).
 
 Used by both the CLI (`scripts/test_connection.py`) and the bot API server's
 `/api/test-trade` endpoint that the dashboard's Test Trade panel calls.
@@ -30,16 +29,6 @@ class ConnectionTestResult:
 
 
 def list_accounts(cfg: AppConfig) -> list[str]:
-    if cfg.broker == "ibkr":
-        from .ibkr_client import IBKRClient
-
-        client = IBKRClient(cfg.ibkr)
-        try:
-            client.connect()
-            return list(client.accounts)
-        finally:
-            client.disconnect()
-
     if cfg.broker == "ninjatrader":
         from .ninjatrader_client import NinjaTraderClient
 
@@ -60,9 +49,7 @@ def run_connection_test(cfg: AppConfig, account_name: Optional[str] = None, dire
     is specified. Logs the result to the dashboard trade log with
     source='connection_test' so it's clearly distinguishable from real
     strategy trades."""
-    if cfg.broker == "ibkr":
-        result = _run_ibkr_test(cfg, account_name, direction)
-    elif cfg.broker == "ninjatrader":
+    if cfg.broker == "ninjatrader":
         result = _run_ninjatrader_test(cfg, account_name, direction)
     else:
         result = _run_tradovate_test(cfg, account_name, direction)
@@ -84,35 +71,6 @@ def run_connection_test(cfg: AppConfig, account_name: Optional[str] = None, dire
         account_name=result.tested_account,
     )
     return result
-
-
-def _run_ibkr_test(cfg: AppConfig, account_name: Optional[str], direction: str) -> ConnectionTestResult:
-    from .ibkr_client import IBKRClient
-
-    client = IBKRClient(cfg.ibkr)
-    client.connect()
-    try:
-        accounts = client.accounts
-        target_account = account_name or accounts[0]
-        if account_name and account_name not in accounts:
-            raise ValueError(f"Account '{account_name}' not found among resolved accounts: {accounts}")
-
-        contract = client.find_front_month_contract(cfg.instrument.symbol)
-        ib_action = "BUY" if direction == "Buy" else "SELL"
-        order_ids = client.place_test_trade(contract=contract, account=target_account, action=ib_action, qty=1)
-
-        return ConnectionTestResult(
-            accounts=accounts,
-            tested_account=target_account,
-            contract_symbol=contract.ib_contract.localSymbol,
-            order_response={
-                "parent_order_id": order_ids.parent_id,
-                "take_profit_order_id": order_ids.take_profit_id,
-                "stop_loss_order_id": order_ids.stop_loss_id,
-            },
-        )
-    finally:
-        client.disconnect()
 
 
 def _run_ninjatrader_test(cfg: AppConfig, account_name: Optional[str], direction: str) -> ConnectionTestResult:

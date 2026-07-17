@@ -209,23 +209,6 @@ class TradovateCreds:
 
 
 @dataclass
-class IBKRCreds:
-    """Interactive Brokers connects via a running TWS or IB Gateway process
-    (not a hosted REST API) — host/port/client_id point at that process.
-    Paper trading account IDs start with 'DU'; IBKR paper accounts are free
-    and don't require funding a live account, unlike Tradovate's API access
-    (which requires a funded live account + a paid add-on).
-
-    Default ports: TWS paper 7497, IB Gateway paper 4002 (live: 7496 / 4001).
-    """
-
-    host: str = "127.0.0.1"
-    port: int = 4002
-    client_id: int = 1
-    account_names: list[str] = field(default_factory=list)
-
-
-@dataclass
 class NinjaTraderCreds:
     """NinjaTrader 8 has no REST API — automation goes through the free ATI
     (Automated Trading Interface), a file-drop protocol. `incoming_dir` is
@@ -248,9 +231,8 @@ class AppConfig:
     risk: RiskConfig
     instrument: InstrumentConfig
     topstep_eval: TopstepEvalConfig
-    broker: str = "ibkr"  # "ibkr" (default, free paper trading), "tradovate", or "ninjatrader"
+    broker: str = "ninjatrader"  # "ninjatrader" (default) or "tradovate"
     tradovate: TradovateCreds = field(default_factory=TradovateCreds)
-    ibkr: IBKRCreds = field(default_factory=IBKRCreds)
     ninjatrader: NinjaTraderCreds = field(default_factory=NinjaTraderCreds)
     # Path load_config() was called with, kept so a long-running process can
     # later call reload_strategy_and_risk() against the same file.
@@ -296,17 +278,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         account_names=account_names,
     )
 
-    ibkr_names_raw = os.getenv("IBKR_ACCOUNT_NAMES", "")
-    ibkr_account_names = [n.strip() for n in ibkr_names_raw.split(",") if n.strip()] or _fetch_saved_account_names()
-    ibkr_creds = IBKRCreds(
-        host=os.getenv("IBKR_HOST", "127.0.0.1"),
-        port=int(os.getenv("IBKR_PORT", "4002")),
-        client_id=int(os.getenv("IBKR_CLIENT_ID", "1")),
-        account_names=ibkr_account_names,
-    )
-
     # NT_ACCOUNT_NAMES="DEMO8217187,Sim101" (comma-separated) — same
-    # dashboard-first pattern as IBKR/Tradovate above. NT_ACCOUNT_NAME
+    # dashboard-first pattern as Tradovate above. NT_ACCOUNT_NAME
     # (singular) still works for a single account.
     nt_names_raw = os.getenv("NT_ACCOUNT_NAMES") or os.getenv("NT_ACCOUNT_NAME", "")
     nt_account_names = [n.strip() for n in nt_names_raw.split(",") if n.strip()] or _fetch_saved_account_names() or ["Sim101"]
@@ -324,9 +297,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         risk=RiskConfig(**active_risk),
         instrument=InstrumentConfig(**raw["instrument"]),
         topstep_eval=TopstepEvalConfig(**raw["topstep_eval"]),
-        broker=os.getenv("BROKER", "ibkr").strip().lower(),
+        broker=os.getenv("BROKER", "ninjatrader").strip().lower(),
         tradovate=tradovate_creds,
-        ibkr=ibkr_creds,
         config_path=path,
         ninjatrader=ninjatrader_creds,
     )

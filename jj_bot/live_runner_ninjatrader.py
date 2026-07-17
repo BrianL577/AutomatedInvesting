@@ -1,9 +1,9 @@
 """Live paper-trading loop against NinjaTrader 8 (via ATI + companion
 NinjaScript exporter — see ninjatrader_client.py and NINJATRADER.md).
 
-Unlike IBKR's reactive fill events, this polls two CSV files the companion
-NinjaScript writes: bars.csv (closed 1-min bars) and fills.csv (order
-fills), each on its own thread.
+NinjaTrader has no reactive fill-event API, so this polls two CSV files the
+companion NinjaScript writes instead: bars.csv (closed 1-min bars) and
+fills.csv (order fills), each on its own thread.
 
 Must run on the same Windows machine as NinjaTrader (or a Windows VPS with
 NinjaTrader installed) — NinjaTrader has no Linux/headless mode.
