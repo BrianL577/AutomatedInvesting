@@ -392,7 +392,7 @@ class NinjaTraderLiveRunner:
         )
         result = TradeResult(
             signal=signal, exit_price=exit_price, exit_timestamp=datetime.now(),
-            win=win, pnl_points=pnl_points,
+            win=win, pnl_points=pnl_points, qty=filled_qty,
         )
         self.trade_logger.log_trade(result, account_name=account)
         self.engine.record_trade_result(win, pnl_points=pnl_points)

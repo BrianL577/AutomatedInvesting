@@ -54,7 +54,7 @@ class TradeLogger:
         tmp_path.replace(self.path)
 
     def log_trade(self, trade: TradeResult, account_name: Optional[str] = None) -> None:
-        pnl_dollars = round(trade.pnl_points * self.dollar_per_point, 2)
+        pnl_dollars = round(trade.pnl_points * self.dollar_per_point * trade.qty, 2)
         record = {
             "timestamp": trade.signal.timestamp.isoformat(),
             "exit_timestamp": trade.exit_timestamp.isoformat(),
