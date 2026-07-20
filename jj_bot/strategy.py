@@ -224,7 +224,13 @@ class StrategyEngine:
             # stale-ish open price on a late restart, but that's still far
             # better than never anchoring at all.
             if bar.timestamp >= cutoff_dt:
-                self.phase = Phase.DONE_FOR_DAY
+                # This date's open→cutoff window is already over and we
+                # never anchored an open — e.g. the first bar after a
+                # weekend gap lands Sunday evening, long past that date's
+                # cutoff. No session for this date ever happened, so stay
+                # WAITING_FOR_OPEN (rather than DONE_FOR_DAY) and just wait
+                # for the next calendar-day reset instead of prematurely
+                # shutting the bot down for a date it never actually traded.
                 return None
             self.open_bar = bar
             self.open_price = bar.open
