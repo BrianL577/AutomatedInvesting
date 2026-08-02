@@ -211,21 +211,9 @@ class TopstepXLiveRunner:
     def _infer_last_pnl(self, account_id: int) -> float | None:
         """TopstepX's Trade/search returns realized profitAndLoss per trade
         directly (unlike Tradovate, which requires inferring P&L from fill
-        prices) — sums the most recent round-trip's trade legs."""
+        prices) — see TopstepXClient.get_recent_trade_pnl."""
         try:
-            resp = requests.post(
-                f"{REST_BASE}/Trade/search",
-                json={"accountId": account_id},
-                headers=self.client._headers(),
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            trades = [t for t in data.get("trades", []) if t.get("accountId") == account_id and t.get("profitAndLoss") is not None]
-            if not trades:
-                return None
-            trades.sort(key=lambda t: t.get("creationTimestamp", ""))
-            return float(trades[-1]["profitAndLoss"])
+            return self.client.get_recent_trade_pnl(account_id)
         except Exception:
             logger.exception("Could not fetch trade history to resolve realized P&L.")
             return None

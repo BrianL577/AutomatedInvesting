@@ -285,6 +285,46 @@ body {
   color: var(--loss-red);
 }
 
+.live-balance-panel {
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-bottom: 24px;
+}
+
+.live-balance-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.live-balance-header h2 {
+  font-size: 15px;
+  margin: 0;
+}
+
+.live-balance-updated {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.live-balance-empty {
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.live-balance-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
 .eval-sim-panel {
   background: var(--panel);
   border: 1px solid var(--panel-border);

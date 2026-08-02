@@ -101,6 +101,30 @@ def accounts():
     }
 
 
+@app.get("/api/account-balances")
+def account_balances():
+    """Real-time account balance(s) straight from the broker — the ground
+    truth for 'how much money is actually in the account right now',
+    independent of anything the dashboard has locally logged/reconstructed.
+    Only meaningful for TopstepX (real money, no sandbox); other brokers
+    return an empty list since paper-account balances aren't the point."""
+    cfg = load_config()
+    if cfg.broker != "topstepx":
+        return {"broker": cfg.broker, "accounts": []}
+    from .topstepx_client import TopstepXClient
+
+    try:
+        client = TopstepXClient(cfg.topstepx)
+        client.authenticate()
+        accounts = client.get_live_balances()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {
+        "broker": cfg.broker,
+        "accounts": [{"name": a.name, "balance": a.balance} for a in accounts],
+    }
+
+
 @app.post("/api/test-trade")
 def test_trade(req: TestTradeRequest):
     cfg = load_config()

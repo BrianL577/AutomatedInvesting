@@ -13,8 +13,9 @@ Used by both the CLI (`scripts/test_connection.py`) and the bot API server's
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from .config import AppConfig
@@ -28,6 +29,11 @@ class ConnectionTestResult:
     tested_account: str
     contract_symbol: str
     order_response: dict
+    # Real, resolved P&L in dollars — only populated for brokers where a
+    # "connectivity test" is a real trade with real money on the line
+    # (TopstepX). None means either not applicable (paper/demo brokers) or
+    # the position hadn't closed yet by the time we stopped polling.
+    realized_pnl_dollars: Optional[float] = None
 
 
 def list_accounts(cfg: AppConfig) -> list[str]:
@@ -80,8 +86,27 @@ def run_connection_test(cfg: AppConfig, account_name: Optional[str] = None, dire
         grade=SetupGrade.A,
         reason=f"Connectivity test trade on account {result.tested_account} ({result.contract_symbol})",
     )
+
+    if result.realized_pnl_dollars is not None:
+        # Real money, resolved outcome (TopstepX) — log the ACTUAL result,
+        # not a placeholder. win=True/pnl=0 here would misrepresent a real
+        # gain or loss on the real account.
+        pnl_points = result.realized_pnl_dollars / dollar_per_point
+        win = result.realized_pnl_dollars > 0
+    elif result.realized_pnl_dollars is None and cfg.broker == "topstepx":
+        # Real money, but the position hadn't closed within our poll window
+        # — say so honestly instead of claiming a fake $0 win. This entry
+        # stays excluded from stats (source=connection_test) either way,
+        # but at least it isn't actively lying in the trade log.
+        signal.reason += " — outcome pending, check the TopStep platform for the real result"
+        pnl_points, win = 0.0, True
+    else:
+        # Paper/demo brokers (IBKR paper, Tradovate demo): no real money
+        # moved, so a $0 placeholder is accurate, not misleading.
+        pnl_points, win = 0.0, True
+
     logger.log_trade(
-        TradeResult(signal=signal, exit_price=0.0, exit_timestamp=signal.timestamp, win=True, pnl_points=0.0),
+        TradeResult(signal=signal, exit_price=0.0, exit_timestamp=signal.timestamp, win=win, pnl_points=pnl_points),
         account_name=result.tested_account,
     )
     return result
@@ -132,13 +157,26 @@ def _run_topstepx_test(cfg: AppConfig, account_name: Optional[str], direction: s
         target_account = accounts[0]
 
     contract = client.find_front_month_contract(cfg.instrument.symbol)
+    placed_at = datetime.now(timezone.utc).isoformat()
     order_response = client.place_test_trade(contract=contract, account=target_account, action=direction, qty=1)
+
+    # Real money, real order — poll briefly for the actual outcome instead
+    # of assuming it filled/closed instantly. A 4-6pt bracket on NQ usually
+    # resolves within seconds to a couple minutes; give it up to ~60s before
+    # giving up and logging it as pending (see run_connection_test above).
+    realized_pnl = None
+    for _ in range(12):
+        time.sleep(5)
+        realized_pnl = client.get_recent_trade_pnl(target_account.id, after_iso=placed_at)
+        if realized_pnl is not None:
+            break
 
     return ConnectionTestResult(
         accounts=[a.name for a in accounts],
         tested_account=target_account.name,
         contract_symbol=contract.name,
         order_response=order_response,
+        realized_pnl_dollars=realized_pnl,
     )
 
 

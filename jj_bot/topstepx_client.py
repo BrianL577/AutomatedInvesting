@@ -68,6 +68,7 @@ class Account:
     id: int
     name: str
     can_trade: bool = True
+    balance: float = 0.0
 
 
 class TopstepXClient:
@@ -131,7 +132,8 @@ class TopstepXClient:
             selected = raw_accounts
 
         self.accounts = [
-            Account(id=a["id"], name=a["name"], can_trade=a.get("canTrade", True)) for a in selected
+            Account(id=a["id"], name=a["name"], can_trade=a.get("canTrade", True), balance=float(a.get("balance", 0.0)))
+            for a in selected
         ]
         not_tradeable = [a.name for a in self.accounts if not a.can_trade]
         if not_tradeable:
@@ -139,6 +141,15 @@ class TopstepXClient:
 
         self.account_id = self.accounts[0].id
         return self.accounts
+
+    def get_live_balances(self) -> list[Account]:
+        """Re-queries Account/search for fresh balances — the account's
+        `balance` field is live (updated on every fill), so this is the
+        ground-truth source for 'how much money is actually in the account
+        right now', independent of whatever this session has locally
+        logged. Call load_accounts() first (for auth/filtering); this
+        re-resolves the same set of accounts with current numbers."""
+        return self.load_accounts()
 
     def find_front_month_contract(self, root_symbol: str) -> Contract:
         """Resolve e.g. 'NQ' to the current front-month contract via
@@ -292,6 +303,34 @@ class TopstepXClient:
                 "method name is correct for your account."
             )
         return result["price"]
+
+    def get_recent_trade_pnl(self, account_id: int, after_iso: Optional[str] = None) -> Optional[float]:
+        """Sums realized profitAndLoss for this account's trades since
+        `after_iso` (or just returns the single most recent trade's P&L if
+        not given) — TopstepX's Trade/search returns realized P&L directly
+        per trade, so this is ground truth, not an inferred/estimated
+        number. Returns None if no matching trades are found yet (position
+        may still be open)."""
+        resp = requests.post(
+            f"{REST_BASE}/Trade/search",
+            json={"accountId": account_id},
+            headers=self._headers(),
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("success"):
+            return None
+        trades = [
+            t for t in data.get("trades", [])
+            if t.get("accountId") == account_id and t.get("profitAndLoss") is not None
+        ]
+        if after_iso:
+            trades = [t for t in trades if t.get("creationTimestamp", "") >= after_iso]
+        if not trades:
+            return None
+        trades.sort(key=lambda t: t.get("creationTimestamp", ""))
+        return sum(float(t["profitAndLoss"]) for t in trades)
 
 
 class TopstepXMarketDataStream:

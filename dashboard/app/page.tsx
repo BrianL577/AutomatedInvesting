@@ -2,6 +2,7 @@ import { loadTrades, computeStats, simulateAccounts, usingSupabase, RATE_LIMITS,
 import TestTradePanel from "../components/TestTradePanel";
 import MarketChart from "../components/MarketChart";
 import GainLossChart from "../components/GainLossChart";
+import LiveBalancePanel from "../components/LiveBalancePanel";
 import Reveal from "../components/Reveal";
 
 export const dynamic = "force-dynamic";
@@ -46,6 +47,10 @@ export default async function Page() {
 
       <Reveal>
         <TestTradePanel />
+      </Reveal>
+
+      <Reveal delayMs={60}>
+        <LiveBalancePanel />
       </Reveal>
 
       <Reveal delayMs={60}>
