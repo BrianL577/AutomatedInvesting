@@ -1,16 +1,23 @@
 """Small always-on HTTP API the Vercel dashboard talks to.
 
 This is NOT hosted on Vercel — Vercel serverless functions can't hold a
-persistent broker session and shouldn't hold your Tradovate credentials in
-a browser-reachable environment tied to your frontend deploys. Run this on
-a small always-on host (a VPS, Railway, Render, Fly.io, or even your own
+persistent broker session and shouldn't hold your broker credentials in a
+browser-reachable environment tied to your frontend deploys. Run this on a
+small always-on host (a VPS, Railway, Render, Fly.io, or even your own
 machine via a tunnel like ngrok/Cloudflare Tunnel) and point the dashboard
 at it via the NEXT_PUBLIC_BOT_API_URL env var.
+
+IMPORTANT — if BROKER=topstepx, this must NOT run on Railway/a VPS/any cloud
+host: TopStep bans VPS/cloud execution for a real eval/funded account. Run
+this on your own local, actively-monitored machine instead. Railway/VPS
+hosting is only fine here for BROKER=ibkr (paper trading, not TopStep-
+connected).
 
 Endpoints:
   GET  /api/health        -> {"ok": true}
   GET  /api/accounts      -> resolves + lists every configured broker account
-                              (IBKR by default, or Tradovate if BROKER=tradovate)
+                              (IBKR by default, TopstepX if BROKER=topstepx,
+                              or Tradovate if BROKER=tradovate)
   POST /api/test-trade    -> places one small bracket test order, to confirm
                               the automation pipeline is actually wired up
   GET  /api/trades        -> same trade log the dashboard reads directly,
@@ -81,9 +88,15 @@ def accounts():
         names = list_accounts(cfg)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+    if cfg.broker == "tradovate":
+        env_label = cfg.tradovate.env
+    elif cfg.broker == "topstepx":
+        env_label = "live"  # no sandbox — every TopstepX order is real
+    else:
+        env_label = "paper"
     return {
         "broker": cfg.broker,
-        "env": cfg.tradovate.env if cfg.broker == "tradovate" else "paper",
+        "env": env_label,
         "accounts": [{"name": n, "active": True} for n in names],
     }
 

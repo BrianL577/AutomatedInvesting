@@ -1,17 +1,23 @@
 # JJ Strategy — Trading Bot
 
 Automates the NY-session "high-timeframe reversion, low-timeframe continuation"
-strategy described by the YouTuber JJ. Two brokers are supported:
+strategy described by the YouTuber JJ. Three brokers are supported:
 
 - **Interactive Brokers (default, `BROKER=ibkr`)** — free paper trading
   account, no funding required, runs headless on Railway. See `IBKR.md`.
-- **Tradovate (`BROKER=tradovate`)** — the platform TopStep evals and funded
-  accounts execute through. Runs headless (Railway or any small always-on
-  Linux host) — no desktop app, no remote desktop needed. Defaults to
-  `TRADOVATE_ENV=demo` for practice; your real TopStep account needs
-  `TRADOVATE_ENV=live` plus the explicit `TRADOVATE_ALLOW_LIVE=true` opt-in.
-  Tradovate only issues API keys once you've funded a live account and
-  bought their $25/mo API add-on.
+- **TopstepX (`BROKER=topstepx`)** — TopStep's own platform; this is what a
+  real TopStep account actually runs on today (TopStep replaced Tradovate/
+  NinjaTrader routing with TopstepX — no TopStep account has run on Tradovate
+  since Feb 2026). Requires a separate $29/mo TopstepX API subscription.
+  **No sandbox** — every order is real money the instant
+  `TOPSTEPX_ALLOW_LIVE=true` is set. **Must run on your own local,
+  actively-monitored machine** — TopStep bans VPS/cloud execution (Railway
+  included) for a real eval/funded account.
+- **Tradovate (`BROKER=tradovate`)** — legacy; only relevant if you have a
+  Tradovate account you opened yourself, separate from TopStep. Runs headless
+  (Railway or any small always-on Linux host). Defaults to
+  `TRADOVATE_ENV=demo` for practice; live requires `TRADOVATE_ENV=live` plus
+  `TRADOVATE_ALLOW_LIVE=true`.
 
 > Verify everything against your own TopStep rules before trading a funded
 > account. This is not investment advice.

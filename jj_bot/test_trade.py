@@ -4,8 +4,9 @@ my account and will it really submit trades" before trusting the live
 strategy runner.
 
 Dispatches on `cfg.broker` ("ibkr" by default — free paper trading, no
-funding required; or "tradovate" if you've funded a live Tradovate account
-and purchased API access).
+funding required; "topstepx" for a real TopStep account, TopStep's own
+platform; or "tradovate", legacy, only for a Tradovate account opened
+outside TopStep).
 
 Used by both the CLI (`scripts/test_connection.py`) and the bot API server's
 `/api/test-trade` endpoint that the dashboard's Test Trade panel calls.
@@ -40,6 +41,13 @@ def list_accounts(cfg: AppConfig) -> list[str]:
         finally:
             client.disconnect()
 
+    if cfg.broker == "topstepx":
+        from .topstepx_client import TopstepXClient
+
+        client = TopstepXClient(cfg.topstepx)
+        client.authenticate()
+        return [a.name for a in client.load_accounts()]
+
     from .tradovate_client import TradovateClient
 
     client = TradovateClient(cfg.tradovate)
@@ -55,6 +63,8 @@ def run_connection_test(cfg: AppConfig, account_name: Optional[str] = None, dire
     strategy trades."""
     if cfg.broker == "ibkr":
         result = _run_ibkr_test(cfg, account_name, direction)
+    elif cfg.broker == "topstepx":
+        result = _run_topstepx_test(cfg, account_name, direction)
     else:
         result = _run_tradovate_test(cfg, account_name, direction)
 
@@ -104,6 +114,32 @@ def _run_ibkr_test(cfg: AppConfig, account_name: Optional[str], direction: str) 
         )
     finally:
         client.disconnect()
+
+
+def _run_topstepx_test(cfg: AppConfig, account_name: Optional[str], direction: str) -> ConnectionTestResult:
+    from .topstepx_client import TopstepXClient
+
+    client = TopstepXClient(cfg.topstepx)
+    client.authenticate()
+    accounts = client.load_accounts()
+
+    target_account = None
+    if account_name:
+        target_account = next((a for a in accounts if a.name == account_name), None)
+        if target_account is None:
+            raise ValueError(f"Account '{account_name}' not found among resolved accounts: {[a.name for a in accounts]}")
+    else:
+        target_account = accounts[0]
+
+    contract = client.find_front_month_contract(cfg.instrument.symbol)
+    order_response = client.place_test_trade(contract=contract, account=target_account, action=direction, qty=1)
+
+    return ConnectionTestResult(
+        accounts=[a.name for a in accounts],
+        tested_account=target_account.name,
+        contract_symbol=contract.name,
+        order_response=order_response,
+    )
 
 
 def _run_tradovate_test(cfg: AppConfig, account_name: Optional[str], direction: str) -> ConnectionTestResult:
