@@ -32,28 +32,19 @@ class TopstepEvalSimConfig:
     account_size: float = 50000
     profit_target: float = 3000
     trailing_max_drawdown: float = 2000
-    # Two independent, additive fee streams (confirmed against a real
-    # Topstep Standard Path account) — a per-attempt fee charged on every
-    # purchase/reactivation, AND a separate monthly subscription charged
-    # regardless of busts.
-    eval_fee: float = 49
-    reactivation_fee: float = 49
-    monthly_fee: float = 49
+    # Confirmed against Topstep's current pricing page (50K plan, per direct
+    # user confirmation): $95/mo subscription, $95 reset fee on a bust,
+    # Express Funded Activation Fee is FREE. Topstep no longer offers a
+    # separate cheaper-monthly/pricier-activation plan — both "plans" below
+    # are set identically so the plan-switch logic (harmless if unused)
+    # can't diverge from real cost. Ignore any promo-discounted price shown
+    # at signup (e.g. "$85/mo") — those are temporary.
+    eval_fee: float = 95
+    reactivation_fee: float = 95
+    monthly_fee: float = 95
     trading_days_per_month: int = 21
-    # One-time fee charged once when an attempt passes and activates the
-    # funded account — ONLY on the Standard plan. See no_activation_fee_*
-    # below for the alternate plan (pricier monthly, $0 here instead).
-    activation_fee: float = 149
-    # Topstep's alternate pricing plan: pricier monthly, $0 activation fee.
-    # Switches from Standard to this plan once the empirical pass rate
-    # (funded / attempts so far) reaches pass_rate_switch_threshold —
-    # standard beginner advice: cheap plan while still busting most evals,
-    # switch once passing consistently since the activation fee saved then
-    # outweighs the higher monthly cost.
+    activation_fee: float = 0
     no_activation_fee_monthly_fee: float = 95
-    # Default to 0.0 (always use the No-Activation-Fee plan, from attempt
-    # #1) per explicit user instruction — they'd rather pay the higher
-    # monthly fee than ever pay the $149 activation fee.
     pass_rate_switch_threshold: float = 0.0
     # Funded-stage payout math.
     payout_share: float = 0.9

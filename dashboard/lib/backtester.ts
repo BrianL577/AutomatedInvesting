@@ -466,32 +466,29 @@ function simulateSession(
  * Loss Limit resets to $0 the moment funds are withdrawn, so the very next
  * losing day can bust the account outright with zero cushion. */
 function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: number) {
-  // TWO INDEPENDENT, ADDITIVE fee streams, per direct user confirmation:
+  // TWO INDEPENDENT, ADDITIVE fee streams, per Topstep's current pricing
+  // page and direct user confirmation:
   // 1) A per-attempt fee charged every time you start or restart a Combine
-  //    attempt — busting and resetting costs this again ($49, both the
+  //    attempt — busting and resetting costs this again ($95, both the
   //    initial purchase and every reactivation).
   // 2) A SEPARATE, continuous monthly subscription charge that accrues
   //    regardless of busts/restarts, for as long as you're still in eval
-  //    ($49 every ~21 trading days). Pauses once funded (the one-time
-  //    activation fee applies instead), resumes if a funded account later
-  //    busts and a new Combine is purchased.
-  const evalFee = cfg.eval.evalFeeDollars ?? 49;
-  const reactivationFee = cfg.eval.reactivationFeeDollars ?? 49;
+  //    ($95 every ~21 trading days). Pauses once funded (the one-time
+  //    activation fee applies instead — currently $0, see below), resumes
+  //    if a funded account later busts and a new Combine is purchased.
+  const evalFee = cfg.eval.evalFeeDollars ?? 95;
+  const reactivationFee = cfg.eval.reactivationFeeDollars ?? 95;
   const TRADING_DAYS_PER_MONTH = 21;
-  // Topstep offers TWO pricing plans for the same account size: Standard
-  // ($49/mo, cheaper monthly, but a $149 activation fee if you pass) vs
-  // No-Activation-Fee ($95/mo, pricier monthly, but $0 extra if you pass).
-  // Standard is cheaper per-attempt while you're busting most evals (a
-  // beginner); No-Activation-Fee becomes cheaper once you're passing often
-  // enough that the $149 you'd repeatedly pay outweighs the monthly
-  // difference. Modeled here as: use Standard until your OWN empirical
-  // pass rate so far reaches passRateSwitchThreshold (default 33%), then
-  // switch to No-Activation-Fee for subsequent attempts — matching the
-  // standard trader advice (paper-trade until ~33% pass rate, then switch
-  // plans), not a fixed choice for the whole simulation.
-  const monthlyFeeStandard = cfg.eval.monthlyFeeDollars ?? 49;
+  // Topstep used to offer two pricing plans (cheaper-monthly-but-$149-
+  // activation vs pricier-monthly-but-$0-activation); as of their current
+  // pricing page the Express Funded Activation Fee is FREE across the
+  // board and there's a single $95/mo subscription, so both fee tracks
+  // below are set identically — this dual-plan switch logic is kept
+  // (harmless if both values match) in case Topstep reintroduces tiered
+  // pricing, not because it currently does anything.
+  const monthlyFeeStandard = cfg.eval.monthlyFeeDollars ?? 95;
   const monthlyFeeNoActivation = cfg.eval.noActivationFeeMonthlyFeeDollars ?? 95;
-  const activationFeeStandard = cfg.eval.fundedActivationFeeDollars ?? 149;
+  const activationFeeStandard = cfg.eval.fundedActivationFeeDollars ?? 0;
   const passRateSwitchThreshold = cfg.eval.passRateSwitchThreshold ?? 0.0;
   const payoutShare = cfg.eval.payoutShareRatio ?? 0.9;
   const maxPayout = cfg.eval.maxPayoutPerEvent ?? 2000;

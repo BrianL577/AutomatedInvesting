@@ -1099,7 +1099,7 @@ export default function StrategiesPage() {
                         <div className="bt-results-header" style={{ marginTop: 20 }}>
                           <h3>
                             Real Money{accountCountLabel > 1 ? ` — Session Split, ${accountCountLabel} Accounts` : ""}{" "}
-                            <Hint text="Actual money in and out of your pocket: $50 per eval/reactivation, and once funded, 5 winning days of $150+ each unlock a payout at 90% share (10% to the firm), capped at $2,000 per event — Topstep's actual Standard Path rule, not a cumulative-dollar target. After every payout the drawdown buffer resets to $0, so the very next losing day can bust the account outright. Verify these against the firm's current rules. If 'Session Split (Accts)' above is set >1, most of those accounts trade a RESTRICTED SLICE of the strategy (one session or phase), not the full thing — this section can total LESS than one full account. For true N-accounts-each-running-the-whole-strategy scaling, use the separate 'Portfolio' section below (enable it under Edit)." />
+                            <Hint text="Actual money in and out of your pocket: $95/mo subscription plus $95 per eval/reactivation, and once funded, 5 winning days of $150+ each unlock a payout at 90% share (10% to the firm), capped at $2,000 per event — Topstep's actual current-pricing rule, not a cumulative-dollar target. The Express Funded Activation Fee is currently free. After every payout the drawdown buffer resets to $0, so the very next losing day can bust the account outright. Verify these against the firm's current rules. If 'Session Split (Accts)' above is set >1, most of those accounts trade a RESTRICTED SLICE of the strategy (one session or phase), not the full thing — this section can total LESS than one full account. For true N-accounts-each-running-the-whole-strategy scaling, use the separate 'Portfolio' section below (enable it under Edit)." />
                           </h3>
                         </div>
                         <div className="stat-grid">
@@ -1111,7 +1111,7 @@ export default function StrategiesPage() {
                           />
                           <StatCard
                             label="Fees Paid"
-                            hint="Every $50 spent buying an eval or reactivating after busting an account, summed across every account."
+                            hint="Every $95 spent buying an eval or reactivating after busting an account, summed across every account."
                             value={fmtMoney(-feesPaid)}
                             tone="negative"
                           />
@@ -1263,7 +1263,7 @@ export default function StrategiesPage() {
                         />
                         <StatCard
                           label="Total Fees Paid"
-                          hint="Every $50 spent buying or re-buying an eval, summed across all accounts."
+                          hint="Every $95 spent buying or re-buying an eval, summed across all accounts."
                           value={fmtMoney(-result.sessionSplit.totalFeesPaid)}
                           tone="negative"
                         />

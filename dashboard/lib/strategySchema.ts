@@ -248,20 +248,25 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
     accountSize: 50000,
     profitTarget: 3000,
     trailingMaxDrawdown: 2000,
-    // Topstep Standard Path, 50K account, signed up on/after Jan 12, 2026
-    // (flat 90/10 split from dollar one — no first-$10k-at-100% bonus).
+    // Topstep 50K Combine, confirmed against Topstep's current pricing page
+    // and by direct user confirmation. Flat 90/10 split from dollar one.
     // Payout eligibility is 5 winning days (each >= $150 net P&L), NOT a
     // cumulative-dollar threshold — see minWinningDaysForPayout below.
     payoutShareRatio: 0.9,
     maxPayoutPerEvent: 2000,
     minWinningDaysForPayout: 5,
     minWinningDayProfit: 150,
-    // Real Topstep Standard Path pricing for the 50K Combine, confirmed
-    // against the trader's own active subscription — NOT the $95/mo "No
-    // Activation Fee Path" figure. Confirm before trusting for a real
-    // decision, since these can change.
-    monthlyFeeDollars: 49,
-    fundedActivationFeeDollars: 149,
+    // $95/mo subscription, $95 per-attempt reset fee, and the Express
+    // Funded Activation Fee is FREE — Topstep no longer offers a separate
+    // cheaper-monthly/pricier-activation plan, so both fee tracks below are
+    // set identically. Ignore any promo-discounted price shown at signup
+    // (e.g. "$85/mo") — those are temporary. Confirm before trusting for a
+    // real decision, since these can change.
+    monthlyFeeDollars: 95,
+    fundedActivationFeeDollars: 0,
+    noActivationFeeMonthlyFeeDollars: 95,
+    evalFeeDollars: 95,
+    reactivationFeeDollars: 95,
   },
 };
 
