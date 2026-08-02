@@ -121,10 +121,11 @@ export const RATE_LIMITS = { PROFIT_CAP, LOSS_CAP };
 //    path": 3+ days where the best single day is <= 40% of profit since the
 //    last payout), capped at $2,000 or 50% of balance, 90% to the trader.
 //    The drawdown buffer resets to $0 (no cushion) immediately after a payout.
-//  - Cost per eval attempt: a flat $100 (per explicit instruction — this
-//    covers the real $49 per-attempt fee plus the accrued monthly
-//    subscription by the time an attempt resolves, and no separate
-//    activation fee is charged on passing).
+//  - Cost per eval attempt: a flat $95 (Topstep's real reset fee — the
+//    ongoing $95/mo subscription runs separately regardless of busts; see
+//    backtester.ts's walkAccountEconomics for the full monthly-billing
+//    simulation). No separate activation fee — Topstep's Express Funded
+//    Activation Fee is currently free.
 export type AccountStage = "eval" | "funded";
 
 export type AccountSim = {
@@ -147,7 +148,13 @@ const EVAL_CFG = JJ_DEFAULT_STRATEGY.eval;
 export const EVAL_SIM = {
   EVAL_TARGET: EVAL_CFG.profitTarget,
   TRAILING_DRAWDOWN: EVAL_CFG.trailingMaxDrawdown,
-  EVAL_COST: 100,
+  // Flat per-attempt cost: Topstep's real $95/mo subscription + $95 reset
+  // fee are two separate charges (see backtester.ts's walkAccountEconomics
+  // for the full monthly-billing simulation) — this is a deliberate
+  // simplification for the at-a-glance homepage view, using the reset fee
+  // as the flat number since it's charged on every bust regardless of
+  // billing cycle timing.
+  EVAL_COST: EVAL_CFG.evalFeeDollars ?? 95,
   PAYOUT_SHARE: EVAL_CFG.payoutShareRatio ?? 0.9,
   MAX_PAYOUT: EVAL_CFG.maxPayoutPerEvent ?? 2000,
   MAX_PAYOUT_BALANCE_SHARE: 0.5,

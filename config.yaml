@@ -52,17 +52,16 @@ topstep_eval:                    # used by the backtester AND the live TopstepEv
   profit_target: 3000
   trailing_max_drawdown: 2000
   daily_loss_limit: null         # set if your eval enforces one
-  # Confirmed against a real Topstep Standard Path account — see
-  # jj_bot/topstep_eval_sim.py and dashboard/lib/backtester.ts for the
-  # rule mechanics these numbers feed into.
-  eval_fee: 49
-  reactivation_fee: 49
-  monthly_fee: 49
-  activation_fee: 149
-  # Topstep's alternate pricing plan (pricier monthly, $0 activation fee) —
-  # the sim switches from Standard to this once your empirical pass rate
-  # reaches pass_rate_switch_threshold. Standard beginner advice: use the
-  # cheap plan until you're consistently passing, then switch.
+  # Confirmed against Topstep's current pricing page (50K plan): $95/mo
+  # subscription (ignore any promo-discounted price shown at signup — those
+  # are temporary), $95 reset fee on a bust, Express Funded Activation Fee
+  # is FREE. Topstep no longer offers a separate cheaper-monthly/pricier-
+  # activation plan — both "plans" below are set identically so the sim's
+  # plan-switch logic (harmless if unused) can't diverge from real cost.
+  eval_fee: 95
+  reactivation_fee: 95
+  monthly_fee: 95
+  activation_fee: 0
   no_activation_fee_monthly_fee: 95
   pass_rate_switch_threshold: 0.0
   payout_share: 0.9
