@@ -52,6 +52,15 @@ topstep_eval:                    # used by the backtester AND the live TopstepEv
   profit_target: 3000
   trailing_max_drawdown: 2000
   daily_loss_limit: null         # set if your eval enforces one
+  # Per Topstep's Rebill Agreement: a bust doesn't force an immediate $85
+  # charge — Topstep gives ONE FREE "Reset-at-Rebill" automatically at your
+  # next 30-day rebill date if the account is still ineligible then. The
+  # $85 reset fee only applies if you reset BEFORE that date to resume
+  # trading sooner (which also shifts your billing cycle to the reset
+  # date). This model deliberately assumes an immediate paid reset on every
+  # bust (worst-case/upper-bound cost) since an actively-trading bot
+  # resetting right away beats sitting idle for the rest of a 30-day cycle
+  # — confirmed as the intended assumption, not an oversight.
   # PROMO PRICING — Topstep's current pricing page (50K, Daily Loss Limit
   # account) shows $85/mo (promo, may change) for this account type, $85
   # reset fee on a bust (mirrors the monthly price), Express Funded
