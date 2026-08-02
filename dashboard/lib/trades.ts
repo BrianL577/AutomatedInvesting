@@ -117,15 +117,18 @@ export const RATE_LIMITS = { PROFIT_CAP, LOSS_CAP };
 //  - Bust/drawdown is a TRAILING high-water-mark floor (peak - $2,000),
 //    capped so it never rises above breakeven ($0) — NOT a flat -$2,000 from
 //    zero. Once $2,000+ profitable, the floor locks at breakeven.
-//  - Funded payouts require 5 winning days of $150+ net (or a "consistency
-//    path": 3+ days where the best single day is <= 40% of profit since the
-//    last payout), capped at $2,000 or 50% of balance, 90% to the trader.
-//    The drawdown buffer resets to $0 (no cushion) immediately after a payout.
-//  - Cost per eval attempt: a flat $95 (Topstep's real reset fee — the
-//    ongoing $95/mo subscription runs separately regardless of busts; see
-//    backtester.ts's walkAccountEconomics for the full monthly-billing
-//    simulation). No separate activation fee — Topstep's Express Funded
-//    Activation Fee is currently free.
+//  - Funded payouts require 5 winning days of $150+ net (Standard path
+//    only — the Consistency path is deliberately not modeled, per explicit
+//    user choice), capped at $4,000 (PROMO VALUE, base $2,000 — see
+//    JJ_DEFAULT_STRATEGY.eval.maxPayoutPerEvent in strategySchema.ts) or
+//    50% of balance, 90% to the trader. The drawdown buffer resets to $0
+//    (no cushion) immediately after a payout.
+//  - Cost per eval attempt: a flat $85 (PROMO PRICE, may change — Topstep's
+//    real reset fee for this account type). The ongoing $85/mo subscription
+//    runs separately regardless of busts; see backtester.ts's
+//    walkAccountEconomics for the full monthly-billing simulation. No
+//    separate activation fee — Topstep's Express Funded Activation Fee is
+//    currently free.
 export type AccountStage = "eval" | "funded";
 
 export type AccountSim = {
@@ -148,20 +151,22 @@ const EVAL_CFG = JJ_DEFAULT_STRATEGY.eval;
 export const EVAL_SIM = {
   EVAL_TARGET: EVAL_CFG.profitTarget,
   TRAILING_DRAWDOWN: EVAL_CFG.trailingMaxDrawdown,
-  // Flat per-attempt cost: Topstep's real $95/mo subscription + $95 reset
-  // fee are two separate charges (see backtester.ts's walkAccountEconomics
-  // for the full monthly-billing simulation) — this is a deliberate
-  // simplification for the at-a-glance homepage view, using the reset fee
-  // as the flat number since it's charged on every bust regardless of
-  // billing cycle timing.
-  EVAL_COST: EVAL_CFG.evalFeeDollars ?? 95,
+  // Flat per-attempt cost: Topstep's real $85/mo subscription (PROMO PRICE,
+  // may change — update here if it does) + $85 reset fee are two separate
+  // charges (see backtester.ts's walkAccountEconomics for the full
+  // monthly-billing simulation) — this is a deliberate simplification for
+  // the at-a-glance homepage view, using the reset fee as the flat number
+  // since it's charged on every bust regardless of billing cycle timing.
+  EVAL_COST: EVAL_CFG.evalFeeDollars ?? 85,
   PAYOUT_SHARE: EVAL_CFG.payoutShareRatio ?? 0.9,
-  MAX_PAYOUT: EVAL_CFG.maxPayoutPerEvent ?? 2000,
+  // PROMO VALUE — Topstep's page currently shows a promotional payout cap
+  // ($4,000). This can change — check Topstep's current pricing page and
+  // update JJ_DEFAULT_STRATEGY.eval.maxPayoutPerEvent (strategySchema.ts)
+  // if it does; everything else here derives from that single source.
+  MAX_PAYOUT: EVAL_CFG.maxPayoutPerEvent ?? 4000,
   MAX_PAYOUT_BALANCE_SHARE: 0.5,
   MIN_WINNING_DAYS_FOR_PAYOUT: EVAL_CFG.minWinningDaysForPayout ?? 5,
   MIN_WINNING_DAY_PROFIT: EVAL_CFG.minWinningDayProfit ?? 150,
-  CONSISTENCY_PATH_MIN_DAYS: 3,
-  CONSISTENCY_PATH_MAX_BEST_DAY_SHARE: 0.4,
 };
 
 /** ET calendar-day key (YYYY-MM-DD) for grouping trades into the daily P&L
@@ -254,14 +259,12 @@ export function simulateAccounts(trades: Trade[]): AccountSim[] {
           if (dayPnl > bestDaySincePayout) bestDaySincePayout = dayPnl;
           if (dayPnl >= EVAL_SIM.MIN_WINNING_DAY_PROFIT) winningDaysSincePayout += 1;
 
+          // Standard path only (Option 1) — per explicit user choice, the
+          // Consistency path (Option 2) is deliberately not modeled.
           const standardPathEligible = winningDaysSincePayout >= EVAL_SIM.MIN_WINNING_DAYS_FOR_PAYOUT;
-          const consistencyPathEligible =
-            daysSincePayout >= EVAL_SIM.CONSISTENCY_PATH_MIN_DAYS &&
-            profitSincePayout > 0 &&
-            bestDaySincePayout <= profitSincePayout * EVAL_SIM.CONSISTENCY_PATH_MAX_BEST_DAY_SHARE;
           const aboveLastPayoutBalance = balance > balanceAtLastPayout;
 
-          if ((standardPathEligible || consistencyPathEligible) && aboveLastPayoutBalance) {
+          if (standardPathEligible && aboveLastPayoutBalance) {
             const payout = Math.max(
               0,
               Math.min(EVAL_SIM.MAX_PAYOUT, profitSincePayout * EVAL_SIM.PAYOUT_SHARE, balance * EVAL_SIM.MAX_PAYOUT_BALANCE_SHARE)

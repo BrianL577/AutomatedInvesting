@@ -52,20 +52,24 @@ topstep_eval:                    # used by the backtester AND the live TopstepEv
   profit_target: 3000
   trailing_max_drawdown: 2000
   daily_loss_limit: null         # set if your eval enforces one
-  # Confirmed against Topstep's current pricing page (50K plan): $95/mo
-  # subscription (ignore any promo-discounted price shown at signup — those
-  # are temporary), $95 reset fee on a bust, Express Funded Activation Fee
-  # is FREE. Topstep no longer offers a separate cheaper-monthly/pricier-
-  # activation plan — both "plans" below are set identically so the sim's
-  # plan-switch logic (harmless if unused) can't diverge from real cost.
-  eval_fee: 95
-  reactivation_fee: 95
-  monthly_fee: 95
+  # PROMO PRICING — Topstep's current pricing page (50K, Daily Loss Limit
+  # account) shows $85/mo (promo, may change) for this account type, $85
+  # reset fee on a bust (mirrors the monthly price), Express Funded
+  # Activation Fee is FREE. Topstep no longer offers a separate
+  # cheaper-monthly/pricier-activation plan — both "plans" below are set
+  # identically so the sim's plan-switch logic (harmless if unused) can't
+  # diverge from real cost. These are all easy single-line edits here if
+  # Topstep changes pricing — check their current page periodically.
+  eval_fee: 85
+  reactivation_fee: 85
+  monthly_fee: 85
   activation_fee: 0
-  no_activation_fee_monthly_fee: 95
+  no_activation_fee_monthly_fee: 85
   pass_rate_switch_threshold: 0.0
   payout_share: 0.9
-  max_payout_per_event: 2000
+  # PROMO VALUE — Topstep's page currently shows a promotional payout cap
+  # of $4,000 (base $2,000). Update this single line if the promo changes.
+  max_payout_per_event: 4000
   max_payout_balance_share: 0.5
   min_winning_days_for_payout: 5
   min_winning_day_profit: 150

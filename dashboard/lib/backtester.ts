@@ -466,32 +466,38 @@ function simulateSession(
  * Loss Limit resets to $0 the moment funds are withdrawn, so the very next
  * losing day can bust the account outright with zero cushion. */
 function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: number) {
-  // TWO INDEPENDENT, ADDITIVE fee streams, per Topstep's current pricing
-  // page and direct user confirmation:
+  // TWO INDEPENDENT, ADDITIVE fee streams. PROMO PRICING — Topstep's
+  // current pricing page (50K, Daily Loss Limit account) shows $85/mo
+  // (promo, may change) for this account type:
   // 1) A per-attempt fee charged every time you start or restart a Combine
-  //    attempt — busting and resetting costs this again ($95, both the
+  //    attempt — busting and resetting costs this again ($85, both the
   //    initial purchase and every reactivation).
   // 2) A SEPARATE, continuous monthly subscription charge that accrues
   //    regardless of busts/restarts, for as long as you're still in eval
-  //    ($95 every ~21 trading days). Pauses once funded (the one-time
+  //    ($85 every ~21 trading days). Pauses once funded (the one-time
   //    activation fee applies instead — currently $0, see below), resumes
   //    if a funded account later busts and a new Combine is purchased.
-  const evalFee = cfg.eval.evalFeeDollars ?? 95;
-  const reactivationFee = cfg.eval.reactivationFeeDollars ?? 95;
+  const evalFee = cfg.eval.evalFeeDollars ?? 85;
+  const reactivationFee = cfg.eval.reactivationFeeDollars ?? 85;
   const TRADING_DAYS_PER_MONTH = 21;
   // Topstep used to offer two pricing plans (cheaper-monthly-but-$149-
   // activation vs pricier-monthly-but-$0-activation); as of their current
   // pricing page the Express Funded Activation Fee is FREE across the
-  // board and there's a single $95/mo subscription, so both fee tracks
+  // board and there's a single $85/mo subscription, so both fee tracks
   // below are set identically — this dual-plan switch logic is kept
   // (harmless if both values match) in case Topstep reintroduces tiered
   // pricing, not because it currently does anything.
-  const monthlyFeeStandard = cfg.eval.monthlyFeeDollars ?? 95;
-  const monthlyFeeNoActivation = cfg.eval.noActivationFeeMonthlyFeeDollars ?? 95;
+  const monthlyFeeStandard = cfg.eval.monthlyFeeDollars ?? 85;
+  const monthlyFeeNoActivation = cfg.eval.noActivationFeeMonthlyFeeDollars ?? 85;
   const activationFeeStandard = cfg.eval.fundedActivationFeeDollars ?? 0;
   const passRateSwitchThreshold = cfg.eval.passRateSwitchThreshold ?? 0.0;
   const payoutShare = cfg.eval.payoutShareRatio ?? 0.9;
-  const maxPayout = cfg.eval.maxPayoutPerEvent ?? 2000;
+  // PROMO VALUE — Topstep's page currently shows a promotional payout cap
+  // of $4,000 (base $2,000). Single source of truth is
+  // JJ_DEFAULT_STRATEGY.eval.maxPayoutPerEvent in strategySchema.ts —
+  // update it there if the promo changes; this ?? fallback only applies to
+  // saved strategies that omit the field.
+  const maxPayout = cfg.eval.maxPayoutPerEvent ?? 4000;
   const maxPayoutBalanceShare = cfg.eval.maxPayoutBalanceShare ?? 0.5;
   // Two independent funded-stage payout paths, confirmed by Topstep
   // support — NOT the same Consistency Target as the Combine/eval stage
@@ -612,15 +618,10 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
         if (dayPnl > bestDaySincePayout) bestDaySincePayout = dayPnl;
         if (dayPnl >= minWinningDayProfit) winningDaysSincePayout++;
 
-        // Standard path: N winning days of $X+ each.
+        // Standard path only (Option 1) — per explicit user choice, the
+        // Consistency path (Option 2: 3+ days, best day <= 40% of profit)
+        // is deliberately not modeled even though Topstep offers it.
         const standardPathEligible = winningDaysSincePayout >= minWinningDaysForPayout;
-        // Consistency path: as few as N trading days, as long as the best
-        // single day stays under the share cap of total profit so far —
-        // faster, but only usable while genuinely well-distributed.
-        const consistencyPathEligible =
-          daysSincePayout >= consistencyPathMinDays &&
-          profitSincePayout > 0 &&
-          bestDaySincePayout <= profitSincePayout * consistencyPathMaxBestDayShare;
         // Confirmed directly: eligibility ALSO requires balance to be
         // strictly above the post-previous-payout reference, not just
         // hitting the day-count criteria — a day-count-eligible cycle with
@@ -628,7 +629,7 @@ function walkAccountEconomics(cfg: StrategyConfig, series: number[], startDay: n
         // does not unlock a payout yet.
         const aboveLastPayoutBalance = balance > balanceAtLastPayout;
 
-        if ((standardPathEligible || consistencyPathEligible) && aboveLastPayoutBalance) {
+        if (standardPathEligible && aboveLastPayoutBalance) {
           const payout = Math.max(
             0,
             Math.min(maxPayout, profitSincePayout * payoutShare, balance * maxPayoutBalanceShare)
