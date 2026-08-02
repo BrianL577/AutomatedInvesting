@@ -7,7 +7,7 @@ import pytz
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jj_bot.config import load_config
-from jj_bot.models import Bar, Direction
+from jj_bot.models import Bar, Direction, Phase
 from jj_bot.strategy import StrategyEngine
 
 ET = pytz.timezone("America/New_York")
@@ -68,8 +68,24 @@ def test_reset_day_clears_state():
     assert engine.open_price is None
 
 
+def test_first_bar_of_day_past_cutoff_waits_instead_of_ending_day():
+    # Simulates a weekend reopen: the first bar seen for this trading day
+    # arrives Sunday evening, long after today's hard_cutoff (11:00) has
+    # already passed for that calendar date. No session for this date ever
+    # happened, so the engine should stay WAITING_FOR_OPEN (and wait for
+    # tomorrow's open) rather than jumping straight to DONE_FOR_DAY.
+    cfg = load_config()
+    engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk)
+
+    late_bar = mkbar(18, 1, 100.0, 100.5, 99.5, 100.2)
+    assert engine.on_bar(late_bar) is None
+    assert engine.phase == Phase.WAITING_FOR_OPEN
+    assert engine.open_bar is None
+
+
 if __name__ == "__main__":
     test_continuation_short_signal()
     test_max_trades_per_day_enforced()
     test_reset_day_clears_state()
+    test_first_bar_of_day_past_cutoff_waits_instead_of_ending_day()
     print("All tests passed.")

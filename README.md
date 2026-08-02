@@ -60,26 +60,14 @@ python scripts/run_backtest.py --bars data/NQ_1min.csv --account-size 50000
 Bars CSV needs columns: `timestamp,open,high,low,close,volume` (timestamp in
 UTC or with tz info; the bot converts to America/New_York internally).
 
-You can also pull historical bars directly from Tradovate or IBKR instead of
+You can also pull historical bars directly from Tradovate instead of
 supplying a CSV — or use the dashboard's Strategy Creator, which backtests
 against Supabase-hosted historical bars (see `scripts/import_bars.py`).
 
 ### 2. Live paper trading
 
 `BROKER` in `.env` selects the broker (default `ibkr`). Each has its own
-setup:
-
-**Interactive Brokers (default)** — free, no funding required, but needs a
-running TWS/IB Gateway process (a local app you stay logged into, not a
-hosted API). Full setup: **`IBKR.md`**.
-
-```
-BROKER=ibkr
-IBKR_HOST=127.0.0.1
-IBKR_PORT=4002
-IBKR_CLIENT_ID=1
-IBKR_ACCOUNT_NAMES=DU1234567
-```
+setup — see `IBKR.md` for the IB Gateway/TWS setup.
 
 **Tradovate** — requires a funded live account + the $25/mo API add-on
 before `trader.tradovate.com` will show key-generation fields. Once you
@@ -98,11 +86,11 @@ TRADOVATE_DEVICE_ID=jj-bot-01
 TRADOVATE_ACCOUNT_NAMES=DEMO12345,DEMO67890
 ```
 
-`TRADOVATE_ACCOUNT_NAMES` (or `IBKR_ACCOUNT_NAMES`) is a comma-separated
-list — supports trading **multiple accounts** under one login at once (e.g.
-several TopStep evals/funded accounts, on Tradovate). Leave it blank to
-trade every account found. Each account gets its own daily $1,520/$1,000
-rate limiter, so one account hitting its cap doesn't stop the others.
+`TRADOVATE_ACCOUNT_NAMES` is a comma-separated list — supports trading
+**multiple accounts** under one login at once (e.g. several TopStep
+evals/funded accounts). Leave it blank to trade every account found. Each
+account gets its own daily $1,520/$1,000 rate limiter, so one account
+hitting its cap doesn't stop the others.
 
 **Before running the full live loop, confirm the connection actually
 works** (see "Testing the connection" below) — don't find out your
@@ -117,8 +105,9 @@ python scripts/run_live.py --symbol NQ
 This streams 1-minute bars for the front-month NQ contract from your
 configured broker, runs the same strategy state machine live during the NY
 session, and fans out bracket orders (market entry + stop/target) to every
-configured account. It refuses to run against a live (non-paper) account on
-either broker.
+configured account. IBKR refuses to run against a live (non-paper) account;
+Tradovate requires the explicit `TRADOVATE_ALLOW_LIVE=true` opt-in before
+it will trade a live (non-demo) account.
 
 ## Testing the connection / automation
 
@@ -132,7 +121,7 @@ python scripts/test_connection.py --list-accounts
 
 # Place one small bracket test order (1 contract, 4pt stop / 6pt target) on
 # a specific account, to confirm automation really reaches your paper account
-# (IBKR account IDs look like "DU1234567"; Tradovate like "DEMO12345")
+# (IBKR paper account IDs look like "DU1234567"; Tradovate like "DEMO12345")
 python scripts/test_connection.py --account "DU1234567" --direction Buy
 ```
 
@@ -152,11 +141,11 @@ confirm it's alive without SSHing in.
 
 Three pieces, each hosted separately:
 
-1. **Trading worker** (Railway or similar always-on host) — runs
-   `scripts/run_live.py` continuously, holding the live broker connection
-   and placing trades per the strategy rules. On IBKR this also means an
-   always-logged-in TWS/IB Gateway process — see `IBKR.md`. See
-   `RAILWAY.md` for step-by-step hosting setup either way.
+1. **Trading worker** — runs `scripts/run_live.py` continuously, holding
+   the live broker connection and placing trades per the strategy rules. Both
+   IBKR (via IB Gateway) and Tradovate run headless — no desktop, no remote
+   desktop needed — so this can run on Railway or any always-on host. See
+   `IBKR.md` / `RAILWAY.md`.
 2. **Supabase** — the trade-log database. The worker writes every trade
    here (in addition to the local JSON file); the dashboard reads from here
    live. See `supabase/schema.sql`.
@@ -251,7 +240,7 @@ jj_bot/
   strategy.py          # displacement/BOS detection + state machine (core logic)
   risk_manager.py       # position sizing, daily trade caps, trailing drawdown sim
   trade_logger.py        # writes trade results to dashboard/data/trades.json
-  ibkr_client.py         # IBKR client via ib_insync (TWS/IB Gateway socket, multi-account)
+  ibkr_client.py          # IBKR client via TWS/IB Gateway socket API
   tradovate_client.py   # Tradovate REST/WebSocket client (auth, bars, orders, multi-account)
   test_trade.py           # connection/automation test trade helper (dispatches by BROKER)
   api_server.py            # FastAPI service backing the dashboard's Test Trade panel

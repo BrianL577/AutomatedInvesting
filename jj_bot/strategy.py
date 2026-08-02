@@ -59,6 +59,12 @@ class StrategyEngine:
     open_bar: Optional[Bar] = None
     open_price: Optional[float] = None
     phase: Phase = Phase.WAITING_FOR_OPEN
+    # Fixed at anchor time and reused for every later bar in the session —
+    # NOT recomputed per bar — so an overnight session (e.g. open 21:00,
+    # cutoff 02:30 the next calendar day) doesn't have its window silently
+    # recomputed against a later bar's own (now rolled-over) calendar date.
+    open_dt: Optional[datetime] = None
+    cutoff_dt: Optional[datetime] = None
 
     pivot_highs: list[_Pivot] = field(default_factory=list)
     pivot_lows: list[_Pivot] = field(default_factory=list)
@@ -74,6 +80,8 @@ class StrategyEngine:
         self.day_bars = []
         self.open_bar = None
         self.open_price = None
+        self.open_dt = None
+        self.cutoff_dt = None
         self.phase = Phase.WAITING_FOR_OPEN
         self.pivot_highs = []
         self.pivot_lows = []
@@ -85,9 +93,16 @@ class StrategyEngine:
         self.rate_limited = False
 
     def _dollar_per_point(self) -> float:
+        # Per-contract dollar value times contracts_per_trade — the daily
+        # profit/loss cap check below is against real account dollars, and
+        # config.yaml explicitly runs 2 contracts/trade ("never 1
+        # contract"), so omitting this multiplier would let the cap take
+        # 2x the intended points move to trip (confirmed: the live runner's
+        # own per-fill P&L calc already applies this same multiplier via
+        # filled_qty — this was the one place still missing it).
         if self.instrument_cfg is None or self.instrument_cfg.tick_size <= 0:
             return 1.0
-        return self.instrument_cfg.tick_value / self.instrument_cfg.tick_size
+        return (self.instrument_cfg.tick_value / self.instrument_cfg.tick_size) * self.risk_cfg.contracts_per_trade
 
     def record_trade_result(self, win: bool, pnl_points: float = 0.0) -> None:
         self.trades_today += 1
@@ -107,9 +122,20 @@ class StrategyEngine:
         t = parse_hhmm(self.strategy_cfg.session_open)
         return dt.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
 
-    def _hard_cutoff_time(self, dt: datetime) -> datetime:
+    def _hard_cutoff_time(self, open_dt: datetime) -> datetime:
+        """Cutoff relative to the session's own open_dt, not an arbitrary
+        bar's calendar date — an overnight session (e.g. open 21:00, cutoff
+        02:30) has a cutoff time-of-day that is numerically *earlier* than
+        the open; naively replacing hour/minute on the same date as the
+        bar would land the cutoff hours *before* the open (confirmed live:
+        every bar from the moment of anchoring onward saw itself as already
+        past cutoff), so roll to the next calendar day whenever the cutoff
+        time-of-day is at or before the open time-of-day."""
         t = parse_hhmm(self.strategy_cfg.hard_cutoff)
-        return dt.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+        cutoff = open_dt.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+        if cutoff <= open_dt:
+            cutoff += timedelta(days=1)
+        return cutoff
 
     def _update_pivots(self) -> None:
         n = len(self.day_bars)
@@ -129,15 +155,33 @@ class StrategyEngine:
         self.pivot_lows = [p for p in self.pivot_lows if p.timestamp >= cutoff]
 
     def _nearest_structure(self, direction: Direction) -> Optional[float]:
-        """Nearest relevant swing level to break-and-close through."""
+        """Nearest relevant swing level to break-and-close through.
+
+        Confirmed pivots need swing_strength bars of pullback on both sides,
+        so on a clean, monotonic trend (no pullback yet to confirm a pivot in
+        the trend direction) they never form in time. Fall back to the
+        extreme of the bars seen so far, so a real break of structure can
+        still be recognized before a pivot has confirmed — but bounded to the
+        same structure_lookback window pivots use, not the whole day_bars
+        history. Without this bound, a live process that started well before
+        the session's own anchor (day_bars holds every bar since the
+        calendar-day reset, not just bars since this session opened) could
+        anchor the fallback to a stale extreme from outside the intended
+        lookback window, silently blocking a live break of structure."""
+        cutoff = self.day_bars[-1].timestamp - timedelta(minutes=self.strategy_cfg.structure_lookback)
+        prior_bars = [b for b in self.day_bars[:-1] if b.timestamp >= cutoff]
         if direction == Direction.SHORT:
-            if not self.pivot_lows:
+            if self.pivot_lows:
+                return min(p.price for p in self.pivot_lows)
+            if not prior_bars:
                 return None
-            return min(p.price for p in self.pivot_lows)
+            return min(b.low for b in prior_bars)
         else:
-            if not self.pivot_highs:
+            if self.pivot_highs:
+                return max(p.price for p in self.pivot_highs)
+            if not prior_bars:
                 return None
-            return max(p.price for p in self.pivot_highs)
+            return max(b.high for b in prior_bars)
 
     def _is_displacement(self, bar: Bar) -> bool:
         """A displacement candle: true-range notably larger than both the
@@ -168,6 +212,21 @@ class StrategyEngine:
         if bar.wick_ratio > self.strategy_cfg.max_wick_ratio:
             return False
         return True
+
+    def _htf_bias(self) -> Optional[Direction]:
+        """Higher-timeframe bias confluence: no separate HTF data feed is
+        available, so approximate it by aggregating the most recent
+        htf_bar_minutes 1-min bars into one synthetic candle and reading its
+        direction. This is a grading confluence only, never a gate."""
+        n = self.strategy_cfg.htf_bar_minutes
+        if len(self.day_bars) < n:
+            return None
+        recent = self.day_bars[-n:]
+        if recent[-1].close > recent[0].open:
+            return Direction.LONG
+        if recent[-1].close < recent[0].open:
+            return Direction.SHORT
+        return None
 
     def _break_of_structure(self, bar: Bar, direction: Direction) -> tuple[bool, Optional[float]]:
         """Break-of-structure requires the close to clear the nearest swing
@@ -207,10 +266,8 @@ class StrategyEngine:
         self.day_bars.append(bar)
         self._update_pivots()
 
-        open_dt = self._session_open_time(bar.timestamp)
-        cutoff_dt = self._hard_cutoff_time(bar.timestamp)
-
         if self.open_bar is None:
+            open_dt = self._session_open_time(bar.timestamp)
             if bar.timestamp < open_dt:
                 return None
             # First bar at or after the session open anchors "fair price" —
@@ -223,11 +280,20 @@ class StrategyEngine:
             # Anchoring on a later bar than the true 09:30 candle uses a
             # stale-ish open price on a late restart, but that's still far
             # better than never anchoring at all.
+            cutoff_dt = self._hard_cutoff_time(open_dt)
             if bar.timestamp >= cutoff_dt:
-                self.phase = Phase.DONE_FOR_DAY
+                # This date's open→cutoff window is already over and we
+                # never anchored an open — e.g. the first bar after a
+                # weekend gap lands Sunday evening, long past that date's
+                # cutoff. No session for this date ever happened, so stay
+                # WAITING_FOR_OPEN (rather than DONE_FOR_DAY) and just wait
+                # for the next calendar-day reset instead of prematurely
+                # shutting the bot down for a date it never actually traded.
                 return None
             self.open_bar = bar
             self.open_price = bar.open
+            self.open_dt = open_dt
+            self.cutoff_dt = cutoff_dt
             self.continuation_direction = Direction.SHORT if not bar.is_green else Direction.LONG
             self.phase = Phase.CONTINUATION
             return None
@@ -241,54 +307,88 @@ class StrategyEngine:
         if self.consecutive_losses >= self.risk_cfg.stop_after_consecutive_losses:
             self.phase = Phase.DONE_FOR_DAY
             return None
-        if bar.timestamp >= cutoff_dt:
+        if bar.timestamp >= self.cutoff_dt:
             self.phase = Phase.DONE_FOR_DAY
             return None
+
+        # Keep `phase` current every bar regardless of whether a position is
+        # open, so it reflects the actual time-of-day window rather than
+        # freezing at whatever it was when the last trade opened — a bar
+        # that never reaches the entry logic below (because position_open is
+        # True) must still update this for anyone reading it live.
+        mins = minutes_since(self.open_dt, bar.timestamp)
+        if mins <= self.strategy_cfg.continuation_end_minutes:
+            self.phase = Phase.CONTINUATION
+        elif mins <= self.strategy_cfg.reversion_end_minutes:
+            self.phase = Phase.REVERSION
+        else:
+            self.phase = Phase.DONE_FOR_DAY
+
         if self.position_open:
             return None
 
-        mins = minutes_since(open_dt, bar.timestamp)
-
         if mins <= self.strategy_cfg.continuation_end_minutes:
-            self.phase = Phase.CONTINUATION
             direction = self.continuation_direction
-            if direction is None or not self._is_displacement(bar):
+            if direction is None:
                 return None
+            # Break of structure is the mandatory trigger — no BOS, no trade.
+            # Displacement and HTF bias are secondary confirming factors that
+            # only upgrade the setup grade; their absence must not block entry.
             bos, level = self._break_of_structure(bar, direction)
             if not bos:
                 return None
+            displaced = self._is_displacement(bar)
+            htf_aligned = self._htf_bias() == direction
+            confluences = sum([displaced, htf_aligned])
+            if confluences == 2:
+                grade = SetupGrade.A_PLUS
+            elif confluences == 1:
+                grade = SetupGrade.A
+            else:
+                grade = SetupGrade.B_PLUS
+            reason = (
+                f"Continuation of {direction.value} opening flow, "
+                f"{'displacement + ' if displaced else ''}"
+                f"{'HTF-aligned + ' if htf_aligned else ''}"
+                f"close through structure {level:.2f}"
+            )
             signal = self._build_signal(
-                bar, direction, Phase.CONTINUATION, SetupGrade.A,
-                reason=f"Continuation of {direction.value} opening flow, displacement + close through structure {level:.2f}",
+                bar, direction, Phase.CONTINUATION, grade, reason=reason,
             )
             self.position_open = True
             return signal
 
         if mins <= self.strategy_cfg.reversion_end_minutes:
-            self.phase = Phase.REVERSION
             extension = bar.close - self.open_price
             if abs(extension) < self.strategy_cfg.min_extension_points:
                 return None
             direction = Direction.SHORT if extension > 0 else Direction.LONG
-            if not self._is_displacement(bar):
-                return None
+            # Break of structure is the mandatory trigger — no BOS, no trade.
+            # Displacement and HTF bias are secondary confirming factors that
+            # only upgrade the setup grade.
             bos, level = self._break_of_structure(bar, direction)
             if not bos:
                 return None
-            grade = (
-                SetupGrade.A_PLUS
-                if abs(extension) >= 1.5 * self.strategy_cfg.min_extension_points
-                else SetupGrade.A
-            )
+            displaced = self._is_displacement(bar)
+            htf_aligned = self._htf_bias() == direction
+            confluences = sum([displaced, htf_aligned])
+            if confluences == 2:
+                grade = SetupGrade.A_PLUS
+            elif confluences == 1:
+                grade = SetupGrade.A
+            else:
+                grade = SetupGrade.B_PLUS
             signal = self._build_signal(
                 bar, direction, Phase.REVERSION, grade,
                 reason=(
                     f"Mean reversion toward open {self.open_price:.2f} "
-                    f"(extended {extension:+.2f} pts), displacement + close through structure {level:.2f}"
+                    f"(extended {extension:+.2f} pts), "
+                    f"{'displacement + ' if displaced else ''}"
+                    f"{'HTF-aligned + ' if htf_aligned else ''}"
+                    f"close through structure {level:.2f}"
                 ),
             )
             self.position_open = True
             return signal
 
-        self.phase = Phase.DONE_FOR_DAY
         return None

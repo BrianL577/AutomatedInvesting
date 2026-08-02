@@ -13,6 +13,7 @@ strategy:
   structure_lookback: 30         # minutes to look back for swing high/low ("structure")
   swing_strength: 2              # bars on each side required to confirm a pivot
   break_buffer_points: 1.0       # close must clear structure by this much to avoid noise breaks
+  htf_bar_minutes: 5             # bars aggregated into a synthetic higher-timeframe candle for bias confluence
 
 risk:
   # Reverted from the AI-Optimize "Row #1" geometry (45pt/35pt on 3 contracts):
@@ -63,7 +64,7 @@ topstep_eval:                    # used by the backtester AND the live TopstepEv
   # reaches pass_rate_switch_threshold. Standard beginner advice: use the
   # cheap plan until you're consistently passing, then switch.
   no_activation_fee_monthly_fee: 95
-  pass_rate_switch_threshold: 0.33
+  pass_rate_switch_threshold: 0.0
   payout_share: 0.9
   max_payout_per_event: 2000
   max_payout_balance_share: 0.5

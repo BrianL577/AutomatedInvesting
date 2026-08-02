@@ -35,6 +35,8 @@ with it, trades appear live. See `supabase/schema.sql`:
 
 ## 3. Set environment variables (on both services)
 
+Both supported brokers run headless, so both work fine on Railway:
+
 **If using IBKR (default, `BROKER=ibkr`)**: you also need an IB Gateway
 process reachable from the worker — read `IBKR.md` first, since this
 usually means a *third* Railway service (a community IB Gateway+IBC Docker
@@ -65,11 +67,13 @@ SMTP_PASSWORD=<Gmail App Password from myaccount.google.com/apppasswords>
 ALERT_EMAIL_TO=you@gmail.com
 ```
 
-Or, once you've funded a live Tradovate account and bought API access:
+Or, once you've funded a live Tradovate account and bought API access (this
+is what a real TopStep eval/funded account uses):
 
 ```
 BROKER=tradovate
 TRADOVATE_ENV=demo
+TRADOVATE_ALLOW_LIVE=false
 TRADOVATE_USERNAME=...
 TRADOVATE_PASSWORD=...
 TRADOVATE_APP_ID=...
@@ -78,6 +82,27 @@ TRADOVATE_CID=...
 TRADOVATE_SEC=...
 TRADOVATE_DEVICE_ID=jj-bot-01
 TRADOVATE_ACCOUNT_NAMES=DEMO12345,DEMO67890
+
+SUPABASE_URL=https://xxxx.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=...
+
+BOT_API_HOST=0.0.0.0
+BOT_API_PORT=8787
+BOT_API_CORS_ORIGINS=https://your-dashboard.vercel.app
+
+# Enables /api/ai-job on the Bot API service — the dashboard's AI strategy
+# chat dispatches its (slow, extended-thinking) Claude calls here instead of
+# running them inline on Vercel, since Vercel Hobby hard-caps serverless
+# functions at 10s. Same key you'd put in the dashboard's own
+# ANTHROPIC_API_KEY — get one at https://platform.claude.com/. Set the
+# dashboard's BOT_API_URL (Vercel env var, see dashboard/.env.example) to
+# this Railway service's public URL.
+ANTHROPIC_API_KEY=
+
+# Crash alert email (optional, but recommended for an unattended worker)
+SMTP_USER=you@gmail.com
+SMTP_PASSWORD=<Gmail App Password from myaccount.google.com/apppasswords>
+ALERT_EMAIL_TO=you@gmail.com
 ```
 
 **Never put these in chat, a commit, or anywhere public** — set them
@@ -117,6 +142,7 @@ directly in Railway's Variables UI.
   `TRADOVATE_ACCOUNT_NAMES`. Each account has its own $1,520 profit cap /
   $1,000 loss cap (`config.yaml` → `risk.daily_profit_cap` /
   `daily_loss_cap`) and stops trading independently once it hits either.
-- Paper only: IBKR refuses to run if any resolved account isn't a paper
-  account (IDs must start with `DU`/`DF`); `TRADOVATE_ENV` must stay
-  `demo`.
+- IBKR refuses to run if any resolved account isn't a paper account (IDs
+  must start with `DU`/`DF`). Tradovate defaults to `TRADOVATE_ENV=demo`;
+  a real TopStep account needs `TRADOVATE_ENV=live` plus the explicit
+  `TRADOVATE_ALLOW_LIVE=true` opt-in.

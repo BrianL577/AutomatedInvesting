@@ -30,9 +30,6 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    if cfg.broker == "tradovate" and cfg.tradovate.env != "demo":
-        raise SystemExit("TRADOVATE_ENV must be 'demo'. Refusing to run.")
-
     print(f"Broker: {cfg.broker}")
 
     if args.list_accounts:
