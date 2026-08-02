@@ -252,21 +252,28 @@ export const JJ_DEFAULT_STRATEGY: StrategyConfig = {
     // and by direct user confirmation. Flat 90/10 split from dollar one.
     // Payout eligibility is 5 winning days (each >= $150 net P&L), NOT a
     // cumulative-dollar threshold — see minWinningDaysForPayout below.
+    // Only the Standard path (Option 1) is modeled — the Consistency path
+    // (Option 2) is deliberately not simulated, per explicit user choice.
     payoutShareRatio: 0.9,
-    maxPayoutPerEvent: 2000,
+    // PROMO VALUE — Topstep's page currently shows a promotional payout cap
+    // of $4,000 (base $2,000). This is the single source of truth other
+    // files derive from (dashboard/lib/trades.ts, jj_bot/topstep_eval_sim.py
+    // has its own copy) — update this one line if the promo changes.
+    maxPayoutPerEvent: 4000,
     minWinningDaysForPayout: 5,
     minWinningDayProfit: 150,
-    // $95/mo subscription, $95 per-attempt reset fee, and the Express
-    // Funded Activation Fee is FREE — Topstep no longer offers a separate
-    // cheaper-monthly/pricier-activation plan, so both fee tracks below are
-    // set identically. Ignore any promo-discounted price shown at signup
-    // (e.g. "$85/mo") — those are temporary. Confirm before trusting for a
-    // real decision, since these can change.
-    monthlyFeeDollars: 95,
+    // PROMO PRICING — Topstep's current pricing page (50K, Daily Loss Limit
+    // account) shows $85/mo (promo, may change) for this account type, $85
+    // per-attempt reset fee, and the Express Funded Activation Fee is FREE
+    // — Topstep no longer offers a separate cheaper-monthly/pricier-
+    // activation plan, so both fee tracks below are set identically. Easy
+    // single-line edits here if Topstep changes pricing — check their
+    // current page periodically.
+    monthlyFeeDollars: 85,
     fundedActivationFeeDollars: 0,
-    noActivationFeeMonthlyFeeDollars: 95,
-    evalFeeDollars: 95,
-    reactivationFeeDollars: 95,
+    noActivationFeeMonthlyFeeDollars: 85,
+    evalFeeDollars: 85,
+    reactivationFeeDollars: 85,
   },
 };
 

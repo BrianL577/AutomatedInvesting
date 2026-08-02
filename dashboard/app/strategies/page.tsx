@@ -1099,7 +1099,7 @@ export default function StrategiesPage() {
                         <div className="bt-results-header" style={{ marginTop: 20 }}>
                           <h3>
                             Real Money{accountCountLabel > 1 ? ` — Session Split, ${accountCountLabel} Accounts` : ""}{" "}
-                            <Hint text="Actual money in and out of your pocket: $95/mo subscription plus $95 per eval/reactivation, and once funded, 5 winning days of $150+ each unlock a payout at 90% share (10% to the firm), capped at $2,000 per event — Topstep's actual current-pricing rule, not a cumulative-dollar target. The Express Funded Activation Fee is currently free. After every payout the drawdown buffer resets to $0, so the very next losing day can bust the account outright. Verify these against the firm's current rules. If 'Session Split (Accts)' above is set >1, most of those accounts trade a RESTRICTED SLICE of the strategy (one session or phase), not the full thing — this section can total LESS than one full account. For true N-accounts-each-running-the-whole-strategy scaling, use the separate 'Portfolio' section below (enable it under Edit)." />
+                            <Hint text="Actual money in and out of your pocket: $85/mo subscription (promo price, may change) plus $85 per eval/reactivation, and once funded, 5 winning days of $150+ each unlock a payout at 90% share (10% to the firm), capped at $4,000 per event (Topstep's current promo cap — base is $2,000, update if the promo ends). Only the Standard payout path is modeled (5 winning days); the Consistency path is deliberately not simulated. The Express Funded Activation Fee is currently free. After every payout the drawdown buffer resets to $0, so the very next losing day can bust the account outright. Verify these against the firm's current rules. If 'Session Split (Accts)' above is set >1, most of those accounts trade a RESTRICTED SLICE of the strategy (one session or phase), not the full thing — this section can total LESS than one full account. For true N-accounts-each-running-the-whole-strategy scaling, use the separate 'Portfolio' section below (enable it under Edit)." />
                           </h3>
                         </div>
                         <div className="stat-grid">
@@ -1111,13 +1111,13 @@ export default function StrategiesPage() {
                           />
                           <StatCard
                             label="Fees Paid"
-                            hint="Every $95 spent buying an eval or reactivating after busting an account, summed across every account."
+                            hint="Every $85 spent buying an eval or reactivating after busting an account, summed across every account."
                             value={fmtMoney(-feesPaid)}
                             tone="negative"
                           />
                           <StatCard
                             label="Payouts Received"
-                            hint="Real cash withdrawn from funded accounts, summed across every account. Each payout is 50% of the funded profit at the moment it triggers, capped at $2,000 — so it's usually less than $2,000 (e.g. a payout triggering at $3,600 profit pays $1,800). It also only counts when no single day made over half the profit."
+                            hint="Real cash withdrawn from funded accounts, summed across every account. Each payout is 90% of the profit since the last payout, capped at $4,000 per event or 50% of current balance — whichever is smallest. Only unlocks after 5 winning days of $150+ net each (Standard path only)."
                             value={fmtMoney(cashPayouts)}
                             tone="positive"
                           />
@@ -1263,7 +1263,7 @@ export default function StrategiesPage() {
                         />
                         <StatCard
                           label="Total Fees Paid"
-                          hint="Every $95 spent buying or re-buying an eval, summed across all accounts."
+                          hint="Every $85 spent buying or re-buying an eval, summed across all accounts."
                           value={fmtMoney(-result.sessionSplit.totalFeesPaid)}
                           tone="negative"
                         />

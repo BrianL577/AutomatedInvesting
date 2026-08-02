@@ -32,23 +32,28 @@ class TopstepEvalSimConfig:
     account_size: float = 50000
     profit_target: float = 3000
     trailing_max_drawdown: float = 2000
-    # Confirmed against Topstep's current pricing page (50K plan, per direct
-    # user confirmation): $95/mo subscription, $95 reset fee on a bust,
-    # Express Funded Activation Fee is FREE. Topstep no longer offers a
-    # separate cheaper-monthly/pricier-activation plan — both "plans" below
-    # are set identically so the plan-switch logic (harmless if unused)
-    # can't diverge from real cost. Ignore any promo-discounted price shown
-    # at signup (e.g. "$85/mo") — those are temporary.
-    eval_fee: float = 95
-    reactivation_fee: float = 95
-    monthly_fee: float = 95
+    # PROMO PRICING — Topstep's current pricing page (50K, Daily Loss Limit
+    # account) shows $85/mo (promo, may change) for this account type, $85
+    # reset fee on a bust (mirrors the monthly price), Express Funded
+    # Activation Fee is FREE. Topstep no longer offers a separate
+    # cheaper-monthly/pricier-activation plan — both "plans" below are set
+    # identically so the plan-switch logic (harmless if unused) can't
+    # diverge from real cost. Easy single-line edits here if Topstep
+    # changes pricing — check their current page periodically.
+    eval_fee: float = 85
+    reactivation_fee: float = 85
+    monthly_fee: float = 85
     trading_days_per_month: int = 21
     activation_fee: float = 0
-    no_activation_fee_monthly_fee: float = 95
+    no_activation_fee_monthly_fee: float = 85
     pass_rate_switch_threshold: float = 0.0
-    # Funded-stage payout math.
+    # Funded-stage payout math. Only the Standard path (Option 1) is
+    # modeled — the Consistency path (Option 2) is deliberately not
+    # simulated, per explicit user choice.
     payout_share: float = 0.9
-    max_payout_per_event: float = 2000
+    # PROMO VALUE — Topstep's page currently shows a promotional payout cap
+    # of $4,000 (base $2,000). Update this single line if the promo changes.
+    max_payout_per_event: float = 4000
     max_payout_balance_share: float = 0.5
     min_winning_days_for_payout: int = 5
     min_winning_day_profit: float = 150
@@ -209,24 +214,22 @@ class TopstepEvalSimulator:
             if day_pnl >= self.cfg.min_winning_day_profit:
                 self.winning_days_since_payout += 1
 
+            # Standard path only (Option 1) — per explicit user choice, the
+            # Consistency path (Option 2) is deliberately not modeled even
+            # though Topstep offers it.
             standard_eligible = self.winning_days_since_payout >= self.cfg.min_winning_days_for_payout
-            consistency_eligible = (
-                self.days_since_payout >= self.cfg.consistency_path_min_days
-                and self.profit_since_payout > 0
-                and self.best_day_since_payout <= self.profit_since_payout * self.cfg.consistency_path_max_best_day_share
-            )
             # Confirmed directly: eligibility ALSO requires balance to be
             # strictly above the post-previous-payout reference, not just
             # hitting the day-count criteria.
             above_last_payout_balance = self.balance > self._balance_at_last_payout
 
-            if (standard_eligible or consistency_eligible) and above_last_payout_balance:
+            if standard_eligible and above_last_payout_balance:
                 payout = max(0.0, min(
                     self.cfg.max_payout_per_event,
                     self.profit_since_payout * self.cfg.payout_share,
                     self.balance * self.cfg.max_payout_balance_share,
                 ))
-                path = "Standard" if standard_eligible else "Consistency"
+                path = "Standard"
                 if payout > 0:
                     self.cash_payouts += payout
                     # Confirmed directly: the payout amount is REMOVED from
