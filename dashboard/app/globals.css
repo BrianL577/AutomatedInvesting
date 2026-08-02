@@ -152,6 +152,27 @@ body {
   border-radius: 8px;
 }
 
+.eval-sim-panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-bottom: 24px;
+}
+
+.eval-sim-header h2 {
+  font-size: 15px;
+  margin: 0 0 4px;
+}
+
+.eval-sim-header p {
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.55;
+  margin: 0 0 14px;
+  max-width: 760px;
+}
+
 .rate-limit-banner {
   border-radius: 10px;
   border: 1px solid var(--panel-border);
