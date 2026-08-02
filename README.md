@@ -1,23 +1,20 @@
-# JJ Strategy — Paper Trading Bot
+# JJ Strategy — Trading Bot
 
 Automates the NY-session "high-timeframe reversion, low-timeframe continuation"
-strategy described by the YouTuber JJ, and runs it against a **paper trading
-account**. Three brokers are supported:
+strategy described by the YouTuber JJ. Two brokers are supported:
 
 - **Interactive Brokers (default, `BROKER=ibkr`)** — free paper trading
   account, no funding required, runs headless on Railway. See `IBKR.md`.
-- **NinjaTrader (`BROKER=ninjatrader`)** — free sim account (`Sim101`),
-  friendlier signup than IBKR, but Windows-only desktop software — the bot
-  must run on the same Windows machine as NinjaTrader (no Railway hosting).
-  See `NINJATRADER.md`.
-- **Tradovate (`BROKER=tradovate`)** — the platform TopStep accounts trade
-  through, but Tradovate only issues API keys once you've funded a live
-  account ($1,000 min) and bought their $25/mo API add-on. Use this once
-  you're ready to move toward TopStep.
+- **Tradovate (`BROKER=tradovate`)** — the platform TopStep evals and funded
+  accounts execute through. Runs headless (Railway or any small always-on
+  Linux host) — no desktop app, no remote desktop needed. Defaults to
+  `TRADOVATE_ENV=demo` for practice; your real TopStep account needs
+  `TRADOVATE_ENV=live` plus the explicit `TRADOVATE_ALLOW_LIVE=true` opt-in.
+  Tradovate only issues API keys once you've funded a live account and
+  bought their $25/mo API add-on.
 
-> Paper/demo trading only. This does not place real-money orders and is not
-> investment advice. Verify everything against your own TopStep rules before
-> ever considering a funded account.
+> Verify everything against your own TopStep rules before trading a funded
+> account. This is not investment advice.
 
 ## How the strategy is encoded
 

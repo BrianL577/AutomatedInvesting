@@ -144,7 +144,7 @@ export default function AccountsPage() {
             <h2>Automatically used by the bot</h2>
             <p>
               The bot reads these account names directly from here at startup (via Supabase) — no need to also set
-              <code> IBKR_ACCOUNT_NAMES</code>, <code>TRADOVATE_ACCOUNT_NAMES</code>, or <code>NT_ACCOUNT_NAME</code>
+              <code> IBKR_ACCOUNT_NAMES</code> or <code>TRADOVATE_ACCOUNT_NAMES</code>
               on your bot host unless you want to override what&apos;s saved here.
             </p>
           </div>

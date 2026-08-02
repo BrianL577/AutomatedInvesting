@@ -62,17 +62,19 @@ export type Stats = {
   wins: number;
   losses: number;
   successRate: number;
-  totalGained: number;
-  totalLost: number;
-  netPnl: number;
   bestDayPnl: number;
-  worstDayPnl: number;
+  profitableDays: number;
+  hasQualifyingBigDay: boolean;
   hitProfitCap: boolean;
   hitLossCap: boolean;
 };
 
 const PROFIT_CAP = 1520;
 const LOSS_CAP = 1000;
+// TopStep funded-account payout rule this bot is working toward: 5 profitable
+// trading days, at least one of which cleared this size, before a payout
+// request qualifies.
+const BIG_DAY_TARGET = 4000;
 
 // Connectivity test trades (source=connection_test / phase=test) are excluded
 // from performance stats — they're not real strategy signals, just proof the
@@ -85,9 +87,6 @@ export function computeStats(trades: Trade[]): Stats {
   const real = trades.filter(isRealTrade);
   const wins = real.filter((t) => t.win);
   const losses = real.filter((t) => !t.win);
-  const totalGained = wins.reduce((sum, t) => sum + t.pnl_dollars, 0);
-  const totalLost = Math.abs(losses.reduce((sum, t) => sum + t.pnl_dollars, 0));
-  const netPnl = totalGained - totalLost;
 
   const byDay: Record<string, number> = {};
   for (const t of real) {
@@ -95,20 +94,20 @@ export function computeStats(trades: Trade[]): Stats {
     byDay[day] = (byDay[day] || 0) + t.pnl_dollars;
   }
   const dayPnls = Object.values(byDay);
+  const bestDayPnl = dayPnls.length ? Math.max(...dayPnls) : 0;
 
   return {
     totalTrades: real.length,
     wins: wins.length,
     losses: losses.length,
     successRate: real.length ? (wins.length / real.length) * 100 : 0,
-    totalGained,
-    totalLost,
-    netPnl,
-    bestDayPnl: dayPnls.length ? Math.max(...dayPnls) : 0,
-    worstDayPnl: dayPnls.length ? Math.min(...dayPnls) : 0,
+    bestDayPnl,
+    profitableDays: dayPnls.filter((p) => p > 0).length,
+    hasQualifyingBigDay: bestDayPnl >= BIG_DAY_TARGET,
     hitProfitCap: dayPnls.some((p) => p >= PROFIT_CAP),
     hitLossCap: dayPnls.some((p) => p <= -LOSS_CAP),
   };
 }
 
 export const RATE_LIMITS = { PROFIT_CAP, LOSS_CAP };
+export const FUNDED_MILESTONE = { PROFITABLE_DAYS_REQUIRED: 5, BIG_DAY_TARGET };
