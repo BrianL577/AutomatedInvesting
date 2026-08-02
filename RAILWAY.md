@@ -1,5 +1,15 @@
 # Deploying the live trading loop to Railway
 
+> ⚠️ **Not for a real TopStep eval/funded account.** TopStep prohibits VPS/cloud
+> execution and fully unattended automation for accounts trading real evals or
+> funded capital — bots must run on your own local, actively-monitored device,
+> not a hosted service like Railway. Running a TopStep-connected bot here risks
+> account suspension or removal from the program. This guide is fine for
+> **IBKR free paper trading** (not connected to TopStep) or for development/
+> backtesting infrastructure — once you're trading a real TopStep/Tradovate
+> account, run the worker on your own always-on local machine instead (see
+> `README.md`).
+
 This runs `scripts/run_live.py` continuously so the bot actually trades your
 paper account during NY session hours, without depending on this chat
 session or any machine you have to keep open. Optionally also deploy

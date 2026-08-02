@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { survivabilityViolation, type StrategyConfig, type SavedStrategy } from "../../lib/strategySchema";
 import type { BacktestResult, SessionSplitResult } from "../../lib/backtester";
 import type { SavedOptimization } from "../../lib/optimizationStore";
+import GainLossChart from "../../components/GainLossChart";
+import Reveal from "../../components/Reveal";
 
 type BacktestResponse = BacktestResult & {
   dataSource: "supabase" | "sample";
@@ -1093,7 +1095,7 @@ export default function StrategiesPage() {
                       : 1;
 
                     return (
-                      <>
+                      <Reveal>
                         <div className="bt-results-header" style={{ marginTop: 20 }}>
                           <h3>
                             Real Money{accountCountLabel > 1 ? ` — Session Split, ${accountCountLabel} Accounts` : ""}{" "}
@@ -1146,6 +1148,7 @@ export default function StrategiesPage() {
                             </>
                           )}
                         </div>
+                        <GainLossChart gain={cashPayouts} loss={feesPaid} title="Gain vs. Loss — This Run" />
                         {correlatedGroupSize > 1 && (
                           <p className="edit-field-warning" style={{ marginTop: 10 }}>
                             ⚠️ {correlatedGroupSize} of these accounts share the same session/phase, meaning they
@@ -1154,34 +1157,9 @@ export default function StrategiesPage() {
                             stretch busts every account in that group on the same day.
                           </p>
                         )}
-                      </>
+                      </Reveal>
                     );
                   })()}
-
-                  <details className="bt-pooled-details">
-                    <summary>Pooled stats (all {result.totalTrades} trades on one never-resetting account — not real economics, kept for reference)</summary>
-                    <div className="stat-grid" style={{ marginTop: 12 }}>
-                      <div className="stat-card" title="Percent of possible eval START DATES that would go on to pass the eval (hit the profit target before busting the trailing drawdown) — this is what matters: can you pass, not how often any one trade wins. A strategy can lose more trades than it wins and still be very profitable (prop-firm math: payouts are large, a blown eval only costs a small fee)."><div className="label">Eval Pass Rate</div><div className={`value ${result.evalPassRate >= 33 ? "positive" : "negative"}`}>{result.evalPassRate.toFixed(1)}%</div></div>
-                      <div className="stat-card"><div className="label">Net P&amp;L</div><div className={`value ${result.netPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(result.netPnl)}</div></div>
-                      <div className="stat-card"><div className="label">Return %</div><div className={`value ${result.netPnlPct >= 0 ? "positive" : "negative"}`}>{result.netPnlPct.toFixed(2)}%</div></div>
-                      <div className="stat-card"><div className="label">Total Gained</div><div className="value positive">{fmtMoney(result.totalGained)}</div></div>
-                      <div className="stat-card"><div className="label">Total Lost</div><div className="value negative">{fmtMoney(-result.totalLost)}</div></div>
-                      <div className="stat-card"><div className="label">Trades (W/L)</div><div className="value">{result.totalTrades} ({result.wins}/{result.losses})</div></div>
-                      <div className="stat-card"><div className="label">Max Drawdown</div><div className="value negative">{fmtMoney(-result.maxDrawdown)}</div></div>
-                      <div className="stat-card"><div className="label">Days (profitable)</div><div className="value">{result.tradingDays} ({result.profitableDays})</div></div>
-                      <div className="stat-card"><div className="label">Best / Worst Day</div><div className="value">{fmtMoney(result.bestDay)} / {fmtMoney(result.worstDay)}</div></div>
-                      <div className="stat-card"><div className="label">Cap Hits (+/−)</div><div className="value">{result.daysHitProfitCap} / {result.daysHitLossCap}</div></div>
-                      <div className="stat-card"><div className="label">Avg Days to Eval Result</div><div className="value">{result.avgDaysToEvalResult}</div></div>
-                      {result.incompleteTrades > 0 && (
-                        <div className="stat-card"><div className="label">Excluded (unresolved)</div><div className="value">{result.incompleteTrades}</div></div>
-                      )}
-                    </div>
-                    {result.incompleteTrades > 0 && (
-                      <p style={{ marginTop: 8, opacity: 0.7, fontSize: "0.85em" }}>
-                        {result.incompleteTrades} trade(s) never hit their stop or target before the available bar data ran out and were excluded from every stat above — the bracket is never flattened early or faked with a made-up exit price.
-                      </p>
-                    )}
-                  </details>
 
                   <details className="bt-pooled-details">
                     <summary>Breakdown by phase &amp; session — spot which entries drag win rate down</summary>
