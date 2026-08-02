@@ -2,8 +2,11 @@
 """Run the strategy live against a trading account.
 
 Broker is selected via BROKER env var (or config.broker) — "ibkr" (default,
-free paper trading via TWS/IB Gateway) or "tradovate" (TopStep eval/funded
-accounts; demo by default, or live with TRADOVATE_ALLOW_LIVE=true).
+free paper trading via TWS/IB Gateway), "topstepx" (TopStep's own platform —
+what a real TopStep account actually runs on; no demo, requires
+TOPSTEPX_ALLOW_LIVE=true), or "tradovate" (legacy, only for a Tradovate
+account opened outside TopStep; demo by default, or live with
+TRADOVATE_ALLOW_LIVE=true).
 
 Usage:
     python scripts/run_live.py --symbol NQ
@@ -32,12 +35,16 @@ def main() -> None:
         from jj_bot.live_runner_ibkr import IBKRLiveRunner
 
         runner = IBKRLiveRunner(cfg)
+    elif cfg.broker == "topstepx":
+        from jj_bot.live_runner_topstepx import TopstepXLiveRunner
+
+        runner = TopstepXLiveRunner(cfg)
     elif cfg.broker == "tradovate":
         from jj_bot.live_runner import LiveRunner
 
         runner = LiveRunner(cfg)
     else:
-        raise SystemExit(f"Unknown BROKER '{cfg.broker}'. Use 'ibkr' or 'tradovate'.")
+        raise SystemExit(f"Unknown BROKER '{cfg.broker}'. Use 'ibkr', 'topstepx', or 'tradovate'.")
 
     runner.start()
 

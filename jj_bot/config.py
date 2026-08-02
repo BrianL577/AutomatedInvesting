@@ -217,6 +217,23 @@ class TradovateCreds:
 
 
 @dataclass
+class TopstepXCreds:
+    """TopstepX (ProjectX Gateway) is TopStep's own platform — every TopStep
+    account still active as of Feb 2026 runs on this, not Tradovate. There is
+    no demo/sandbox environment: `allow_live=True` is required before the
+    client will place any order, since every order here is real money the
+    moment it's enabled. Requires a separate $29/mo TopstepX API subscription
+    (billed apart from your TopStep subscription) — generate an API key in
+    TopstepX platform settings.
+    """
+
+    username: str = ""
+    api_key: str = ""
+    account_names: list[str] = field(default_factory=list)
+    allow_live: bool = False
+
+
+@dataclass
 class IBKRCreds:
     """Interactive Brokers connects via a running TWS or IB Gateway process
     (not a hosted REST API) — host/port/client_id point at that process.
@@ -239,8 +256,12 @@ class AppConfig:
     risk: RiskConfig
     instrument: InstrumentConfig
     topstep_eval: TopstepEvalConfig
-    broker: str = "ibkr"  # "ibkr" (default, free paper trading) or "tradovate" (TopStep evals/funded accounts)
+    # "ibkr" (default, free paper trading), "topstepx" (TopStep's own platform —
+    # what a real TopStep account actually runs on), or "tradovate" (legacy,
+    # only relevant for a Tradovate account opened outside TopStep).
+    broker: str = "ibkr"
     tradovate: TradovateCreds = field(default_factory=TradovateCreds)
+    topstepx: TopstepXCreds = field(default_factory=TopstepXCreds)
     ibkr: IBKRCreds = field(default_factory=IBKRCreds)
     # Path load_config() was called with, kept so a long-running process can
     # later call reload_strategy_and_risk() against the same file.
@@ -296,6 +317,17 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         account_names=ibkr_account_names,
     )
 
+    # TOPSTEPX_ACCOUNT_NAMES="EVAL123,FUNDED789" (comma-separated). Leave
+    # blank to trade every active account under this TopstepX login.
+    topstepx_names_raw = os.getenv("TOPSTEPX_ACCOUNT_NAMES", "")
+    topstepx_account_names = [n.strip() for n in topstepx_names_raw.split(",") if n.strip()] or _fetch_saved_account_names()
+    topstepx_creds = TopstepXCreds(
+        username=os.getenv("TOPSTEPX_USERNAME", ""),
+        api_key=os.getenv("TOPSTEPX_API_KEY", ""),
+        account_names=topstepx_account_names,
+        allow_live=os.getenv("TOPSTEPX_ALLOW_LIVE", "false").strip().lower() == "true",
+    )
+
     active_strategy, active_risk = _apply_active_strategy(raw["strategy"], raw["risk"])
 
     return AppConfig(
@@ -305,6 +337,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         topstep_eval=TopstepEvalConfig(**raw["topstep_eval"]),
         broker=os.getenv("BROKER", "ibkr").strip().lower(),
         tradovate=tradovate_creds,
+        topstepx=topstepx_creds,
         ibkr=ibkr_creds,
         config_path=path,
     )
