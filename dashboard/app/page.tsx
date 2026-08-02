@@ -1,4 +1,4 @@
-import { loadTrades, computeStats, usingSupabase, RATE_LIMITS, FUNDED_MILESTONE } from "../lib/trades";
+import { loadTrades, computeStats, simulateAccounts, usingSupabase, RATE_LIMITS, EVAL_SIM } from "../lib/trades";
 import TestTradePanel from "../components/TestTradePanel";
 import MarketChart from "../components/MarketChart";
 
@@ -23,6 +23,7 @@ function fmtTime(iso: string): string {
 export default async function Page() {
   const trades = await loadTrades();
   const stats = computeStats(trades);
+  const accountSims = simulateAccounts(trades);
 
   return (
     <div className="container">
@@ -71,28 +72,54 @@ export default async function Page() {
             <span className="positive">{stats.wins}</span> / <span className="negative">{stats.losses}</span>
           </div>
         </div>
-        <div className="stat-card">
-          <div className="label">Best Day</div>
-          <div className={`value ${stats.hasQualifyingBigDay ? "positive" : ""}`}>{fmtMoney(stats.bestDayPnl)}</div>
+      </div>
+
+      <div className="eval-sim-panel">
+        <div className="eval-sim-header">
+          <h2>Eval &amp; Funded Account Simulator</h2>
+          <p>
+            Each account starts in <strong>Eval</strong> (needs +${EVAL_SIM.EVAL_TARGET.toLocaleString()} to pass).
+            Passing moves it to <strong>Funded</strong>, reset to $0. A funded account that drops to
+            ${EVAL_SIM.FUNDED_LOSS_FLOOR.toLocaleString()} is lost — both the funded account and the eval that
+            earned it — and restarts as a freshly purchased eval (${EVAL_SIM.EVAL_COST}).
+          </p>
         </div>
-        <div className="stat-card">
-          <div className="label">Profitable Days</div>
-          <div className={`value ${stats.profitableDays >= FUNDED_MILESTONE.PROFITABLE_DAYS_REQUIRED ? "positive" : ""}`}>
-            {stats.profitableDays} / {FUNDED_MILESTONE.PROFITABLE_DAYS_REQUIRED}
+        {accountSims.length === 0 ? (
+          <div className="empty-state">No account trades yet — the simulation fills in once trades are logged.</div>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>Stage</th>
+                  <th>Stage Balance</th>
+                  <th>Evals Purchased</th>
+                  <th>Times Funded</th>
+                  <th>Funded Losses</th>
+                  <th>Fees Paid</th>
+                </tr>
+              </thead>
+              <tbody>
+                {accountSims.map((sim) => (
+                  <tr key={sim.account}>
+                    <td>{sim.account}</td>
+                    <td>
+                      <span className={`badge ${sim.stage === "funded" ? "win" : "test"}`}>
+                        {sim.stage === "funded" ? "Funded" : "Eval"}
+                      </span>
+                    </td>
+                    <td className={sim.balance >= 0 ? "positive" : "negative"}>{fmtMoney(sim.balance)}</td>
+                    <td>{sim.evalsPurchased}</td>
+                    <td>{sim.fundedPasses}</td>
+                    <td>{sim.fundedLosses}</td>
+                    <td className="negative">{fmtMoney(-sim.feesPaid)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        </div>
-        <div className="stat-card">
-          <div className="label">Funded Payout Progress</div>
-          <div
-            className={`value ${
-              stats.hasQualifyingBigDay && stats.profitableDays >= FUNDED_MILESTONE.PROFITABLE_DAYS_REQUIRED
-                ? "positive"
-                : ""
-            }`}
-          >
-            {stats.hasQualifyingBigDay ? "✓" : "—"} ${FUNDED_MILESTONE.BIG_DAY_TARGET.toLocaleString()}+ day
-          </div>
-        </div>
+        )}
       </div>
 
       <div className="table-wrap">

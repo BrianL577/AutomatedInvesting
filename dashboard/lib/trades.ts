@@ -62,19 +62,12 @@ export type Stats = {
   wins: number;
   losses: number;
   successRate: number;
-  bestDayPnl: number;
-  profitableDays: number;
-  hasQualifyingBigDay: boolean;
   hitProfitCap: boolean;
   hitLossCap: boolean;
 };
 
 const PROFIT_CAP = 1520;
 const LOSS_CAP = 1000;
-// TopStep funded-account payout rule this bot is working toward: 5 profitable
-// trading days, at least one of which cleared this size, before a payout
-// request qualifies.
-const BIG_DAY_TARGET = 4000;
 
 // Connectivity test trades (source=connection_test / phase=test) are excluded
 // from performance stats — they're not real strategy signals, just proof the
@@ -94,20 +87,87 @@ export function computeStats(trades: Trade[]): Stats {
     byDay[day] = (byDay[day] || 0) + t.pnl_dollars;
   }
   const dayPnls = Object.values(byDay);
-  const bestDayPnl = dayPnls.length ? Math.max(...dayPnls) : 0;
 
   return {
     totalTrades: real.length,
     wins: wins.length,
     losses: losses.length,
     successRate: real.length ? (wins.length / real.length) * 100 : 0,
-    bestDayPnl,
-    profitableDays: dayPnls.filter((p) => p > 0).length,
-    hasQualifyingBigDay: bestDayPnl >= BIG_DAY_TARGET,
     hitProfitCap: dayPnls.some((p) => p >= PROFIT_CAP),
     hitLossCap: dayPnls.some((p) => p <= -LOSS_CAP),
   };
 }
 
 export const RATE_LIMITS = { PROFIT_CAP, LOSS_CAP };
-export const FUNDED_MILESTONE = { PROFITABLE_DAYS_REQUIRED: 5, BIG_DAY_TARGET };
+
+// ---- TopStep eval/funded account simulator --------------------------------
+//
+// Per-account state machine, replayed trade-by-trade over each account's
+// real P&L: starts in "eval", needs +$3,000 to pass and become "funded"
+// (balance resets to $0 on the pass). A funded account that drawns down to
+// -$2,000 is lost — both the funded account and the eval that earned it —
+// and trading resumes from a freshly purchased eval ($100) back at $0.
+export type AccountStage = "eval" | "funded";
+
+export type AccountSim = {
+  account: string;
+  stage: AccountStage;
+  balance: number;
+  evalsPurchased: number;
+  fundedPasses: number;
+  fundedLosses: number;
+  feesPaid: number;
+  tradeCount: number;
+};
+
+export const EVAL_SIM = {
+  EVAL_TARGET: 3000,
+  FUNDED_LOSS_FLOOR: -2000,
+  EVAL_COST: 100,
+};
+
+export function simulateAccounts(trades: Trade[]): AccountSim[] {
+  const real = trades.filter(isRealTrade).filter((t) => t.account_name);
+  const byAccount = new Map<string, Trade[]>();
+  for (const t of real) {
+    const key = t.account_name as string;
+    if (!byAccount.has(key)) byAccount.set(key, []);
+    byAccount.get(key)!.push(t);
+  }
+
+  const sims: AccountSim[] = [];
+  for (const [account, accountTrades] of byAccount) {
+    let stage: AccountStage = "eval";
+    let balance = 0;
+    let evalsPurchased = 1;
+    let fundedPasses = 0;
+    let fundedLosses = 0;
+
+    for (const t of accountTrades) {
+      balance += t.pnl_dollars;
+      if (stage === "eval" && balance >= EVAL_SIM.EVAL_TARGET) {
+        stage = "funded";
+        fundedPasses += 1;
+        balance = 0;
+      } else if (stage === "funded" && balance <= EVAL_SIM.FUNDED_LOSS_FLOOR) {
+        stage = "eval";
+        fundedLosses += 1;
+        evalsPurchased += 1;
+        balance = 0;
+      }
+    }
+
+    sims.push({
+      account,
+      stage,
+      balance,
+      evalsPurchased,
+      fundedPasses,
+      fundedLosses,
+      feesPaid: evalsPurchased * EVAL_SIM.EVAL_COST,
+      tradeCount: accountTrades.length,
+    });
+  }
+
+  return sims.sort((a, b) => a.account.localeCompare(b.account));
+}
