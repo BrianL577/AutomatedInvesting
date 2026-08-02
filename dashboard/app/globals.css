@@ -111,6 +111,11 @@ body {
   margin-top: 4px;
 }
 
+.text-dim {
+  color: var(--text-dim);
+  font-size: 0.9em;
+}
+
 .value.positive {
   color: var(--green);
 }

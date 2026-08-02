@@ -1,6 +1,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import type { Trade } from "./types";
+import { JJ_DEFAULT_STRATEGY } from "./strategySchema";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -102,29 +103,67 @@ export const RATE_LIMITS = { PROFIT_CAP, LOSS_CAP };
 
 // ---- TopStep eval/funded account simulator --------------------------------
 //
-// Per-account state machine, replayed trade-by-trade over each account's
-// real P&L: starts in "eval", needs +$3,000 to pass and become "funded"
-// (balance resets to $0 on the pass). A funded account that drawns down to
-// -$2,000 is lost — both the funded account and the eval that earned it —
-// and trading resumes from a freshly purchased eval ($100) back at $0.
+// Per-account state machine, replayed day-by-day over each account's real
+// P&L, using the SAME mechanics as the Strategy Creator's backtest economics
+// (dashboard/lib/backtester.ts's walkAccountEconomics / jj_bot/topstep_eval_sim.py)
+// so both pages agree on what "passed", "funded", and "busted" actually mean:
+//
+//  - Balance is tracked relative to the eval, starting at $0 (equivalent to
+//    walkAccountEconomics' accountSize-based balance, just shifted so $0 =
+//    breakeven, matching what's shown here).
+//  - Eval profit target ESCALATES: effectiveTarget = max($3,000, best single
+//    day so far / 0.5) — a big day raises the bar for the rest of that
+//    attempt (Topstep's real Consistency Target rule).
+//  - Bust/drawdown is a TRAILING high-water-mark floor (peak - $2,000),
+//    capped so it never rises above breakeven ($0) — NOT a flat -$2,000 from
+//    zero. Once $2,000+ profitable, the floor locks at breakeven.
+//  - Funded payouts require 5 winning days of $150+ net (or a "consistency
+//    path": 3+ days where the best single day is <= 40% of profit since the
+//    last payout), capped at $2,000 or 50% of balance, 90% to the trader.
+//    The drawdown buffer resets to $0 (no cushion) immediately after a payout.
+//  - Cost per eval attempt: a flat $100 (per explicit instruction — this
+//    covers the real $49 per-attempt fee plus the accrued monthly
+//    subscription by the time an attempt resolves, and no separate
+//    activation fee is charged on passing).
 export type AccountStage = "eval" | "funded";
 
 export type AccountSim = {
   account: string;
   stage: AccountStage;
   balance: number;
+  effectiveProfitTarget: number; // current eval target (escalates); n/a once funded
+  floor: number; // current bust line, relative to the $0 breakeven baseline
   evalsPurchased: number;
   fundedPasses: number;
   fundedLosses: number;
+  payoutsReceived: number;
+  cashPayouts: number;
   feesPaid: number;
-  tradeCount: number;
+  netResult: number; // cashPayouts - feesPaid: the real-money bottom line
+  tradingDays: number;
 };
 
+const EVAL_CFG = JJ_DEFAULT_STRATEGY.eval;
 export const EVAL_SIM = {
-  EVAL_TARGET: 3000,
-  FUNDED_LOSS_FLOOR: -2000,
+  EVAL_TARGET: EVAL_CFG.profitTarget,
+  TRAILING_DRAWDOWN: EVAL_CFG.trailingMaxDrawdown,
   EVAL_COST: 100,
+  PAYOUT_SHARE: EVAL_CFG.payoutShareRatio ?? 0.9,
+  MAX_PAYOUT: EVAL_CFG.maxPayoutPerEvent ?? 2000,
+  MAX_PAYOUT_BALANCE_SHARE: 0.5,
+  MIN_WINNING_DAYS_FOR_PAYOUT: EVAL_CFG.minWinningDaysForPayout ?? 5,
+  MIN_WINNING_DAY_PROFIT: EVAL_CFG.minWinningDayProfit ?? 150,
+  CONSISTENCY_PATH_MIN_DAYS: 3,
+  CONSISTENCY_PATH_MAX_BEST_DAY_SHARE: 0.4,
 };
+
+/** ET calendar-day key (YYYY-MM-DD) for grouping trades into the daily P&L
+ * series the economics model operates on — matches the Strategy Creator's
+ * day-grouping timezone so both pages bucket the same trade into the same
+ * trading day. */
+function etDateKey(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
 
 export function simulateAccounts(trades: Trade[]): AccountSim[] {
   const real = trades.filter(isRealTrade).filter((t) => t.account_name);
@@ -137,35 +176,128 @@ export function simulateAccounts(trades: Trade[]): AccountSim[] {
 
   const sims: AccountSim[] = [];
   for (const [account, accountTrades] of byAccount) {
-    let stage: AccountStage = "eval";
-    let balance = 0;
-    let evalsPurchased = 1;
+    const byDay = new Map<string, number>();
+    for (const t of accountTrades) {
+      const key = etDateKey(t.timestamp);
+      byDay.set(key, (byDay.get(key) ?? 0) + t.pnl_dollars);
+    }
+    const days = [...byDay.keys()].sort();
+    const series = days.map((day) => byDay.get(day)!);
+
+    let evalsPurchased = 0;
     let fundedPasses = 0;
     let fundedLosses = 0;
+    let feesPaid = 0;
+    let cashPayouts = 0;
+    let fundedAttemptsWithPayout = 0;
 
-    for (const t of accountTrades) {
-      balance += t.pnl_dollars;
-      if (stage === "eval" && balance >= EVAL_SIM.EVAL_TARGET) {
-        stage = "funded";
-        fundedPasses += 1;
-        balance = 0;
-      } else if (stage === "funded" && balance <= EVAL_SIM.FUNDED_LOSS_FLOOR) {
-        stage = "eval";
-        fundedLosses += 1;
-        evalsPurchased += 1;
-        balance = 0;
+    let d = 0;
+    let funded = false;
+    let balance = 0;
+    let highWater = 0;
+    let floor = -EVAL_SIM.TRAILING_DRAWDOWN;
+    let effectiveProfitTarget = EVAL_SIM.EVAL_TARGET;
+
+    while (d < series.length) {
+      evalsPurchased += 1;
+      feesPaid += EVAL_SIM.EVAL_COST;
+
+      balance = 0;
+      highWater = 0;
+      floor = -EVAL_SIM.TRAILING_DRAWDOWN;
+      funded = false;
+      let bestDaySoFar = 0;
+      effectiveProfitTarget = EVAL_SIM.EVAL_TARGET;
+      let winningDaysSincePayout = 0;
+      let profitSincePayout = 0;
+      let daysSincePayout = 0;
+      let bestDaySincePayout = -Infinity;
+      let balanceAtLastPayout = 0;
+      let thisAttemptGotPayout = false;
+      let busted = false;
+
+      for (; d < series.length; d++) {
+        const dayPnl = series[d];
+        balance += dayPnl;
+        if (balance <= floor) {
+          busted = true;
+          d += 1;
+          break;
+        }
+        if (balance > highWater) {
+          highWater = balance;
+          floor = Math.min(highWater - EVAL_SIM.TRAILING_DRAWDOWN, 0);
+        }
+        if (!funded && dayPnl > bestDaySoFar) {
+          bestDaySoFar = dayPnl;
+          effectiveProfitTarget = Math.max(EVAL_SIM.EVAL_TARGET, bestDaySoFar / 0.5);
+        }
+        if (!funded && balance >= effectiveProfitTarget) {
+          funded = true;
+          fundedPasses += 1;
+          winningDaysSincePayout = 0;
+          profitSincePayout = 0;
+          daysSincePayout = 0;
+          bestDaySincePayout = -Infinity;
+          balanceAtLastPayout = balance;
+        }
+        if (funded) {
+          profitSincePayout += dayPnl;
+          daysSincePayout += 1;
+          if (dayPnl > bestDaySincePayout) bestDaySincePayout = dayPnl;
+          if (dayPnl >= EVAL_SIM.MIN_WINNING_DAY_PROFIT) winningDaysSincePayout += 1;
+
+          const standardPathEligible = winningDaysSincePayout >= EVAL_SIM.MIN_WINNING_DAYS_FOR_PAYOUT;
+          const consistencyPathEligible =
+            daysSincePayout >= EVAL_SIM.CONSISTENCY_PATH_MIN_DAYS &&
+            profitSincePayout > 0 &&
+            bestDaySincePayout <= profitSincePayout * EVAL_SIM.CONSISTENCY_PATH_MAX_BEST_DAY_SHARE;
+          const aboveLastPayoutBalance = balance > balanceAtLastPayout;
+
+          if ((standardPathEligible || consistencyPathEligible) && aboveLastPayoutBalance) {
+            const payout = Math.max(
+              0,
+              Math.min(EVAL_SIM.MAX_PAYOUT, profitSincePayout * EVAL_SIM.PAYOUT_SHARE, balance * EVAL_SIM.MAX_PAYOUT_BALANCE_SHARE)
+            );
+            if (payout > 0) {
+              cashPayouts += payout;
+              balance -= payout;
+              balanceAtLastPayout = balance;
+              if (!thisAttemptGotPayout) {
+                fundedAttemptsWithPayout += 1;
+                thisAttemptGotPayout = true;
+              }
+              // Real rule: the drawdown buffer resets to $0 the moment funds
+              // are withdrawn — zero cushion until balance climbs again.
+              floor = balance;
+              highWater = balance;
+            }
+            winningDaysSincePayout = 0;
+            profitSincePayout = 0;
+            daysSincePayout = 0;
+            bestDaySincePayout = -Infinity;
+          }
+        }
       }
+
+      if (busted && funded) fundedLosses += 1;
+      if (!busted) break; // ran out of trade history mid-attempt — this is the live, ongoing state
     }
 
     sims.push({
       account,
-      stage,
+      stage: funded ? "funded" : "eval",
       balance,
+      effectiveProfitTarget,
+      floor,
       evalsPurchased,
       fundedPasses,
       fundedLosses,
-      feesPaid: evalsPurchased * EVAL_SIM.EVAL_COST,
-      tradeCount: accountTrades.length,
+      payoutsReceived: fundedAttemptsWithPayout,
+      cashPayouts,
+      feesPaid,
+      netResult: cashPayouts - feesPaid,
+      tradingDays: series.length,
     });
   }
 

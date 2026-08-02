@@ -78,10 +78,15 @@ export default async function Page() {
         <div className="eval-sim-header">
           <h2>Eval &amp; Funded Account Simulator</h2>
           <p>
-            Each account starts in <strong>Eval</strong> (needs +${EVAL_SIM.EVAL_TARGET.toLocaleString()} to pass).
-            Passing moves it to <strong>Funded</strong>, reset to $0. A funded account that drops to
-            ${EVAL_SIM.FUNDED_LOSS_FLOOR.toLocaleString()} is lost — both the funded account and the eval that
-            earned it — and restarts as a freshly purchased eval (${EVAL_SIM.EVAL_COST}).
+            Same economics model as the Strategy Creator&apos;s backtests: each account starts in{" "}
+            <strong>Eval</strong>, needs +${EVAL_SIM.EVAL_TARGET.toLocaleString()} to pass — but a big single day
+            raises that target (target = max(${EVAL_SIM.EVAL_TARGET.toLocaleString()}, best day ÷ 0.5)). Busting is
+            a <strong>trailing</strong> ${EVAL_SIM.TRAILING_DRAWDOWN.toLocaleString()} drawdown from your peak
+            balance, capped at breakeven — not a flat floor. Passing moves you to <strong>Funded</strong>; payouts
+            need 5 winning days of ${EVAL_SIM.MIN_WINNING_DAY_PROFIT}+ (or a faster consistency path), capped at $
+            {EVAL_SIM.MAX_PAYOUT.toLocaleString()} at {(EVAL_SIM.PAYOUT_SHARE * 100).toFixed(0)}% your share — and
+            the drawdown buffer resets to $0 right after each payout. Busting a funded account costs a fresh eval
+            (${EVAL_SIM.EVAL_COST}, flat — covers the real per-attempt + accrued monthly fees).
           </p>
         </div>
         {accountSims.length === 0 ? (
@@ -94,10 +99,13 @@ export default async function Page() {
                   <th>Account</th>
                   <th>Stage</th>
                   <th>Stage Balance</th>
+                  <th>Bust Line</th>
                   <th>Evals Purchased</th>
                   <th>Times Funded</th>
                   <th>Funded Losses</th>
+                  <th>Payouts</th>
                   <th>Fees Paid</th>
+                  <th>Bottom Line</th>
                 </tr>
               </thead>
               <tbody>
@@ -109,11 +117,21 @@ export default async function Page() {
                         {sim.stage === "funded" ? "Funded" : "Eval"}
                       </span>
                     </td>
-                    <td className={sim.balance >= 0 ? "positive" : "negative"}>{fmtMoney(sim.balance)}</td>
+                    <td className={sim.balance >= 0 ? "positive" : "negative"}>
+                      {fmtMoney(sim.balance)}
+                      {sim.stage === "eval" && (
+                        <span className="text-dim"> / ${sim.effectiveProfitTarget.toLocaleString()}</span>
+                      )}
+                    </td>
+                    <td className="negative">{fmtMoney(sim.floor)}</td>
                     <td>{sim.evalsPurchased}</td>
                     <td>{sim.fundedPasses}</td>
                     <td>{sim.fundedLosses}</td>
+                    <td>
+                      {sim.payoutsReceived} <span className="text-dim">({fmtMoney(sim.cashPayouts)})</span>
+                    </td>
                     <td className="negative">{fmtMoney(-sim.feesPaid)}</td>
+                    <td className={sim.netResult >= 0 ? "positive" : "negative"}>{fmtMoney(sim.netResult)}</td>
                   </tr>
                 ))}
               </tbody>
