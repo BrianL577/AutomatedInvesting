@@ -1,5 +1,6 @@
-import { loadTrades, computeStats, usingSupabase, RATE_LIMITS } from "../lib/trades";
+import { loadTrades, computeStats, usingSupabase, RATE_LIMITS, FUNDED_MILESTONE } from "../lib/trades";
 import TestTradePanel from "../components/TestTradePanel";
+import MarketChart from "../components/MarketChart";
 
 export const dynamic = "force-dynamic";
 
@@ -40,6 +41,8 @@ export default async function Page() {
 
       <TestTradePanel />
 
+      <MarketChart />
+
       <div className="rate-limit-banner">
         <span>Daily rate limiter:</span>
         <span className={`pill profit-cap ${stats.hitProfitCap ? "hit" : ""}`}>
@@ -69,16 +72,26 @@ export default async function Page() {
           </div>
         </div>
         <div className="stat-card">
-          <div className="label">Total Gained</div>
-          <div className="value positive">{fmtMoney(stats.totalGained)}</div>
+          <div className="label">Best Day</div>
+          <div className={`value ${stats.hasQualifyingBigDay ? "positive" : ""}`}>{fmtMoney(stats.bestDayPnl)}</div>
         </div>
         <div className="stat-card">
-          <div className="label">Total Lost</div>
-          <div className="value negative">{fmtMoney(-stats.totalLost)}</div>
+          <div className="label">Profitable Days</div>
+          <div className={`value ${stats.profitableDays >= FUNDED_MILESTONE.PROFITABLE_DAYS_REQUIRED ? "positive" : ""}`}>
+            {stats.profitableDays} / {FUNDED_MILESTONE.PROFITABLE_DAYS_REQUIRED}
+          </div>
         </div>
         <div className="stat-card">
-          <div className="label">Net P&amp;L</div>
-          <div className={`value ${stats.netPnl >= 0 ? "positive" : "negative"}`}>{fmtMoney(stats.netPnl)}</div>
+          <div className="label">Funded Payout Progress</div>
+          <div
+            className={`value ${
+              stats.hasQualifyingBigDay && stats.profitableDays >= FUNDED_MILESTONE.PROFITABLE_DAYS_REQUIRED
+                ? "positive"
+                : ""
+            }`}
+          >
+            {stats.hasQualifyingBigDay ? "✓" : "—"} ${FUNDED_MILESTONE.BIG_DAY_TARGET.toLocaleString()}+ day
+          </div>
         </div>
       </div>
 

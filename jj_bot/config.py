@@ -195,7 +195,14 @@ class TopstepEvalConfig:
 class TradovateCreds:
     """One Tradovate login can have several accounts under it (multiple
     TopStep evals/funded accounts, for example). `account_names` lists which
-    of those to trade; leave empty to trade every active account found."""
+    of those to trade; leave empty to trade every active account found.
+
+    `env='live'` is required for real TopStep eval/funded accounts (they run
+    on Tradovate's live environment even though the eval itself is
+    simulated) — the client refuses to place live orders unless
+    `allow_live=True` is also set, so going live is always an explicit,
+    deliberate opt-in (TRADOVATE_ALLOW_LIVE=true), never accidental.
+    """
 
     env: str = "demo"
     username: str = ""
@@ -206,23 +213,24 @@ class TradovateCreds:
     sec: str = ""
     device_id: str = "jj-bot-01"
     account_names: list[str] = field(default_factory=list)
+    allow_live: bool = False
 
 
 @dataclass
-class NinjaTraderCreds:
-    """NinjaTrader 8 has no REST API — automation goes through the free ATI
-    (Automated Trading Interface), a file-drop protocol. `incoming_dir` is
-    where order command files are written (NinjaTrader watches and consumes
-    them); `export_dir` is where the companion NinjaScript exporter
-    (ninjatrader/JJBotExporter.cs) writes bars.csv/fills.csv for this client
-    to tail. Must run on the same Windows machine as NinjaTrader (or a
-    Windows VPS with NinjaTrader installed) — NinjaTrader has no Linux mode.
+class IBKRCreds:
+    """Interactive Brokers connects via a running TWS or IB Gateway process
+    (not a hosted REST API) — host/port/client_id point at that process.
+    Paper trading account IDs start with 'DU'; IBKR paper accounts are free
+    and don't require funding a live account, unlike Tradovate's API access
+    (which requires a funded live account + a paid add-on).
+
+    Default ports: TWS paper 7497, IB Gateway paper 4002 (live: 7496 / 4001).
     """
 
-    incoming_dir: str = ""
-    export_dir: str = ""
-    account_names: list[str] = field(default_factory=lambda: ["Sim101"])
-    instrument: str = ""
+    host: str = "127.0.0.1"
+    port: int = 4002
+    client_id: int = 1
+    account_names: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -231,9 +239,9 @@ class AppConfig:
     risk: RiskConfig
     instrument: InstrumentConfig
     topstep_eval: TopstepEvalConfig
-    broker: str = "ninjatrader"  # "ninjatrader" (default) or "tradovate"
+    broker: str = "ibkr"  # "ibkr" (default, free paper trading) or "tradovate" (TopStep evals/funded accounts)
     tradovate: TradovateCreds = field(default_factory=TradovateCreds)
-    ninjatrader: NinjaTraderCreds = field(default_factory=NinjaTraderCreds)
+    ibkr: IBKRCreds = field(default_factory=IBKRCreds)
     # Path load_config() was called with, kept so a long-running process can
     # later call reload_strategy_and_risk() against the same file.
     config_path: Path = field(default_factory=lambda: REPO_ROOT / "config.yaml")
@@ -276,18 +284,16 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         sec=os.getenv("TRADOVATE_SEC", ""),
         device_id=os.getenv("TRADOVATE_DEVICE_ID", "jj-bot-01"),
         account_names=account_names,
+        allow_live=os.getenv("TRADOVATE_ALLOW_LIVE", "false").strip().lower() == "true",
     )
 
-    # NT_ACCOUNT_NAMES="DEMO8217187,Sim101" (comma-separated) — same
-    # dashboard-first pattern as Tradovate above. NT_ACCOUNT_NAME
-    # (singular) still works for a single account.
-    nt_names_raw = os.getenv("NT_ACCOUNT_NAMES") or os.getenv("NT_ACCOUNT_NAME", "")
-    nt_account_names = [n.strip() for n in nt_names_raw.split(",") if n.strip()] or _fetch_saved_account_names() or ["Sim101"]
-    ninjatrader_creds = NinjaTraderCreds(
-        incoming_dir=os.getenv("NT_INCOMING_DIR", ""),
-        export_dir=os.getenv("NT_EXPORT_DIR", ""),
-        account_names=nt_account_names,
-        instrument=os.getenv("NT_INSTRUMENT", ""),
+    ibkr_names_raw = os.getenv("IBKR_ACCOUNT_NAMES", "")
+    ibkr_account_names = [n.strip() for n in ibkr_names_raw.split(",") if n.strip()] or _fetch_saved_account_names()
+    ibkr_creds = IBKRCreds(
+        host=os.getenv("IBKR_HOST", "127.0.0.1"),
+        port=int(os.getenv("IBKR_PORT", "4002")),
+        client_id=int(os.getenv("IBKR_CLIENT_ID", "1")),
+        account_names=ibkr_account_names,
     )
 
     active_strategy, active_risk = _apply_active_strategy(raw["strategy"], raw["risk"])
@@ -297,8 +303,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         risk=RiskConfig(**active_risk),
         instrument=InstrumentConfig(**raw["instrument"]),
         topstep_eval=TopstepEvalConfig(**raw["topstep_eval"]),
-        broker=os.getenv("BROKER", "ninjatrader").strip().lower(),
+        broker=os.getenv("BROKER", "ibkr").strip().lower(),
         tradovate=tradovate_creds,
+        ibkr=ibkr_creds,
         config_path=path,
-        ninjatrader=ninjatrader_creds,
     )

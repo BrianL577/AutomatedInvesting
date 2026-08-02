@@ -4,8 +4,8 @@ today's actual results would translate to a real Topstep account before
 ever connecting one for real money.
 
 Mirrors dashboard/lib/backtester.ts's walkAccountEconomics() rule-for-rule.
-Keep both in sync if Topstep changes its rules — see NINJATRADER.md /
-config.yaml for where these numbers came from and what's still unconfirmed.
+Keep both in sync if Topstep changes its rules — see config.yaml for where
+these numbers came from and what's still unconfirmed.
 """
 from __future__ import annotations
 

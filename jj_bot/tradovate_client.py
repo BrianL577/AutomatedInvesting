@@ -1,6 +1,7 @@
 """Minimal Tradovate REST + WebSocket client: auth, contract lookup, historical
-bars, live quotes, and bracket order placement — enough to run the JJ
-strategy against a **demo** account.
+bars, live quotes, and bracket order placement — runs against a demo account
+by default, or a real TopStep/Tradovate live account with the explicit
+TRADOVATE_ALLOW_LIVE opt-in (see TradovateCreds).
 
 Tradovate API docs: https://api.tradovate.com/
 """
@@ -34,7 +35,8 @@ class TradovateAuthError(RuntimeError):
 
 
 class TradovateGuardError(RuntimeError):
-    """Raised if code accidentally tries to trade a non-demo account."""
+    """Raised if code tries to trade a live account without the explicit
+    TRADOVATE_ALLOW_LIVE opt-in."""
 
 
 @dataclass
@@ -52,11 +54,14 @@ class Account:
 
 class TradovateClient:
     def __init__(self, creds: TradovateCreds):
-        if creds.env != "demo":
+        if creds.env == "live" and not creds.allow_live:
             raise TradovateGuardError(
-                "Refusing to run: TRADOVATE_ENV must be 'demo'. "
-                "This bot is for paper trading only."
+                "Refusing to run: TRADOVATE_ENV=live requires TRADOVATE_ALLOW_LIVE=true "
+                "in .env as an explicit opt-in. This trades a real TopStep account — "
+                "make sure that's intentional before setting it."
             )
+        if creds.env not in ("demo", "live"):
+            raise TradovateGuardError(f"Unknown TRADOVATE_ENV '{creds.env}'; use 'demo' or 'live'.")
         self.creds = creds
         self.rest_base = REST_HOSTS[creds.env]
         self.access_token: Optional[str] = None
@@ -157,11 +162,9 @@ class TradovateClient:
         target_price: float,
         account: Optional[Account] = None,
     ) -> dict:
-        """Market entry + OCO stop-loss/take-profit bracket, on the demo
-        account only. Defaults to the first resolved account; pass `account`
-        to target a specific one when trading multiple accounts."""
-        if self.creds.env != "demo":
-            raise TradovateGuardError("Refusing to place order outside demo env.")
+        """Market entry + OCO stop-loss/take-profit bracket. Defaults to the
+        first resolved account; pass `account` to target a specific one when
+        trading multiple accounts."""
         acct = account or (self.accounts[0] if self.accounts else None)
         if acct is None:
             raise TradovateAuthError("No account resolved — call load_accounts() first.")

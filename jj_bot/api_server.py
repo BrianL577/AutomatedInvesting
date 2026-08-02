@@ -10,7 +10,7 @@ at it via the NEXT_PUBLIC_BOT_API_URL env var.
 Endpoints:
   GET  /api/health        -> {"ok": true}
   GET  /api/accounts      -> resolves + lists every configured broker account
-                              (NinjaTrader by default, or Tradovate if BROKER=tradovate)
+                              (IBKR by default, or Tradovate if BROKER=tradovate)
   POST /api/test-trade    -> places one small bracket test order, to confirm
                               the automation pipeline is actually wired up
   GET  /api/trades        -> same trade log the dashboard reads directly,
@@ -91,8 +91,6 @@ def accounts():
 @app.post("/api/test-trade")
 def test_trade(req: TestTradeRequest):
     cfg = load_config()
-    if cfg.broker == "tradovate" and cfg.tradovate.env != "demo":
-        raise HTTPException(status_code=400, detail="TRADOVATE_ENV must be 'demo'. Refusing to place a test trade.")
     if req.direction not in ("Buy", "Sell"):
         raise HTTPException(status_code=400, detail="direction must be 'Buy' or 'Sell'")
     try:
