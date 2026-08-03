@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import uuid
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -278,16 +279,24 @@ class TopstepXClient:
         side = ORDER_SIDE_BUY if action == "Buy" else ORDER_SIDE_SELL
         exit_side = ORDER_SIDE_SELL if action == "Buy" else ORDER_SIDE_BUY
 
-        entry = self.place_order(acct, contract, ORDER_TYPE_MARKET, side, qty, custom_tag="jj-bot-entry")
+        # CONFIRMED BY A REAL FAILED ORDER: custom tags must be unique PER
+        # ACCOUNT — a hardcoded "jj-bot-entry" etc. worked exactly once and
+        # then rejected every subsequent order on the same account with
+        # "Specified custom tag is already in use". Every order needs its
+        # own tag, so each bracket gets a fresh uuid suffix.
+        tag_suffix = uuid.uuid4().hex[:12]
+        entry = self.place_order(
+            acct, contract, ORDER_TYPE_MARKET, side, qty, custom_tag=f"jj-bot-entry-{tag_suffix}",
+        )
         entry_order_id = entry.get("orderId")
 
         stop = self.place_order(
             acct, contract, ORDER_TYPE_STOP, exit_side, qty,
-            stop_price=stop_price, custom_tag="jj-bot-stop",
+            stop_price=stop_price, custom_tag=f"jj-bot-stop-{tag_suffix}",
         )
         target = self.place_order(
             acct, contract, ORDER_TYPE_LIMIT, exit_side, qty,
-            limit_price=target_price, linked_order_id=stop.get("orderId"), custom_tag="jj-bot-target",
+            limit_price=target_price, linked_order_id=stop.get("orderId"), custom_tag=f"jj-bot-target-{tag_suffix}",
         )
         return {"entry": entry, "entry_order_id": entry_order_id, "stop": stop, "target": target}
 
