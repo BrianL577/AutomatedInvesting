@@ -6,9 +6,17 @@ Feb 2026 runs on TopstepX, not Tradovate). See tradovate_client.py for the
 legacy path, kept only for a Tradovate account you opened yourself outside
 TopStep.
 
-IMPORTANT — there is no sandbox/demo environment. Every order placed through
-this client is a real order against real money the moment TOPSTEPX_ALLOW_LIVE
-is set. There is no "env=demo" safety net like Tradovate had.
+IMPORTANT — there is no separate demo API host the way Tradovate had
+(demo.tradovateapi.com vs live.tradovateapi.com) — this client always talks
+to the same api.topstepx.com regardless of which account you point it at.
+TopstepX DOES offer a free "Practice" account (a separate, non-funding-
+eligible paper account visible in the platform's account dropdown,
+alongside your real Combine) — for safe testing, resolve its name via
+Account/search and set TOPSTEPX_ACCOUNT_NAMES to that instead of your real
+Combine account. This code has no way to tell practice and real accounts
+apart automatically, so TOPSTEPX_ALLOW_LIVE is still required either way —
+it's an "I mean it" switch for THIS CLIENT placing orders at all, not a
+statement about which specific account is real money.
 
 Endpoint/schema details below are assembled from public ProjectX Gateway
 documentation (gateway.docs.projectx.com). Auth, account/contract search,
@@ -430,6 +438,70 @@ class TopstepXMarketDataStream:
                         price = args[-1].get("lastPrice") or args[-1].get("last")
                         if price is not None:
                             self.on_quote(float(price))
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._ws:
+            self._ws.close()
+
+
+class TopstepXUserDataStream:
+    """SignalR client for the USER hub — pushes real-time order/trade/
+    position updates for an account, instead of having to poll REST
+    endpoints on a timer. Built to close the residual risk window
+    documented in live_runner_topstepx.py: polling every N seconds means up
+    to N seconds where a stale sibling bracket order sits live and
+    unprotected after a fill. This reacts to the fill event itself.
+
+    UNVERIFIED against a live hub connection — the subscribe method name
+    (SubscribeOrders) and event name (GatewayUserOrder) are assembled from
+    public docs, same caveat as TopstepXMarketDataStream. Used as an
+    ADDITION to polling, not a replacement — if this stream's assumptions
+    are wrong or it disconnects, the existing poll loop is still there as a
+    fallback, just slower."""
+
+    RECORD_SEP = "\x1e"
+
+    def __init__(self, token: str, on_order_event: Optional[Callable[[dict], None]] = None):
+        self.token = token
+        self.on_order_event = on_order_event
+        self._ws: Optional[websocket.WebSocket] = None
+        self._stop = threading.Event()
+
+    def connect(self) -> None:
+        self._ws = websocket.create_connection(f"{USER_HUB_URL}?access_token={self.token}", timeout=15)
+        self._send({"protocol": "json", "version": 1})
+        self._ws.recv()  # handshake response
+
+    def _send(self, obj: dict) -> None:
+        self._ws.send(json.dumps(obj) + self.RECORD_SEP)
+
+    def subscribe_orders(self, account_id: int) -> None:
+        self._send({"type": 1, "target": "SubscribeOrders", "arguments": [account_id]})
+
+    def run_forever(self) -> None:
+        """Blocking receive loop; call from a dedicated thread. Fires
+        on_order_event on ANY GatewayUserOrder message for the subscribed
+        account — deliberately not filtering by order status (the exact
+        status enum values aren't confirmed), since the cost of an extra,
+        unnecessary flat-check is negligible and the cost of silently
+        missing a fill because a status filter was wrong is not."""
+        while not self._stop.is_set():
+            try:
+                raw = self._ws.recv()
+            except Exception:
+                break
+            for frame in raw.split(self.RECORD_SEP):
+                if not frame:
+                    continue
+                try:
+                    msg = json.loads(frame)
+                except json.JSONDecodeError:
+                    continue
+                if msg.get("type") == 1 and msg.get("target") == "GatewayUserOrder":
+                    args = msg.get("arguments", [])
+                    if args and self.on_order_event:
+                        self.on_order_event(args[-1])
 
     def stop(self) -> None:
         self._stop.set()
