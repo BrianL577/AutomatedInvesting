@@ -33,6 +33,7 @@ Docs: https://gateway.docs.projectx.com/
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -41,6 +42,8 @@ import requests
 import websocket
 
 from .config import TopstepXCreds
+
+logger = logging.getLogger("jj_bot.topstepx_client")
 
 REST_BASE = "https://api.topstepx.com/api"
 USER_HUB_URL = "wss://rtc.topstepx.com/hubs/user"
@@ -142,13 +145,31 @@ class TopstepXClient:
         else:
             selected = raw_accounts
 
-        self.accounts = [
+        resolved = [
             Account(id=a["id"], name=a["name"], can_trade=a.get("canTrade", True), balance=float(a.get("balance", 0.0)))
             for a in selected
         ]
-        not_tradeable = [a.name for a in self.accounts if not a.can_trade]
-        if not_tradeable:
-            raise TopstepXAuthError(f"Account(s) not tradeable: {not_tradeable}")
+
+        if self.creds.account_names:
+            # Explicitly named account(s) that turn out not tradeable is a
+            # real problem the caller needs to know about loudly — don't
+            # silently drop what they asked for.
+            not_tradeable = [a.name for a in resolved if not a.can_trade]
+            if not_tradeable:
+                raise TopstepXAuthError(f"Account(s) not tradeable: {not_tradeable}")
+            self.accounts = resolved
+        else:
+            # Auto-discover mode (blank TOPSTEPX_ACCOUNT_NAMES): one account
+            # being temporarily blocked (e.g. a daily loss limit violation)
+            # shouldn't make EVERY account unusable, including unrelated
+            # ones like a Practice account — filter quietly instead of
+            # hard-failing the whole call.
+            self.accounts = [a for a in resolved if a.can_trade]
+            blocked = [a.name for a in resolved if not a.can_trade]
+            if blocked:
+                logger.warning("Skipping non-tradeable account(s) (temporarily blocked?): %s", blocked)
+            if not self.accounts:
+                raise TopstepXAuthError(f"No tradeable accounts found — all blocked: {blocked}")
 
         self.account_id = self.accounts[0].id
         return self.accounts
