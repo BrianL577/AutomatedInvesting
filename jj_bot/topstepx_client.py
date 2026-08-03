@@ -11,11 +11,14 @@ this client is a real order against real money the moment TOPSTEPX_ALLOW_LIVE
 is set. There is no "env=demo" safety net like Tradovate had.
 
 Endpoint/schema details below are assembled from public ProjectX Gateway
-documentation (gateway.docs.projectx.com), not verified against a live
-account from this session — confirm with a real `test_connection.py` run
-(small size, tight stop/target) before trusting this for real strategy
-trading, and open an issue/adjust field names here if TopStep's docs have
-since changed.
+documentation (gateway.docs.projectx.com). Auth, account/contract search,
+and market-order placement are CONFIRMED working against a real account.
+CONFIRMED BROKEN: `linkedOrderId` does NOT make the stop/target pair behave
+as OCO — see place_bracket_order()'s docstring, this cost a real $905 from
+a stale unprotected order before the fix. The fix (active fill-monitoring +
+manual cancel_sibling_orders()) is now wired into both test_trade.py and
+live_runner_topstepx.py, but has not yet been proven against a live fill —
+treat it as "should work" until confirmed by an actual test.
 
 Docs: https://gateway.docs.projectx.com/
 """
@@ -224,13 +227,21 @@ class TopstepXClient:
         target_price: float,
         account: Optional[Account] = None,
     ) -> dict:
-        """Market entry, then a linked stop + limit OCO pair (per ProjectX's
-        Auto-OCO bracket model — the two exit orders reference each other via
-        linkedOrderId so filling one cancels the other). UNVERIFIED against a
-        live account: confirm this linkage behaves as an actual OCO on your
-        account before trusting it for real strategy trading — TopStep's
-        docs describe Auto-OCO brackets as a per-order feature but the exact
-        API wiring here is inferred, not confirmed end-to-end."""
+        """Market entry, then a stop + limit exit pair.
+
+        CONFIRMED BY A REAL LIVE TRADE this is NOT a true OCO: `linkedOrderId`
+        does not make TopstepX auto-cancel the sibling order when one fills.
+        A real test trade's stop filled correctly, but the target (limit)
+        order was left sitting live — price later rallied back to it, which
+        executed it as a brand-new, completely unprotected position (the
+        original bracket was already "used up"), costing $905 before it
+        finally closed. `linked_order_id` is still sent (harmless, and may
+        do *something* useful server-side) but MUST NOT be relied on for
+        safety — callers (test_trade.py, live_runner_topstepx.py) are
+        responsible for actively watching for a fill and calling
+        cancel_sibling_orders() on the other leg the moment one fills. Do
+        not place bracket orders through this method without that
+        follow-up — it is not self-cleaning."""
         acct = account or (self.accounts[0] if self.accounts else None)
         if acct is None:
             raise TopstepXAuthError("No account resolved — call load_accounts() first.")
@@ -250,6 +261,43 @@ class TopstepXClient:
             limit_price=target_price, linked_order_id=stop.get("orderId"), custom_tag="jj-bot-target",
         )
         return {"entry": entry, "entry_order_id": entry_order_id, "stop": stop, "target": target}
+
+    def cancel_order(self, account_id: int, order_id: int) -> dict:
+        resp = requests.post(
+            f"{REST_BASE}/Order/cancel",
+            json={"accountId": account_id, "orderId": order_id},
+            headers=self._headers(),
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_open_order_ids(self, account_id: int) -> set[int]:
+        resp = requests.post(
+            f"{REST_BASE}/Order/searchOpen",
+            json={"accountId": account_id},
+            headers=self._headers(),
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("success"):
+            return set()
+        return {o["id"] for o in data.get("orders", []) if o.get("accountId") == account_id}
+
+    def cancel_sibling_orders(self, account_id: int, order_ids: list[Optional[int]]) -> None:
+        """The manual OCO cleanup place_bracket_order's own docstring says is
+        required: cancels any of the given order IDs that are STILL open.
+        Safe to call speculatively — an order that already filled or was
+        already cancelled just won't show up in the open-orders list, and
+        is skipped, not double-cancelled or errored on."""
+        still_open = self.get_open_order_ids(account_id)
+        for order_id in order_ids:
+            if order_id is not None and order_id in still_open:
+                try:
+                    self.cancel_order(account_id, order_id)
+                except Exception:
+                    pass  # best-effort — caller should still verify manually
 
     def place_test_trade(
         self,

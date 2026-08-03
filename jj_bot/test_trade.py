@@ -171,6 +171,14 @@ def _run_topstepx_test(cfg: AppConfig, account_name: Optional[str], direction: s
         if realized_pnl is not None:
             break
 
+    # CRITICAL: linkedOrderId does NOT auto-cancel the sibling order (see
+    # place_bracket_order's docstring — this is the manual OCO cleanup a
+    # real $905 loss proved is required). Whichever of stop/target didn't
+    # fill would otherwise sit live indefinitely as an unprotected order.
+    stop_id = order_response.get("stop", {}).get("orderId")
+    target_id = order_response.get("target", {}).get("orderId")
+    client.cancel_sibling_orders(target_account.id, [stop_id, target_id])
+
     return ConnectionTestResult(
         accounts=[a.name for a in accounts],
         tested_account=target_account.name,

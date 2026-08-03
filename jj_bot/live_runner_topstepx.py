@@ -36,12 +36,22 @@ class _AccountState:
     account: Account
     pending_entry_price: Optional[float] = None
     pending_signal: Optional[Signal] = None
+    # CONFIRMED BY A REAL LIVE TRADE: TopstepX does NOT auto-cancel the
+    # sibling stop/target order when the other fills (linkedOrderId is not
+    # a working OCO — see topstepx_client.py). These IDs are tracked so
+    # _check_account_flat can manually cancel whichever leg is still open
+    # the moment a fill is detected — this cost a real $905 loss before
+    # this tracking/cleanup existed.
+    stop_order_id: Optional[int] = None
+    target_order_id: Optional[int] = None
     day_pnl_dollars: float = 0.0
     rate_limited: bool = False
 
     def reset_day(self) -> None:
         self.pending_entry_price = None
         self.pending_signal = None
+        self.stop_order_id = None
+        self.target_order_id = None
         self.day_pnl_dollars = 0.0
         self.rate_limited = False
 
@@ -137,6 +147,8 @@ class TopstepXLiveRunner:
                 logger.info("Order placed on %s: %s", state.account.name, result)
                 state.pending_entry_price = signal.entry_price
                 state.pending_signal = signal
+                state.stop_order_id = result.get("stop", {}).get("orderId")
+                state.target_order_id = result.get("target", {}).get("orderId")
                 any_order_placed = True
             except Exception:
                 logger.exception("Order placement failed on account %s", state.account.name)
@@ -145,11 +157,24 @@ class TopstepXLiveRunner:
             self.engine.position_open = True
 
     def _poll_positions(self) -> None:
-        """Every 15s, check each account for a flattened position (stop/target
-        hit) and feed the result back into that account's rate limiter and
-        the shared engine's daily counters."""
+        """Every 3s, check each account for a flattened position (stop/target
+        hit), immediately cancel whichever sibling order is still open (see
+        _AccountState docstring — this is NOT optional cleanup, it's the fix
+        for a real $905 loss from a stale unprotected order), and feed the
+        result back into that account's rate limiter and the shared engine's
+        daily counters.
+
+        KNOWN LIMITATION: this is polling, not a push notification — there's
+        still up to a ~3s window between a fill and this loop noticing it,
+        during which the sibling order is live and could theoretically be
+        hit by a fast price move. TopstepX's SignalR User Hub pushes
+        GatewayUserOrder/GatewayUserTrade events in real time and would
+        close this gap entirely; not yet implemented here (would reuse the
+        TopstepXMarketDataStream pattern against USER_HUB_URL instead of
+        MARKET_HUB_URL). Until then, 3s is a deliberate reduction from the
+        original 15s poll, not a claim this is fully closed."""
         while True:
-            time_module.sleep(15)
+            time_module.sleep(3)
             for state in self._account_states.values():
                 if state.pending_signal is None or state.pending_entry_price is None:
                     continue
@@ -170,7 +195,12 @@ class TopstepXLiveRunner:
             if open_size != 0:
                 return
 
-            logger.info("Position flat on %s — trade closed. Fetching trade history...", state.account.name)
+            logger.info("Position flat on %s — trade closed. Cancelling any leftover bracket order...", state.account.name)
+            # THE FIX: cancel whichever of stop/target didn't cause this
+            # fill, immediately, before it can sit live and get hit by a
+            # later price move (see _AccountState / _poll_positions docs).
+            self.client.cancel_sibling_orders(state.account.id, [state.stop_order_id, state.target_order_id])
+
             realized_pnl = self._infer_last_pnl(state.account.id)
             signal = state.pending_signal
             if signal is not None and realized_pnl is not None:
