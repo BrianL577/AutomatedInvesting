@@ -441,23 +441,33 @@ class TopstepXMarketDataStream:
         # SignalR handshake: negotiate the JSON hub protocol, version 1.
         self._send({"protocol": "json", "version": 1})
         self._ws.recv()  # handshake response (empty JSON object on success)
+        logger.info("Market data hub connected.")
 
     def _send(self, obj: dict) -> None:
         self._ws.send(json.dumps(obj) + self.RECORD_SEP)
 
     def subscribe_quotes(self, contract_id: str) -> None:
         self._send({"type": 1, "target": "SubscribeContractQuotes", "arguments": [contract_id]})
+        logger.info("Subscribed to quotes for contract %s.", contract_id)
 
     def run_forever(self) -> None:
-        """Blocking receive loop; call from a dedicated thread."""
+        """Blocking receive loop; call from a dedicated thread. Logs loudly
+        on disconnect/error and on the first received quote so a dead
+        connection is never silently indistinguishable from "market is
+        just quiet" — a real gap that made a dropped hub connection look
+        identical to zero signals in the logs."""
+        got_first_quote = False
+        frames_seen = 0
         while not self._stop.is_set():
             try:
                 raw = self._ws.recv()
             except Exception:
+                logger.exception("Market data hub connection dropped/errored — quote stream has stopped.")
                 break
             for frame in raw.split(self.RECORD_SEP):
                 if not frame:
                     continue
+                frames_seen += 1
                 try:
                     msg = json.loads(frame)
                 except json.JSONDecodeError:
@@ -467,7 +477,19 @@ class TopstepXMarketDataStream:
                     if args and self.on_quote:
                         price = args[-1].get("lastPrice") or args[-1].get("last")
                         if price is not None:
+                            if not got_first_quote:
+                                logger.info("First live quote received: %.2f — market data hub is alive.", float(price))
+                                got_first_quote = True
                             self.on_quote(float(price))
+                elif frames_seen <= 5:
+                    logger.info("Market hub frame (pre-first-quote): %s", msg)
+        if self._stop.is_set():
+            logger.info("Market data hub receive loop stopped (requested).")
+        elif not got_first_quote:
+            logger.warning(
+                "Market data hub receive loop exited after %d frame(s) without ever delivering a quote.",
+                frames_seen,
+            )
 
     def stop(self) -> None:
         self._stop.set()
@@ -502,12 +524,14 @@ class TopstepXUserDataStream:
         self._ws = websocket.create_connection(f"{USER_HUB_URL}?access_token={self.token}", timeout=15)
         self._send({"protocol": "json", "version": 1})
         self._ws.recv()  # handshake response
+        logger.info("User data hub connected.")
 
     def _send(self, obj: dict) -> None:
         self._ws.send(json.dumps(obj) + self.RECORD_SEP)
 
     def subscribe_orders(self, account_id: int) -> None:
         self._send({"type": 1, "target": "SubscribeOrders", "arguments": [account_id]})
+        logger.info("Subscribed to order events for account %s.", account_id)
 
     def run_forever(self) -> None:
         """Blocking receive loop; call from a dedicated thread. Fires
@@ -520,6 +544,7 @@ class TopstepXUserDataStream:
             try:
                 raw = self._ws.recv()
             except Exception:
+                logger.exception("User data hub connection dropped/errored — order event stream has stopped.")
                 break
             for frame in raw.split(self.RECORD_SEP):
                 if not frame:

@@ -66,6 +66,7 @@ class TopstepXLiveRunner:
         self.trade_logger = TradeLogger(dollar_per_point=self.dollar_per_point, source="live_topstepx")
         self._current_day = None
         self._account_states: dict[str, _AccountState] = {}
+        self._got_first_tick = False
 
     def start(self) -> None:
         logger.info("Authenticating with TopstepX...")
@@ -119,7 +120,17 @@ class TopstepXLiveRunner:
             stream.stop()
 
     def _on_tick(self, price: float, contract) -> None:
-        closed_bar = self.aggregator.add_tick(price, datetime.now().timestamp())
+        if not self._got_first_tick:
+            logger.info("First live tick received: %.2f — feed is alive, waiting on first closed bar.", price)
+            self._got_first_tick = True
+        # NOTE: add_tick expects epoch MILLISECONDS (see bar_aggregator.py /
+        # tradovate_client.py, which forwards the exchange's ms timestamp
+        # directly) — datetime.now().timestamp() returns SECONDS. Passing
+        # seconds here made the aggregator interpret ~1000 minutes of real
+        # time as one simulated minute, so no bar ever closed for hours.
+        # This was the actual root cause of "no bars logging" after several
+        # minutes of a live run.
+        closed_bar = self.aggregator.add_tick(price, datetime.now().timestamp() * 1000)
         if closed_bar is not None:
             self._on_bar(closed_bar, contract)
 
