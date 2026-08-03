@@ -24,7 +24,7 @@ from .bar_aggregator import BarAggregator
 from .config import AppConfig
 from .models import Direction, Signal, TradeResult
 from .strategy import StrategyEngine
-from .topstepx_client import REST_BASE, Account, TopstepXClient, TopstepXMarketDataStream
+from .topstepx_client import REST_BASE, Account, TopstepXClient, TopstepXMarketDataStream, TopstepXUserDataStream
 from .trade_logger import TradeLogger
 from .logging_setup import setup_logging
 
@@ -86,6 +86,27 @@ class TopstepXLiveRunner:
         stream.on_quote = lambda price: self._on_tick(price, contract)
         stream.connect()
         stream.subscribe_quotes(contract.id)
+
+        # Real-time order-fill notifications, one connection per account —
+        # reacts to a fill (and cancels the sibling bracket order)
+        # immediately instead of waiting for the next 3s poll tick. Runs
+        # ALONGSIDE the poll loop below, not instead of it: if a hub
+        # connection drops or an event never arrives, the poll is still
+        # there to catch it, just slower.
+        for state in self._account_states.values():
+            try:
+                user_stream = TopstepXUserDataStream(
+                    token=self.client.token,
+                    on_order_event=lambda _evt, s=state: self._check_account_flat(s),
+                )
+                user_stream.connect()
+                user_stream.subscribe_orders(state.account.id)
+                threading.Thread(target=user_stream.run_forever, daemon=True).start()
+            except Exception:
+                logger.exception(
+                    "Could not open the real-time order stream for %s — falling back to the 3s poll only.",
+                    state.account.name,
+                )
 
         threading.Thread(target=self._poll_positions, daemon=True).start()
 
@@ -164,15 +185,14 @@ class TopstepXLiveRunner:
         result back into that account's rate limiter and the shared engine's
         daily counters.
 
-        KNOWN LIMITATION: this is polling, not a push notification — there's
-        still up to a ~3s window between a fill and this loop noticing it,
-        during which the sibling order is live and could theoretically be
-        hit by a fast price move. TopstepX's SignalR User Hub pushes
-        GatewayUserOrder/GatewayUserTrade events in real time and would
-        close this gap entirely; not yet implemented here (would reuse the
-        TopstepXMarketDataStream pattern against USER_HUB_URL instead of
-        MARKET_HUB_URL). Until then, 3s is a deliberate reduction from the
-        original 15s poll, not a claim this is fully closed."""
+        This is the FALLBACK path. The primary path is now
+        TopstepXUserDataStream (see start()), which pushes real-time fill
+        notifications and triggers this same check immediately — this 3s
+        poll exists in case that stream's assumptions are wrong, drops its
+        connection, or a status event is missed. Both paths call
+        _check_account_flat(), which is idempotent (cancelling an
+        already-cancelled/filled order is a no-op), so running both
+        concurrently is safe, not redundant-in-a-bad-way."""
         while True:
             time_module.sleep(3)
             for state in self._account_states.values():
