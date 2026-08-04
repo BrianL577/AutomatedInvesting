@@ -132,6 +132,7 @@ class TopstepXLiveRunner:
     def _run_user_stream_with_reconnect(self, state: "_AccountState") -> None:
         backoff = 5
         while not self._shutting_down.is_set():
+            connected_at = time_module.monotonic()
             try:
                 user_stream = TopstepXUserDataStream(
                     token=self.client.token,
@@ -145,7 +146,17 @@ class TopstepXLiveRunner:
                 logger.exception("Order event stream failed for %s — the 3s poll is still covering it.", state.account.name)
             if self._shutting_down.is_set():
                 return
-            logger.warning("Reconnecting order stream for %s in %ds...", state.account.name, backoff)
+            # Independent of whatever the stream class itself logged (it
+            # should already say why — see topstepx_client.py), record how
+            # long the connection actually lasted here too. A short-lived
+            # connection repeating on a tight cadence is the signature of a
+            # keepalive/idle-timeout problem even if the inner class's own
+            # logging were ever wrong or silent again.
+            lifetime = time_module.monotonic() - connected_at
+            logger.warning(
+                "Order stream for %s lasted %.1fs before disconnecting — reconnecting in %ds...",
+                state.account.name, lifetime, backoff,
+            )
             time_module.sleep(backoff)
             backoff = min(backoff * 2, 60)
 
