@@ -15,7 +15,7 @@ from __future__ import annotations
 import threading
 import time as time_module
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import requests
@@ -46,6 +46,13 @@ class _AccountState:
     target_order_id: Optional[int] = None
     day_pnl_dollars: float = 0.0
     rate_limited: bool = False
+    # CONFIRMED BY A REAL LIVE TRADE: get_recent_trade_pnl with no after_iso
+    # sums the account's ENTIRE trade history, not just the current trade.
+    # A real $1,530 winner got logged as $1,365 because it silently netted
+    # in two unrelated connectivity-test trades (-$105, -$60) from the day
+    # before. Recording the entry's placement time and passing it as
+    # after_iso scopes the P&L query to just this trade.
+    entry_placed_at: Optional[str] = None
 
     def reset_day(self) -> None:
         self.pending_entry_price = None
@@ -54,6 +61,7 @@ class _AccountState:
         self.target_order_id = None
         self.day_pnl_dollars = 0.0
         self.rate_limited = False
+        self.entry_placed_at = None
 
 
 class TopstepXLiveRunner:
@@ -87,27 +95,6 @@ class TopstepXLiveRunner:
         # there to catch it, just slower.
         for state in self._account_states.values():
             threading.Thread(target=self._run_user_stream_with_reconnect, args=(state,), daemon=True).start()
-
-        # Real-time order-fill notifications, one connection per account —
-        # reacts to a fill (and cancels the sibling bracket order)
-        # immediately instead of waiting for the next 3s poll tick. Runs
-        # ALONGSIDE the poll loop below, not instead of it: if a hub
-        # connection drops or an event never arrives, the poll is still
-        # there to catch it, just slower.
-        for state in self._account_states.values():
-            try:
-                user_stream = TopstepXUserDataStream(
-                    token=self.client.token,
-                    on_order_event=lambda _evt, s=state: self._check_account_flat(s),
-                )
-                user_stream.connect()
-                user_stream.subscribe_orders(state.account.id)
-                threading.Thread(target=user_stream.run_forever, daemon=True).start()
-            except Exception:
-                logger.exception(
-                    "Could not open the real-time order stream for %s — falling back to the 3s poll only.",
-                    state.account.name,
-                )
 
         threading.Thread(target=self._poll_positions, daemon=True).start()
 
@@ -211,6 +198,10 @@ class TopstepXLiveRunner:
                 logger.info("Skipping account %s: already in a trade.", state.account.name)
                 continue
             try:
+                # Captured BEFORE placing the order (not after) so a fill
+                # that happens fast can never land a hair earlier than this
+                # timestamp and get excluded from the P&L query below.
+                placed_at = datetime.now(timezone.utc).isoformat()
                 result = self.client.place_bracket_order(
                     contract=contract,
                     action=action,
@@ -224,6 +215,7 @@ class TopstepXLiveRunner:
                 state.pending_signal = signal
                 state.stop_order_id = result.get("stop", {}).get("orderId")
                 state.target_order_id = result.get("target", {}).get("orderId")
+                state.entry_placed_at = placed_at
                 any_order_placed = True
             except Exception:
                 logger.exception("Order placement failed on account %s", state.account.name)
@@ -275,7 +267,7 @@ class TopstepXLiveRunner:
             # later price move (see _AccountState / _poll_positions docs).
             self.client.cancel_sibling_orders(state.account.id, [state.stop_order_id, state.target_order_id])
 
-            realized_pnl = self._infer_last_pnl(state.account.id)
+            realized_pnl = self._infer_last_pnl(state.account.id, after_iso=state.entry_placed_at)
             signal = state.pending_signal
             if signal is not None and realized_pnl is not None:
                 pnl_points = realized_pnl / (self.dollar_per_point * self.cfg.risk.contracts_per_trade)
@@ -309,15 +301,22 @@ class TopstepXLiveRunner:
 
             state.pending_entry_price = None
             state.pending_signal = None
+            state.entry_placed_at = None
         except Exception:
             logger.exception("Position poll failed for account %s", state.account.name)
 
-    def _infer_last_pnl(self, account_id: int) -> float | None:
+    def _infer_last_pnl(self, account_id: int, after_iso: Optional[str] = None) -> float | None:
         """TopstepX's Trade/search returns realized profitAndLoss per trade
         directly (unlike Tradovate, which requires inferring P&L from fill
-        prices) — see TopstepXClient.get_recent_trade_pnl."""
+        prices) — see TopstepXClient.get_recent_trade_pnl.
+
+        after_iso MUST be passed (this account's entry_placed_at) — without
+        it, get_recent_trade_pnl sums the account's ENTIRE trade history,
+        not just this trade. Confirmed live: a real $1,530 winner got
+        logged as $1,365 because it silently netted in two unrelated
+        connectivity-test trades (-$105, -$60) from the previous day."""
         try:
-            return self.client.get_recent_trade_pnl(account_id)
+            return self.client.get_recent_trade_pnl(account_id, after_iso=after_iso)
         except Exception:
             logger.exception("Could not fetch trade history to resolve realized P&L.")
             return None
