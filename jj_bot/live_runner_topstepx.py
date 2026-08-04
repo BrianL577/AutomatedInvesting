@@ -66,6 +66,8 @@ class TopstepXLiveRunner:
         self.trade_logger = TradeLogger(dollar_per_point=self.dollar_per_point, source="live_topstepx")
         self._current_day = None
         self._account_states: dict[str, _AccountState] = {}
+        self._got_first_tick = False
+        self._shutting_down = threading.Event()
 
     def start(self) -> None:
         logger.info("Authenticating with TopstepX...")
@@ -77,15 +79,14 @@ class TopstepXLiveRunner:
         contract = self.client.find_front_month_contract(self.cfg.instrument.symbol)
         logger.info("Trading contract: %s", contract.name)
 
-        stream = TopstepXMarketDataStream(
-            token=self.client.token,
-            on_bar=None,
-        )
-        # Wire quote ticks into the bar aggregator directly, same as the
-        # Tradovate stream does via BarAggregator.add_tick.
-        stream.on_quote = lambda price: self._on_tick(price, contract)
-        stream.connect()
-        stream.subscribe_quotes(contract.id)
+        # Real-time order-fill notifications, one connection per account —
+        # reacts to a fill (and cancels the sibling bracket order)
+        # immediately instead of waiting for the next 3s poll tick. Runs
+        # ALONGSIDE the poll loop below, not instead of it: if a hub
+        # connection drops or an event never arrives, the poll is still
+        # there to catch it, just slower.
+        for state in self._account_states.values():
+            threading.Thread(target=self._run_user_stream_with_reconnect, args=(state,), daemon=True).start()
 
         # Real-time order-fill notifications, one connection per account —
         # reacts to a fill (and cancels the sibling bracket order)
@@ -112,14 +113,67 @@ class TopstepXLiveRunner:
 
         logger.info("Streaming live quotes. Ctrl+C to stop.")
         try:
-            stream.run_forever()
+            self._run_market_stream_with_reconnect(contract)
         except KeyboardInterrupt:
             logger.info("Stopping.")
-        finally:
-            stream.stop()
+            self._shutting_down.set()
+
+    def _run_market_stream_with_reconnect(self, contract) -> None:
+        """A dropped WebSocket (sleep/wake, Wi-Fi blip, etc.) used to kill
+        quote streaming permanently for the rest of the run — the process
+        kept running but silently stopped producing bars forever, which is
+        exactly what happened on 2026-08-03: a 16-minute gap then a
+        ConnectionResetError with nothing after it. This loop reconnects
+        with backoff instead of dying once."""
+        backoff = 5
+        while not self._shutting_down.is_set():
+            try:
+                stream = TopstepXMarketDataStream(token=self.client.token, on_bar=None)
+                stream.on_quote = lambda price: self._on_tick(price, contract)
+                stream.connect()
+                stream.subscribe_quotes(contract.id)
+                backoff = 5  # reset after a successful connect
+                stream.run_forever()
+            except Exception:
+                logger.exception("Market data stream setup failed.")
+            if self._shutting_down.is_set():
+                return
+            logger.warning("Reconnecting to market data hub in %ds...", backoff)
+            time_module.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+
+    def _run_user_stream_with_reconnect(self, state: "_AccountState") -> None:
+        backoff = 5
+        while not self._shutting_down.is_set():
+            try:
+                user_stream = TopstepXUserDataStream(
+                    token=self.client.token,
+                    on_order_event=lambda _evt, s=state: self._check_account_flat(s),
+                )
+                user_stream.connect()
+                user_stream.subscribe_orders(state.account.id)
+                backoff = 5
+                user_stream.run_forever()
+            except Exception:
+                logger.exception("Order event stream failed for %s — the 3s poll is still covering it.", state.account.name)
+            if self._shutting_down.is_set():
+                return
+            logger.warning("Reconnecting order stream for %s in %ds...", state.account.name, backoff)
+            time_module.sleep(backoff)
+            backoff = min(backoff * 2, 60)
 
     def _on_tick(self, price: float, contract) -> None:
-        closed_bar = self.aggregator.add_tick(price, datetime.now().timestamp())
+        if not self._got_first_tick:
+            logger.info("First live tick received: %.2f — feed is alive, waiting on first closed bar.", price)
+            self._got_first_tick = True
+        # NOTE: add_tick expects epoch MILLISECONDS (see bar_aggregator.py /
+        # tradovate_client.py, which forwards the exchange's ms timestamp
+        # directly) — datetime.now().timestamp() returns SECONDS. Passing
+        # seconds here made the aggregator interpret ~1000 minutes of real
+        # time as one simulated minute, so no bar ever closed for hours.
+        # This was the actual root cause of "no bars logging" after several
+        # minutes of a live run.
+        closed_bar = self.aggregator.add_tick(price, datetime.now().timestamp() * 1000)
         if closed_bar is not None:
             self._on_bar(closed_bar, contract)
 
