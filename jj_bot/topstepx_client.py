@@ -419,6 +419,30 @@ class TopstepXClient:
         return sum(float(t["profitAndLoss"]) for t in trades)
 
 
+PING_INTERVAL_SECONDS = 15  # ASP.NET Core SignalR's default client timeout
+# is 30s; a client that never pings looks idle to the server (or an
+# intermediate proxy/NAT) and gets disconnected — confirmed live: the order
+# stream was silently reconnecting every ~20s with zero exceptions logged,
+# consistent with an idle-timeout drop rather than a real network problem.
+
+
+class _SignalRKeepalive:
+    """Sends a SignalR ping ({"type":6}) on a fixed interval from a daemon
+    thread so an otherwise-idle hub connection (e.g. an order stream with no
+    fills for a while) isn't mistaken for dead and dropped."""
+
+    def __init__(self, send: Callable[[dict], None], stop_event: threading.Event):
+        self._send = send
+        self._stop = stop_event
+
+    def run(self) -> None:
+        while not self._stop.wait(PING_INTERVAL_SECONDS):
+            try:
+                self._send({"type": 6})
+            except Exception:
+                return  # connection's already gone; run_forever's own recv() will notice
+
+
 class TopstepXMarketDataStream:
     """Minimal SignalR (JSON hub protocol) client over a raw WebSocket —
     avoids pulling in a full SignalR client dependency for what's otherwise a
@@ -442,6 +466,7 @@ class TopstepXMarketDataStream:
         self._send({"protocol": "json", "version": 1})
         self._ws.recv()  # handshake response (empty JSON object on success)
         logger.info("Market data hub connected.")
+        threading.Thread(target=_SignalRKeepalive(self._send, self._stop).run, daemon=True).start()
 
     def _send(self, obj: dict) -> None:
         self._ws.send(json.dumps(obj) + self.RECORD_SEP)
@@ -458,11 +483,15 @@ class TopstepXMarketDataStream:
         identical to zero signals in the logs."""
         got_first_quote = False
         frames_seen = 0
+        closed_by_server = False
         while not self._stop.is_set():
             try:
                 raw = self._ws.recv()
             except Exception:
                 logger.exception("Market data hub connection dropped/errored — quote stream has stopped.")
+                break
+            if not raw:
+                logger.warning("Market data hub connection closed by server (empty recv).")
                 break
             for frame in raw.split(self.RECORD_SEP):
                 if not frame:
@@ -481,8 +510,18 @@ class TopstepXMarketDataStream:
                                 logger.info("First live quote received: %.2f — market data hub is alive.", float(price))
                                 got_first_quote = True
                             self.on_quote(float(price))
+                elif msg.get("type") == 7:
+                    # SignalR's own graceful-close message — the server is
+                    # ending the connection intentionally, distinct from a
+                    # network error. Logging this explicitly (rather than
+                    # silently falling through) is what makes a real
+                    # disconnect cause distinguishable from a network blip.
+                    logger.warning("Market data hub sent a close message: %s", msg.get("error") or "(no reason given)")
+                    closed_by_server = True
                 elif frames_seen <= 5:
                     logger.info("Market hub frame (pre-first-quote): %s", msg)
+            if closed_by_server:
+                break
         if self._stop.is_set():
             logger.info("Market data hub receive loop stopped (requested).")
         elif not got_first_quote:
@@ -525,6 +564,7 @@ class TopstepXUserDataStream:
         self._send({"protocol": "json", "version": 1})
         self._ws.recv()  # handshake response
         logger.info("User data hub connected.")
+        threading.Thread(target=_SignalRKeepalive(self._send, self._stop).run, daemon=True).start()
 
     def _send(self, obj: dict) -> None:
         self._ws.send(json.dumps(obj) + self.RECORD_SEP)
@@ -540,15 +580,26 @@ class TopstepXUserDataStream:
         status enum values aren't confirmed), since the cost of an extra,
         unnecessary flat-check is negligible and the cost of silently
         missing a fill because a status filter was wrong is not."""
+        frames_seen = 0
+        close_reason = None
         while not self._stop.is_set():
             try:
                 raw = self._ws.recv()
             except Exception:
                 logger.exception("User data hub connection dropped/errored — order event stream has stopped.")
                 break
+            if not raw:
+                # A clean WebSocket close can surface as recv() returning
+                # empty rather than raising — this used to fall through
+                # silently and just loop back into another (failing) recv(),
+                # which is why reconnects were happening with zero logged
+                # exceptions. Treat it as the end of this connection.
+                close_reason = close_reason or "connection closed by server (empty recv)"
+                break
             for frame in raw.split(self.RECORD_SEP):
                 if not frame:
                     continue
+                frames_seen += 1
                 try:
                     msg = json.loads(frame)
                 except json.JSONDecodeError:
@@ -557,6 +608,14 @@ class TopstepXUserDataStream:
                     args = msg.get("arguments", [])
                     if args and self.on_order_event:
                         self.on_order_event(args[-1])
+                elif msg.get("type") == 7:
+                    close_reason = f"hub close message: {msg.get('error') or '(no reason given)'}"
+            if close_reason:
+                break
+        if self._stop.is_set():
+            logger.info("User data hub receive loop stopped (requested).")
+        elif close_reason:
+            logger.warning("User data hub disconnected after %d frame(s): %s", frames_seen, close_reason)
 
     def stop(self) -> None:
         self._stop.set()
