@@ -66,7 +66,13 @@ export async function POST(req: NextRequest) {
 
   try {
     const response = await client.messages.create({
-      model: "claude-opus-4-8",
+      // Sonnet, not Opus: this call maps prose onto a fixed parameter
+      // schema (the JSON grammar already constrains the shape of the
+      // answer) — that's data extraction, not open-ended reasoning, and
+      // Sonnet is materially faster and cheaper at it with no quality loss
+      // observed. Opus is worth its cost for genuinely hard reasoning, not
+      // this.
+      model: "claude-sonnet-5",
       max_tokens: 4096,
       thinking: { type: "adaptive" },
       // Static across every call — mark cacheable so repeat requests within

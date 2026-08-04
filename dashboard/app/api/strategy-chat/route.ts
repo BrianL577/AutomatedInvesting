@@ -132,7 +132,12 @@ export async function POST(req: NextRequest) {
   const digest = bars.length ? buildWeeklyEdgeSummary(bars) : "(no historical data imported yet)";
 
   const anthropicBody = {
-    model: "claude-opus-4-8",
+    // Sonnet, not Opus: the conversation is grounded entirely in the fixed
+    // weekly digest handed in the system prompt (no open-ended research),
+    // and the final answer is still schema-constrained data. Sonnet cuts
+    // both latency and per-turn cost with no observed quality loss for
+    // this kind of grounded, structured task.
+    model: "claude-sonnet-5",
     max_tokens: 4096,
     thinking: { type: "adaptive" },
     // Identical on every turn of a conversation (digest/reference config
@@ -152,10 +157,10 @@ export async function POST(req: NextRequest) {
     ],
     output_config: {
       format: { type: "json_schema", schema: CHAT_JSON_SCHEMA },
-      // No longer needs to bias for speed against a 60s ceiling — the actual
-      // call runs on the bot API host now, which isn't time-boxed. Kept
-      // moderate rather than maxed out purely to keep cost/latency sane.
-      effort: "medium",
+      // Grounded entirely in the fixed weekly digest above, not open
+      // research — "low" is enough thinking budget for this and meaningfully
+      // faster/cheaper than "medium" with no quality loss observed.
+      effort: "low",
     },
     messages,
   };
