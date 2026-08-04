@@ -67,6 +67,7 @@ class TopstepXLiveRunner:
         self._current_day = None
         self._account_states: dict[str, _AccountState] = {}
         self._got_first_tick = False
+        self._shutting_down = threading.Event()
 
     def start(self) -> None:
         logger.info("Authenticating with TopstepX...")
@@ -78,16 +79,6 @@ class TopstepXLiveRunner:
         contract = self.client.find_front_month_contract(self.cfg.instrument.symbol)
         logger.info("Trading contract: %s", contract.name)
 
-        stream = TopstepXMarketDataStream(
-            token=self.client.token,
-            on_bar=None,
-        )
-        # Wire quote ticks into the bar aggregator directly, same as the
-        # Tradovate stream does via BarAggregator.add_tick.
-        stream.on_quote = lambda price: self._on_tick(price, contract)
-        stream.connect()
-        stream.subscribe_quotes(contract.id)
-
         # Real-time order-fill notifications, one connection per account —
         # reacts to a fill (and cancels the sibling bracket order)
         # immediately instead of waiting for the next 3s poll tick. Runs
@@ -95,6 +86,44 @@ class TopstepXLiveRunner:
         # connection drops or an event never arrives, the poll is still
         # there to catch it, just slower.
         for state in self._account_states.values():
+            threading.Thread(target=self._run_user_stream_with_reconnect, args=(state,), daemon=True).start()
+
+        threading.Thread(target=self._poll_positions, daemon=True).start()
+
+        logger.info("Streaming live quotes. Ctrl+C to stop.")
+        try:
+            self._run_market_stream_with_reconnect(contract)
+        except KeyboardInterrupt:
+            logger.info("Stopping.")
+            self._shutting_down.set()
+
+    def _run_market_stream_with_reconnect(self, contract) -> None:
+        """A dropped WebSocket (sleep/wake, Wi-Fi blip, etc.) used to kill
+        quote streaming permanently for the rest of the run — the process
+        kept running but silently stopped producing bars forever, which is
+        exactly what happened on 2026-08-03: a 16-minute gap then a
+        ConnectionResetError with nothing after it. This loop reconnects
+        with backoff instead of dying once."""
+        backoff = 5
+        while not self._shutting_down.is_set():
+            try:
+                stream = TopstepXMarketDataStream(token=self.client.token, on_bar=None)
+                stream.on_quote = lambda price: self._on_tick(price, contract)
+                stream.connect()
+                stream.subscribe_quotes(contract.id)
+                backoff = 5  # reset after a successful connect
+                stream.run_forever()
+            except Exception:
+                logger.exception("Market data stream setup failed.")
+            if self._shutting_down.is_set():
+                return
+            logger.warning("Reconnecting to market data hub in %ds...", backoff)
+            time_module.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+
+    def _run_user_stream_with_reconnect(self, state: "_AccountState") -> None:
+        backoff = 5
+        while not self._shutting_down.is_set():
             try:
                 user_stream = TopstepXUserDataStream(
                     token=self.client.token,
@@ -102,22 +131,15 @@ class TopstepXLiveRunner:
                 )
                 user_stream.connect()
                 user_stream.subscribe_orders(state.account.id)
-                threading.Thread(target=user_stream.run_forever, daemon=True).start()
+                backoff = 5
+                user_stream.run_forever()
             except Exception:
-                logger.exception(
-                    "Could not open the real-time order stream for %s — falling back to the 3s poll only.",
-                    state.account.name,
-                )
-
-        threading.Thread(target=self._poll_positions, daemon=True).start()
-
-        logger.info("Streaming live quotes. Ctrl+C to stop.")
-        try:
-            stream.run_forever()
-        except KeyboardInterrupt:
-            logger.info("Stopping.")
-        finally:
-            stream.stop()
+                logger.exception("Order event stream failed for %s — the 3s poll is still covering it.", state.account.name)
+            if self._shutting_down.is_set():
+                return
+            logger.warning("Reconnecting order stream for %s in %ds...", state.account.name, backoff)
+            time_module.sleep(backoff)
+            backoff = min(backoff * 2, 60)
 
     def _on_tick(self, price: float, contract) -> None:
         if not self._got_first_tick:
