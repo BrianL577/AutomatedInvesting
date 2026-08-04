@@ -487,6 +487,15 @@ class TopstepXMarketDataStream:
         while not self._stop.is_set():
             try:
                 raw = self._ws.recv()
+            except websocket.WebSocketTimeoutException:
+                # NOT a disconnect — create_connection(timeout=15) sets a
+                # socket READ timeout, not a one-time connect timeout, so
+                # recv() raises this any time the hub goes >15s without
+                # sending anything (e.g. no quotes momentarily, or between
+                # keepalive pings). Confirmed live: this was being treated
+                # as fatal and tearing down/reconnecting a perfectly healthy
+                # connection every ~15-20s. Just keep looping.
+                continue
             except Exception:
                 logger.exception("Market data hub connection dropped/errored — quote stream has stopped.")
                 break
@@ -585,6 +594,15 @@ class TopstepXUserDataStream:
         while not self._stop.is_set():
             try:
                 raw = self._ws.recv()
+            except websocket.WebSocketTimeoutException:
+                # NOT a disconnect — see identical comment in
+                # TopstepXMarketDataStream.run_forever. Confirmed live: this
+                # exact exception (WebSocketTimeoutException from recv())
+                # was the actual cause of the order stream reconnecting
+                # every ~15-20s even on a perfectly healthy connection —
+                # simply idle because a Practice account with no fills
+                # yet has nothing to push.
+                continue
             except Exception:
                 logger.exception("User data hub connection dropped/errored — order event stream has stopped.")
                 break
