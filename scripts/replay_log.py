@@ -88,6 +88,14 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("log_path")
     ap.add_argument("strategy_name", nargs="?", default=None)
+    ap.add_argument(
+        "--trace", metavar="YYYY-MM-DD",
+        help="Print structure_debug() for every bar on this one date instead of "
+             "running the full multi-day backtest — shows exactly which level/"
+             "threshold the engine was tracking bar by bar, using the real, full "
+             "day's bars (not a truncated replay), so a 'why didn't it fire' "
+             "question is answerable with the same state the live process had.",
+    )
     args = ap.parse_args()
 
     load_dotenv(REPO_ROOT / ".env")
@@ -133,6 +141,25 @@ def main() -> None:
         print(f"No 'Bar HH:MM ...' lines with a preceding 'New trading day' marker found in {args.log_path}.")
         sys.exit(1)
     print(f"Parsed {len(bars)} bars spanning {bars[0].timestamp.date()} to {bars[-1].timestamp.date()}.\n")
+
+    if args.trace:
+        target_date = datetime.strptime(args.trace, "%Y-%m-%d").date()
+        day_bars = [b for b in bars if b.timestamp.date() == target_date]
+        if not day_bars:
+            print(f"No bars found for {target_date}.")
+            sys.exit(1)
+        from jj_bot.strategy import StrategyEngine
+
+        engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk, instrument_cfg=cfg.instrument)
+        for bar in day_bars:
+            signal = engine.on_bar(bar)
+            debug = engine.structure_debug()
+            hhmm = bar.timestamp.strftime("%H:%M")
+            if signal:
+                print(f"{hhmm}  C:{bar.close:<10.2f}  SIGNAL: {signal.reason}")
+            elif debug:
+                print(f"{hhmm}  C:{bar.close:<10.2f}  {debug}")
+        return
 
     report = run_backtest(cfg, bars, log_trades=False)
     print_report(report, cfg)
