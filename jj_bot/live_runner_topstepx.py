@@ -191,6 +191,14 @@ class TopstepXLiveRunner:
 
         signal = self.engine.on_bar(bar)
         if signal is None:
+            # Only meaningful during continuation/reversion (structure_debug
+            # returns None otherwise), so this doesn't add noise outside the
+            # actual trading windows — but during them, it answers "why
+            # didn't this bar trade" directly from the log instead of
+            # requiring an after-the-fact reconstruction days later.
+            debug = self.engine.structure_debug()
+            if debug:
+                logger.info("  -> %s", debug)
             return
 
         logger.info(
