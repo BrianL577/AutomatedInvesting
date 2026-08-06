@@ -261,6 +261,45 @@ class StrategyEngine:
             reason=reason,
         )
 
+    def structure_debug(self) -> Optional[str]:
+        """Compact one-liner explaining why the current bar did/didn't break
+        structure — the direction being watched, the tracked level, and the
+        distance to the break threshold. Meant to be tacked onto the
+        existing per-bar log line so a "why didn't it trade" question is
+        answerable straight from bot_log.txt, instead of needing to
+        reconstruct pivot state after the fact from a partial bar history
+        (confirmed painful and error-prone live — a session's zero-signal
+        outcome was impossible to fully explain days later without this).
+        Returns None when there's nothing meaningful to show (no open bar
+        yet, a position is already open, or day is done)."""
+        if self.open_bar is None or self.position_open or self.phase not in (Phase.CONTINUATION, Phase.REVERSION):
+            return None
+        bar = self.day_bars[-1]
+        if self.phase == Phase.CONTINUATION:
+            if self.continuation_direction is None:
+                return None
+            direction = self.continuation_direction
+            extension_note = ""
+        else:
+            extension = bar.close - self.open_price
+            if abs(extension) < self.strategy_cfg.min_extension_points:
+                return f"reversion: extension {extension:+.2f} below min {self.strategy_cfg.min_extension_points}"
+            direction = Direction.SHORT if extension > 0 else Direction.LONG
+            extension_note = f" ext={extension:+.2f}"
+        bos, level = self._break_of_structure(bar, direction)
+        if level is None:
+            return f"{self.phase.value}: dir={direction.value}{extension_note} no tracked level yet"
+        buffer = self.strategy_cfg.break_buffer_points
+        threshold = level - buffer if direction == Direction.SHORT else level + buffer
+        # Signed margin: how far past the break threshold the close is, in
+        # the direction that would count as breaking (positive = broke,
+        # negative = short of it by that many points).
+        margin = threshold - bar.close if direction == Direction.SHORT else bar.close - threshold
+        return (
+            f"{self.phase.value}: dir={direction.value}{extension_note} level={level:.2f} "
+            f"threshold={threshold:.2f} {'BROKE' if bos else f'{abs(margin):.2f}pts short'}"
+        )
+
     def on_bar(self, bar: Bar) -> Optional[Signal]:
         """Feed one confirmed bar. Returns a Signal if a new entry should be taken."""
         self.day_bars.append(bar)
