@@ -28,7 +28,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jj_bot.backtest import run_backtest, print_report
+from jj_bot.backtest import run_strategy_on_day
 from jj_bot.config import (
     REPO_ROOT,
     AppConfig,
@@ -38,8 +38,12 @@ from jj_bot.config import (
     TopstepEvalConfig,
 )
 from jj_bot.models import Bar
-from jj_bot.time_utils import to_et
+from jj_bot.risk_manager import EvalAccountState
+from jj_bot.strategy import StrategyEngine
 from dotenv import load_dotenv
+import pytz
+
+ET_TZ = pytz.timezone("America/New_York")
 
 BAR_RE = re.compile(r"Bar (\d{2}:\d{2}) O:([\d.]+) H:([\d.]+) L:([\d.]+) C:([\d.]+)")
 DAY_RE = re.compile(r"New trading day: (\d{4}-\d{2}-\d{2})")
@@ -65,23 +69,51 @@ def _fetch_strategy_by_name(name: str) -> dict | None:
     return rows[0]["config"]
 
 
-def parse_log(path: str) -> list[Bar]:
-    bars: list[Bar] = []
+def parse_log_segments(path: str) -> list[list[Bar]]:
+    """Returns one bar-list PER "New trading day" marker, not one per unique
+    calendar date. CRITICAL distinction: the live process resets its pivot/
+    structure state (StrategyEngine.reset_day()) on EVERY process restart,
+    not just at real midnight — live_runner_topstepx.py's _current_day
+    starts as None, so the first bar of any restart always looks like a
+    "new day" and triggers a reset, printing this same log line, even if
+    it's the same calendar date as before the restart.
+
+    Grouping by calendar date alone (an earlier version of this function
+    did exactly that) silently concatenates bars from unrelated restart
+    sessions into one sequence — confirmed to scramble a --trace's price
+    action into nonsense on a day with several restarts. Segmenting by
+    marker occurrence instead matches what the live engine's pivot state
+    actually saw: bars from a session that only exists between two
+    restarts, then reset."""
+    segments: list[list[Bar]] = []
+    current: list[Bar] = []
     current_day: date | None = None
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             day_match = DAY_RE.search(line)
             if day_match:
+                if current:
+                    segments.append(current)
+                current = []
                 current_day = datetime.strptime(day_match.group(1), "%Y-%m-%d").date()
                 continue
             bar_match = BAR_RE.search(line)
             if bar_match and current_day:
                 hhmm, o, h, l, c = bar_match.groups()
                 hh, mm = map(int, hhmm.split(":"))
-                ts = to_et(datetime(current_day.year, current_day.month, current_day.day, hh, mm), "America/New_York")
-                bars.append(Bar(timestamp=ts, open=float(o), high=float(h), low=float(l), close=float(c)))
-    bars.sort(key=lambda b: b.timestamp)
-    return bars
+                # The log's "Bar HH:MM" is already ET wall-clock time (that's
+                # what live_runner_topstepx.py prints it as) — localize it
+                # directly rather than treating it as UTC-then-convert
+                # (to_et() does the latter, which silently shifted every
+                # timestamp by the UTC/ET offset — confirmed live: labels
+                # were printing 4 hours earlier than the actual bar time).
+                ts = ET_TZ.localize(datetime(current_day.year, current_day.month, current_day.day, hh, mm))
+                current.append(Bar(timestamp=ts, open=float(o), high=float(h), low=float(l), close=float(c)))
+    if current:
+        segments.append(current)
+    for seg in segments:
+        seg.sort(key=lambda b: b.timestamp)
+    return segments
 
 
 def main() -> None:
@@ -136,38 +168,93 @@ def main() -> None:
 
     cfg = AppConfig(strategy=strategy_cfg, risk=risk_cfg, instrument=instrument_cfg, topstep_eval=eval_cfg)
 
-    bars = parse_log(args.log_path)
-    if not bars:
+    segments = parse_log_segments(args.log_path)
+    if not segments:
         print(f"No 'Bar HH:MM ...' lines with a preceding 'New trading day' marker found in {args.log_path}.")
         sys.exit(1)
-    print(f"Parsed {len(bars)} bars spanning {bars[0].timestamp.date()} to {bars[-1].timestamp.date()}.\n")
+    total_bars = sum(len(s) for s in segments)
+    all_dates = sorted({s[0].timestamp.date() for s in segments})
+    print(
+        f"Parsed {total_bars} bars across {len(segments)} restart-segment(s), "
+        f"spanning {all_dates[0]} to {all_dates[-1]}.\n"
+    )
 
     if args.trace:
         target_date = datetime.strptime(args.trace, "%Y-%m-%d").date()
-        day_bars = [b for b in bars if b.timestamp.date() == target_date]
-        if not day_bars:
+        matching = [s for s in segments if s[0].timestamp.date() == target_date]
+        if not matching:
             print(f"No bars found for {target_date}.")
             sys.exit(1)
-        from jj_bot.strategy import StrategyEngine
-
-        engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk, instrument_cfg=cfg.instrument)
-        for bar in day_bars:
-            signal = engine.on_bar(bar)
-            debug = engine.structure_debug()
-            hhmm = bar.timestamp.strftime("%H:%M")
-            if signal:
-                print(f"{hhmm}  C:{bar.close:<10.2f}  SIGNAL: {signal.reason}")
-            elif debug:
-                print(f"{hhmm}  C:{bar.close:<10.2f}  {debug}")
+        if len(matching) > 1:
+            print(f"NOTE: {target_date} has {len(matching)} separate restart-segments (the bot was "
+                  f"restarted mid-day at least once) — showing each independently, since the live "
+                  f"engine's structure state reset at each boundary.\n")
+        for seg_i, seg_bars in enumerate(matching, 1):
+            if len(matching) > 1:
+                print(f"--- Segment {seg_i}/{len(matching)}: {seg_bars[0].timestamp.strftime('%H:%M')} "
+                      f"to {seg_bars[-1].timestamp.strftime('%H:%M')} ---")
+            engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk, instrument_cfg=cfg.instrument)
+            for bar in seg_bars:
+                signal = engine.on_bar(bar)
+                debug = engine.structure_debug()
+                hhmm = bar.timestamp.strftime("%H:%M")
+                if signal:
+                    print(f"{hhmm}  C:{bar.close:<10.2f}  SIGNAL: {signal.reason}")
+                elif debug:
+                    print(f"{hhmm}  C:{bar.close:<10.2f}  {debug}")
         return
 
-    report = run_backtest(cfg, bars, log_trades=False)
-    print_report(report, cfg)
-
+    # Full-window mode: one run_strategy_on_day call per restart-segment
+    # (matching live reset behavior — see parse_log_segments' docstring),
+    # then aggregate realized P&L by calendar date for the eval-attempt
+    # walk, since that's a real-money daily total regardless of how many
+    # times the process happened to restart that day.
     dollar_per_point = cfg.instrument.tick_value / cfg.instrument.tick_size * cfg.risk.contracts_per_trade
-    total_dollars = sum(t.pnl_points for t in report.trades) * dollar_per_point
+    all_trades = []
+    daily_pnl_points: dict[date, float] = {}
+    incomplete = 0
+    for seg_bars in segments:
+        engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk, instrument_cfg=cfg.instrument)
+        trades, seg_incomplete = run_strategy_on_day(seg_bars, engine)
+        incomplete += seg_incomplete
+        all_trades.extend(trades)
+        d = seg_bars[0].timestamp.date()
+        daily_pnl_points[d] = daily_pnl_points.get(d, 0.0) + sum(t.pnl_points for t in trades)
+
+    wins = sum(1 for t in all_trades if t.win)
+    total = len(all_trades)
+    total_points = sum(t.pnl_points for t in all_trades)
+    total_dollars = total_points * dollar_per_point
+
+    print("=" * 60)
+    print(f"Trades taken:        {total}")
+    print(f"Win rate:            {wins / total:.1%}" if total else "Win rate:            n/a")
+    print(f"Total points:        {total_points:+.2f}")
+    print(f"Trading dates:       {len(daily_pnl_points)}")
+    if incomplete:
+        print(f"Excluded (unresolved at segment end): {incomplete}")
+    print("=" * 60)
+
+    days_sorted = sorted(daily_pnl_points)
+    attempts = passes = 0
+    days_to_result = []
+    for start_idx in range(len(days_sorted)):
+        account = EvalAccountState(cfg=cfg.topstep_eval, instrument=cfg.instrument)
+        attempts += 1
+        n = 0
+        for d in days_sorted[start_idx:]:
+            account.apply_day(daily_pnl_points[d])
+            n += 1
+            if account.passed or account.busted:
+                break
+        days_to_result.append(n)
+        if account.passed:
+            passes += 1
+    if attempts:
+        print(f"Prop-firm eval sim: {passes}/{attempts} attempts passed "
+              f"({passes / attempts:.1%}), avg {sum(days_to_result) / len(days_to_result):.1f} days to result")
     print(f"\nTotal $ P&L over this window ({cfg.risk.contracts_per_trade} contracts/trade): ${total_dollars:+,.2f}")
-    for t in report.trades:
+    for t in all_trades:
         pnl_d = t.pnl_points * dollar_per_point
         print(f"  {t.signal.timestamp}  {t.signal.direction.value:5s}  {'WIN ' if t.win else 'LOSS'}  {t.pnl_points:+.2f}pts  ${pnl_d:+,.2f}")
 
