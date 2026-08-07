@@ -159,6 +159,19 @@ class RiskConfig:
     contracts_per_trade: int
     daily_profit_cap: float = 1520.0
     daily_loss_cap: float = 1000.0
+    # Global, always-applied on top of whichever saved strategy is active
+    # (not part of the Strategy Creator's per-strategy field set) — once the
+    # REAL live account balance is within one static-size trade of clearing
+    # the eval's profit target, shrink the next trade's stop/target down to
+    # exactly what's needed to pass, keeping the same reward:risk ratio as
+    # the static trade. Never grows a trade bigger than the normal static
+    # size — only ever shrinks it. Off by default so this never silently
+    # changes behavior for an account that hasn't explicitly opted in.
+    eval_scale_down_enabled: bool = False
+    # Floor below which shrinking stops being worth the added complexity/
+    # fee-drag risk — if less than this much is needed to pass, just take
+    # the normal full-size trade instead of a near-zero one.
+    eval_scale_min_target_dollars: float = 200.0
 
 
 @dataclass
