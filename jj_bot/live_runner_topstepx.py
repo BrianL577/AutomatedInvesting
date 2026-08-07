@@ -53,6 +53,13 @@ class _AccountState:
     # before. Recording the entry's placement time and passing it as
     # after_iso scopes the P&L query to just this trade.
     entry_placed_at: Optional[str] = None
+    # The ACTUAL stop/target prices sent to the broker for the open trade —
+    # may differ from signal.stop_price/target_price when eval scale-down
+    # (RiskConfig.eval_scale_down_enabled) shrank them. Used for accurate
+    # display-only exit-price reporting; the real $ P&L always comes from
+    # the exchange's own trade history regardless of this.
+    placed_stop_price: Optional[float] = None
+    placed_target_price: Optional[float] = None
 
     def reset_day(self) -> None:
         self.pending_entry_price = None
@@ -62,6 +69,8 @@ class _AccountState:
         self.day_pnl_dollars = 0.0
         self.rate_limited = False
         self.entry_placed_at = None
+        self.placed_stop_price = None
+        self.placed_target_price = None
 
 
 class TopstepXLiveRunner:
@@ -217,6 +226,7 @@ class TopstepXLiveRunner:
                 logger.info("Skipping account %s: already in a trade.", state.account.name)
                 continue
             try:
+                stop_price, target_price = self._scaled_stop_target(signal, state.account)
                 # Captured BEFORE placing the order (not after) so a fill
                 # that happens fast can never land a hair earlier than this
                 # timestamp and get excluded from the P&L query below.
@@ -225,8 +235,8 @@ class TopstepXLiveRunner:
                     contract=contract,
                     action=action,
                     qty=self.cfg.risk.contracts_per_trade,
-                    stop_price=signal.stop_price,
-                    target_price=signal.target_price,
+                    stop_price=stop_price,
+                    target_price=target_price,
                     account=state.account,
                 )
                 logger.info("Order placed on %s: %s", state.account.name, result)
@@ -235,6 +245,8 @@ class TopstepXLiveRunner:
                 state.stop_order_id = result.get("stop", {}).get("orderId")
                 state.target_order_id = result.get("target", {}).get("orderId")
                 state.entry_placed_at = placed_at
+                state.placed_stop_price = stop_price
+                state.placed_target_price = target_price
                 any_order_placed = True
             except Exception:
                 logger.exception("Order placement failed on account %s", state.account.name)
@@ -291,7 +303,13 @@ class TopstepXLiveRunner:
             if signal is not None and realized_pnl is not None:
                 pnl_points = realized_pnl / (self.dollar_per_point * self.cfg.risk.contracts_per_trade)
                 win = realized_pnl > 0
-                exit_price = signal.target_price if win else signal.stop_price
+                # Use the ACTUAL prices sent to the broker, not the
+                # signal's original ones — eval scale-down can shrink these
+                # for a given account, and falling back to signal.stop_price/
+                # target_price here would silently misreport the trade.
+                target_price = state.placed_target_price if state.placed_target_price is not None else signal.target_price
+                stop_price = state.placed_stop_price if state.placed_stop_price is not None else signal.stop_price
+                exit_price = target_price if win else stop_price
                 result = TradeResult(
                     signal=signal, exit_price=exit_price, exit_timestamp=datetime.now(),
                     win=win, pnl_points=pnl_points, qty=self.cfg.risk.contracts_per_trade,
@@ -321,6 +339,8 @@ class TopstepXLiveRunner:
             state.pending_entry_price = None
             state.pending_signal = None
             state.entry_placed_at = None
+            state.placed_stop_price = None
+            state.placed_target_price = None
         except Exception:
             logger.exception("Position poll failed for account %s", state.account.name)
 
@@ -339,3 +359,77 @@ class TopstepXLiveRunner:
         except Exception:
             logger.exception("Could not fetch trade history to resolve realized P&L.")
             return None
+
+    def _scaled_stop_target(self, signal: Signal, account: Account) -> tuple[float, float]:
+        """Per-account eval scale-down (RiskConfig.eval_scale_down_enabled,
+        off by default). Once this account's REAL live balance (queried
+        fresh right now, not a cached/simulated approximation) is within one
+        normal-size trade of clearing the eval's profit_target, shrinks the
+        stop/target down to exactly what's needed to pass — same
+        reward:risk ratio as the static trade, just smaller. Only ever
+        shrinks; never returns a bigger trade than the static configured
+        size. Falls back to the normal static stop/target (from `signal`,
+        already built from risk_cfg.stop_points/target_points) on ANY
+        uncertainty — a failed balance lookup, an already-funded/way-off
+        balance, or a remaining gap too small to bother with
+        (eval_scale_min_target_dollars) all resolve to "just take the
+        normal trade", never to guessing a bigger or smaller size than
+        intended."""
+        if not self.cfg.risk.eval_scale_down_enabled:
+            return signal.stop_price, signal.target_price
+
+        try:
+            accounts = self.client.get_live_balances()
+        except Exception:
+            logger.exception("Eval scale-down: could not fetch live balance — using normal static size.")
+            return signal.stop_price, signal.target_price
+
+        live = next((a for a in accounts if a.id == account.id), None)
+        if live is None:
+            logger.warning("Eval scale-down: account %s not found in balance lookup — using normal static size.", account.name)
+            return signal.stop_price, signal.target_price
+
+        dollar_per_point = self.dollar_per_point * self.cfg.risk.contracts_per_trade
+        normal_target_dollars = self.cfg.risk.target_points * dollar_per_point
+        normal_stop_dollars = self.cfg.risk.stop_points * dollar_per_point
+
+        pass_line = self.cfg.topstep_eval.account_size + self.cfg.topstep_eval.profit_target
+        remaining = pass_line - live.balance
+
+        if remaining <= 0 or remaining >= normal_target_dollars:
+            # Already at/past target (or an unexpectedly-funded/rebilled
+            # balance), or the normal trade wouldn't even reach the gap
+            # anyway — either way, no reason to shrink.
+            return signal.stop_price, signal.target_price
+        if remaining < self.cfg.risk.eval_scale_min_target_dollars:
+            logger.info(
+                "Eval scale-down: only $%.2f left to pass on %s, below the $%.2f floor — taking the normal trade instead.",
+                remaining, account.name, self.cfg.risk.eval_scale_min_target_dollars,
+            )
+            return signal.stop_price, signal.target_price
+
+        ratio = normal_stop_dollars / normal_target_dollars
+        scaled_target_dollars = remaining
+        scaled_stop_dollars = scaled_target_dollars * ratio
+        scaled_target_points = scaled_target_dollars / dollar_per_point
+        scaled_stop_points = scaled_stop_dollars / dollar_per_point
+
+        tick = self.cfg.instrument.tick_size
+        scaled_target_points = max(tick, round(scaled_target_points / tick) * tick)
+        scaled_stop_points = max(tick, round(scaled_stop_points / tick) * tick)
+
+        if signal.direction == Direction.LONG:
+            stop_price = signal.entry_price - scaled_stop_points
+            target_price = signal.entry_price + scaled_target_points
+        else:
+            stop_price = signal.entry_price + scaled_stop_points
+            target_price = signal.entry_price - scaled_target_points
+
+        logger.info(
+            "Eval scale-down on %s: live balance $%.2f, $%.2f left to pass (of $%.2f normal trade) — "
+            "shrinking to stop=%.2f target=%.2f (%.2fpts/%.2fpts, was %.2fpts/%.2fpts).",
+            account.name, live.balance, remaining, normal_target_dollars,
+            stop_price, target_price, scaled_stop_points, scaled_target_points,
+            self.cfg.risk.stop_points, self.cfg.risk.target_points,
+        )
+        return stop_price, target_price

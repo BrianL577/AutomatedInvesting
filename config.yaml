@@ -41,6 +41,14 @@ risk:
   # either cap. Sized to the real Topstep account rules above.
   daily_profit_cap: 1520
   daily_loss_cap: 1000
+  # Global override applied on top of whichever saved strategy is active
+  # (Strat 2, TestV5, etc.) — once the account's REAL live balance is
+  # within one normal-size trade of clearing the eval's profit_target
+  # below, shrink that trade's stop/target down to exactly what's needed
+  # to pass, keeping the same reward:risk ratio. Only ever shrinks, never
+  # grows a trade bigger than the static size. Per user instruction.
+  eval_scale_down_enabled: true
+  eval_scale_min_target_dollars: 200
 
 instrument:
   symbol: "NQ"                   # Nasdaq-100 e-mini futures, front month resolved at runtime
