@@ -96,6 +96,17 @@ class TopstepXLiveRunner:
         contract = self.client.find_front_month_contract(self.cfg.instrument.symbol)
         logger.info("Trading contract: %s", contract.name)
 
+        # CONFIRMED LIVE (real account, ~3 days uptime): self.client.token
+        # was never refreshed anywhere — the user-hub stream was
+        # reconnecting every ~0.3-0.4s with an immediate server-side close,
+        # consistent with an expired JWT being reused on every attempt.
+        # Every REST call (orders, position polling, P&L) shares this same
+        # token via _headers(), so a stale token silently breaks far more
+        # than just the streams. Re-authenticate on a fixed interval well
+        # under any plausible token TTL so a multi-day run never runs on a
+        # dead token again.
+        threading.Thread(target=self._reauthenticate_loop, daemon=True).start()
+
         # Real-time order-fill notifications, one connection per account —
         # reacts to a fill (and cancels the sibling bracket order)
         # immediately instead of waiting for the next 3s poll tick. Runs
@@ -113,6 +124,24 @@ class TopstepXLiveRunner:
         except KeyboardInterrupt:
             logger.info("Stopping.")
             self._shutting_down.set()
+
+    # Deliberately well under any plausible token TTL (unconfirmed exact
+    # value — TopstepX doesn't publish one) rather than trying to parse the
+    # JWT's own expiry claim, so this stays correct even if that assumption
+    # is wrong in either direction.
+    REAUTH_INTERVAL_SECONDS = 6 * 60 * 60
+
+    def _reauthenticate_loop(self) -> None:
+        while not self._shutting_down.wait(self.REAUTH_INTERVAL_SECONDS):
+            try:
+                self.client.authenticate()
+                logger.info("Re-authenticated with TopstepX (scheduled refresh) — token renewed.")
+            except Exception:
+                logger.exception(
+                    "Scheduled re-authentication failed — continuing with the current token until "
+                    "the next attempt; if it's actually expired, REST calls and hub reconnects will "
+                    "start failing visibly."
+                )
 
     def _run_market_stream_with_reconnect(self, contract) -> None:
         """A dropped WebSocket (sleep/wake, Wi-Fi blip, etc.) used to kill
