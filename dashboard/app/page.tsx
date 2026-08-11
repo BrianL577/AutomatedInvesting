@@ -3,6 +3,7 @@ import TestTradePanel from "../components/TestTradePanel";
 import MarketChart from "../components/MarketChart";
 import GainLossChart from "../components/GainLossChart";
 import LiveBalancePanel from "../components/LiveBalancePanel";
+import EvalSimTable from "../components/EvalSimTable";
 import Reveal from "../components/Reveal";
 
 export const dynamic = "force-dynamic";
@@ -107,55 +108,7 @@ export default async function Page() {
               (${EVAL_SIM.EVAL_COST}, flat — covers the real per-attempt + accrued monthly fees).
             </p>
           </div>
-          {accountSims.length === 0 ? (
-            <div className="empty-state">No account trades yet — the simulation fills in once trades are logged.</div>
-          ) : (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Account</th>
-                    <th>Stage</th>
-                    <th>Stage Balance</th>
-                    <th>Bust Line</th>
-                    <th>Evals Purchased</th>
-                    <th>Times Funded</th>
-                    <th>Funded Losses</th>
-                    <th>Payouts</th>
-                    <th>Fees Paid</th>
-                    <th>Bottom Line</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {accountSims.map((sim) => (
-                    <tr key={sim.account}>
-                      <td>{sim.account}</td>
-                      <td>
-                        <span className={`badge ${sim.stage === "funded" ? "win" : "test"}`}>
-                          {sim.stage === "funded" ? "Funded" : "Eval"}
-                        </span>
-                      </td>
-                      <td className={sim.balance >= 0 ? "positive" : "negative"}>
-                        {fmtMoney(sim.balance)}
-                        {sim.stage === "eval" && (
-                          <span className="text-dim"> / ${sim.effectiveProfitTarget.toLocaleString()}</span>
-                        )}
-                      </td>
-                      <td className="negative">{fmtMoney(sim.floor)}</td>
-                      <td>{sim.evalsPurchased}</td>
-                      <td>{sim.fundedPasses}</td>
-                      <td>{sim.fundedLosses}</td>
-                      <td>
-                        {sim.payoutsReceived} <span className="text-dim">({fmtMoney(sim.cashPayouts)})</span>
-                      </td>
-                      <td className="negative">{fmtMoney(-sim.feesPaid)}</td>
-                      <td className={sim.netResult >= 0 ? "positive" : "negative"}>{fmtMoney(sim.netResult)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <EvalSimTable accountSims={accountSims} />
         </div>
       </Reveal>
 
