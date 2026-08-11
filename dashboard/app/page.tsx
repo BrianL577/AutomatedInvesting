@@ -38,7 +38,7 @@ export default async function Page() {
           <h1>JJ Strategy — Paper Trading Dashboard</h1>
           <p>
             NY-session displacement / break-of-structure strategy, running against a TopStep/Tradovate paper
-            (demo) account. <a href="/strategies">Strategy Creator →</a>
+            (demo) account. <a href="/strategies">Strategy Creator →</a> · <a href="/debug">Debug Panel →</a>
           </p>
         </div>
         <span className={`data-source-badge ${usingSupabase ? "live" : "static"}`}>

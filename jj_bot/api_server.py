@@ -22,6 +22,9 @@ Endpoints:
                               the automation pipeline is actually wired up
   GET  /api/trades        -> same trade log the dashboard reads directly,
                               exposed here too for convenience/debugging
+  GET  /api/log-tail      -> tail of bot_log.txt (or JJ_BOT_LOG_PATH),
+                              optional ?lines=N&pattern=<regex> filter —
+                              read-only, capped at 2000 lines
   POST /api/ai-job        -> starts a long-running Anthropic Messages API
                               call in a background thread and returns a
                               job_id immediately. Exists because Vercel
@@ -46,9 +49,11 @@ Endpoints:
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -56,7 +61,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from .config import load_config
+from .config import REPO_ROOT, load_config
 from .test_trade import list_accounts, run_connection_test
 from .trade_logger import TradeLogger
 
@@ -123,6 +128,40 @@ def account_balances():
         "broker": cfg.broker,
         "accounts": [{"name": a.name, "balance": a.balance} for a in accounts],
     }
+
+
+@app.get("/api/log-tail")
+def log_tail(lines: int = 200, pattern: str | None = None):
+    """Read-only tail of the live bot's own log file — built so a "what's
+    actually happening right now" question is answerable from the
+    dashboard directly, instead of the SSH-in-and-grep-bot_log.txt cycle
+    that dominated a full day of real troubleshooting. Defaults to
+    bot_log.txt (what run_bot.bat's stdout redirect actually produces —
+    the file already being tailed manually); override with
+    JJ_BOT_LOG_PATH in .env if your setup differs. `pattern` is an
+    optional regex filter (e.g. 'SIGNAL|Order placed|hub disconnected'),
+    same idea as the Select-String filtering done by hand all day."""
+    lines = max(1, min(lines, 2000))  # hard cap — this is a live debug view, not a log export tool
+    log_path = Path(os.getenv("JJ_BOT_LOG_PATH") or (REPO_ROOT / "bot_log.txt"))
+    if not log_path.exists():
+        raise HTTPException(status_code=404, detail=f"Log file not found at {log_path}. Set JJ_BOT_LOG_PATH in .env if it lives elsewhere.")
+
+    try:
+        compiled = re.compile(pattern, re.IGNORECASE) if pattern else None
+    except re.error as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid pattern: {exc}")
+
+    try:
+        with log_path.open(encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read log file: {exc}")
+
+    if compiled:
+        all_lines = [line for line in all_lines if compiled.search(line)]
+
+    tail = all_lines[-lines:]
+    return {"path": str(log_path), "line_count": len(tail), "lines": [line.rstrip("\n") for line in tail]}
 
 
 @app.post("/api/test-trade")
