@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { AccountSim } from "../lib/trades";
 import { EVAL_SIM } from "../lib/evalSimConfig";
+import { BOT_API_HEADERS } from "../lib/botApiHeaders";
 
 // Stage Balance shown here is REAL, live, straight from TopStep's own
 // Account/search API (same source as LiveBalancePanel) whenever it's
@@ -41,7 +42,9 @@ export default function EvalSimTable({ accountSims }: { accountSims: AccountSim[
 
     async function load() {
       try {
-        const res = await fetch(`${apiUrl.replace(/\/$/, "")}/api/account-balances`);
+        const res = await fetch(`${apiUrl.replace(/\/$/, "")}/api/account-balances`, {
+          headers: BOT_API_HEADERS,
+        });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || "Failed to load live balances");
         if (cancelled) return;

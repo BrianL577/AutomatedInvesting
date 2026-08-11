@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createClient } from "../../lib/supabase/client";
+import { BOT_API_HEADERS } from "../../lib/botApiHeaders";
 
 // Single-page operational view of the always-on bot: connection health,
 // which broker/accounts it's actually trading, real live balances, which
@@ -56,7 +57,7 @@ export default function DebugPage() {
 
     async function load() {
       try {
-        const res = await fetch(`${base}/api/health`);
+        const res = await fetch(`${base}/api/health`, { headers: BOT_API_HEADERS });
         if (cancelled) return;
         setHealth(res.ok ? "ok" : "error");
       } catch {
@@ -64,7 +65,7 @@ export default function DebugPage() {
       }
 
       try {
-        const res = await fetch(`${base}/api/accounts`);
+        const res = await fetch(`${base}/api/accounts`, { headers: BOT_API_HEADERS });
         const data = await res.json();
         if (!cancelled && res.ok) setAccountsInfo(data);
       } catch {
@@ -72,7 +73,7 @@ export default function DebugPage() {
       }
 
       try {
-        const res = await fetch(`${base}/api/account-balances`);
+        const res = await fetch(`${base}/api/account-balances`, { headers: BOT_API_HEADERS });
         const data = await res.json();
         if (!cancelled && res.ok) setBalances(data.accounts || []);
       } catch {
@@ -82,7 +83,7 @@ export default function DebugPage() {
       try {
         const params = new URLSearchParams({ lines: "150" });
         if (filter.trim()) params.set("pattern", filter.trim());
-        const res = await fetch(`${base}/api/log-tail?${params.toString()}`);
+        const res = await fetch(`${base}/api/log-tail?${params.toString()}`, { headers: BOT_API_HEADERS });
         const data = await res.json();
         if (cancelled) return;
         if (!res.ok) {

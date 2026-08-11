@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { BOT_API_HEADERS } from "../lib/botApiHeaders";
 
 type AccountInfo = { name: string; active: boolean };
 
@@ -34,7 +35,9 @@ export default function TestTradePanel() {
     setStatus("loading");
     setMessage("Connecting...");
     try {
-      const res = await fetch(`${savedApiUrl.replace(/\/$/, "")}/api/accounts`);
+      const res = await fetch(`${savedApiUrl.replace(/\/$/, "")}/api/accounts`, {
+        headers: BOT_API_HEADERS,
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Failed to load accounts");
       setAccounts(data.accounts || []);
@@ -54,7 +57,7 @@ export default function TestTradePanel() {
     try {
       const res = await fetch(`${savedApiUrl.replace(/\/$/, "")}/api/test-trade`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...BOT_API_HEADERS },
         body: JSON.stringify({ account_name: selectedAccount, direction }),
       });
       const data = await res.json();
