@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { BOT_API_HEADERS } from "../lib/botApiHeaders";
 
 // Real-time account balance straight from the broker (TopstepX) — the
 // ground truth for "how much money is actually in the account right now",
@@ -37,7 +38,9 @@ export default function LiveBalancePanel() {
     async function load() {
       setStatus("loading");
       try {
-        const res = await fetch(`${apiUrl.replace(/\/$/, "")}/api/account-balances`);
+        const res = await fetch(`${apiUrl.replace(/\/$/, "")}/api/account-balances`, {
+          headers: BOT_API_HEADERS,
+        });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || "Failed to load balances");
         if (cancelled) return;
