@@ -135,6 +135,14 @@ class TopstepXClient:
         raw_accounts = data.get("accounts", [])
         if not raw_accounts:
             raise TopstepXAuthError("No active TopstepX accounts found for this user.")
+        # One-time visibility into every field TopstepX actually sends —
+        # the Account dataclass only captures id/name/canTrade/balance, but
+        # the platform UI shows more per-account data (DLL, trailing
+        # drawdown, etc.) that may already be in this raw payload and
+        # simply never looked at. Logged once per process start, not
+        # spammy, so a "does the API give us X" question is answerable
+        # from bot_log.txt instead of guessing.
+        logger.info("Raw Account/search fields for first account: %s", raw_accounts[0])
 
         if self.creds.account_names:
             wanted = set(self.creds.account_names)
