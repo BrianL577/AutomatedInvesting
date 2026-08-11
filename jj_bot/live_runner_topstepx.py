@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import threading
 import time as time_module
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -60,6 +60,17 @@ class _AccountState:
     # the exchange's own trade history regardless of this.
     placed_stop_price: Optional[float] = None
     placed_target_price: Optional[float] = None
+    # CONFIRMED LIVE (real account): the 3s poll thread and the real-time
+    # push-callback thread both call _check_account_flat() independently —
+    # the code assumed this was safe because order CANCELLATION is
+    # idempotent, but the trade-logging/day_pnl-accumulation part below it
+    # is not. Both threads can pass the "position is flat" check before
+    # either clears pending_signal, so both log the same real trade and
+    # double-count its P&L — this is what inflated a real single $1,490
+    # win into two identical $1,490 dashboard rows and a fake $2,980 "day"
+    # that wrongly tripped the eval simulator's target-raising rule. This
+    # lock makes the whole check-log-clear sequence atomic across threads.
+    flat_check_lock: "threading.Lock" = field(default_factory=threading.Lock)
 
     def reset_day(self) -> None:
         self.pending_entry_price = None
@@ -296,9 +307,12 @@ class TopstepXLiveRunner:
         notifications and triggers this same check immediately — this 3s
         poll exists in case that stream's assumptions are wrong, drops its
         connection, or a status event is missed. Both paths call
-        _check_account_flat(), which is idempotent (cancelling an
-        already-cancelled/filled order is a no-op), so running both
-        concurrently is safe, not redundant-in-a-bad-way."""
+        _check_account_flat(), which now serializes via
+        _AccountState.flat_check_lock so running both concurrently is safe.
+        CONFIRMED LIVE: before that lock existed, both paths could pass the
+        "flat" check before either cleared pending_signal, double-logging
+        the same real trade — order cancellation alone being idempotent
+        was not enough."""
         while True:
             time_module.sleep(3)
             for state in self._account_states.values():
@@ -307,6 +321,17 @@ class TopstepXLiveRunner:
                 self._check_account_flat(state)
 
     def _check_account_flat(self, state: _AccountState) -> None:
+        # Serializes against the other caller (poll thread vs. push
+        # callback) — see flat_check_lock's docstring. Re-check right after
+        # acquiring: if the OTHER caller already finished processing this
+        # trade while we were waiting for the lock, pending_signal is now
+        # None and there's nothing left for us to do.
+        with state.flat_check_lock:
+            if state.pending_signal is None:
+                return
+            self._check_account_flat_locked(state)
+
+    def _check_account_flat_locked(self, state: _AccountState) -> None:
         try:
             resp = requests.post(
                 f"{REST_BASE}/Position/searchOpen",
