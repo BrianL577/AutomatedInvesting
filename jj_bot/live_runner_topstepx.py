@@ -21,7 +21,7 @@ from typing import Optional
 import requests
 
 from .bar_aggregator import BarAggregator
-from .config import AppConfig
+from .config import AppConfig, fetch_saved_account_names
 from .models import Direction, Signal, TradeResult
 from .strategy import StrategyEngine
 from .topstepx_client import REST_BASE, Account, TopstepXClient, TopstepXMarketDataStream, TopstepXUserDataStream
@@ -129,6 +129,14 @@ class TopstepXLiveRunner:
 
         threading.Thread(target=self._poll_positions, daemon=True).start()
 
+        if self.cfg.topstepx.dashboard_managed:
+            threading.Thread(target=self._account_refresh_loop, daemon=True).start()
+        else:
+            logger.info(
+                "TOPSTEPX_ACCOUNT_NAMES is set explicitly in .env — dashboard account "
+                "hot-reload is disabled; restart this process to pick up account changes."
+            )
+
         logger.info("Streaming live quotes. Ctrl+C to stop.")
         try:
             self._run_market_stream_with_reconnect(contract)
@@ -153,6 +161,54 @@ class TopstepXLiveRunner:
                     "the next attempt; if it's actually expired, REST calls and hub reconnects will "
                     "start failing visibly."
                 )
+
+    # How often to check the dashboard's "My Accounts" page (Supabase) for a
+    # newly saved account. Only runs in dashboard_managed mode (see
+    # config.py). Deliberately short — the whole point is "type the new
+    # account name in on the dashboard, it starts trading within seconds"
+    # after a blown eval gets replaced, with zero action on the trading
+    # machine itself.
+    ACCOUNT_REFRESH_INTERVAL_SECONDS = 20
+
+    def _account_refresh_loop(self) -> None:
+        """Polls Supabase for account names saved on the dashboard since this
+        process started, and starts trading any that aren't already running
+        — no restart needed. Deliberately ADD-ONLY: an account that
+        disappears from a poll (dashboard deletion, or just a transient
+        Supabase hiccup — the two look identical from here) is never
+        auto-removed from trading. Stopping a live account is a deliberate
+        action (delete it on the dashboard AND restart the process), never
+        something a flaky network request should be able to trigger on its
+        own."""
+        while not self._shutting_down.wait(self.ACCOUNT_REFRESH_INTERVAL_SECONDS):
+            try:
+                saved_names = fetch_saved_account_names()
+            except Exception:
+                logger.exception("Account refresh: failed to fetch saved accounts from Supabase.")
+                continue
+
+            new_names = [n for n in saved_names if n not in self._account_states]
+            if not new_names:
+                continue
+
+            logger.info("Account refresh: found newly saved account(s) %s — resolving against TopstepX.", new_names)
+            try:
+                self.client.creds.account_names = list(self._account_states.keys()) + new_names
+                accounts = self.client.load_accounts()
+            except Exception:
+                logger.exception(
+                    "Account refresh: could not resolve %s against TopstepX (typo in the account "
+                    "name, not yet active, etc.) — will retry next cycle.", new_names,
+                )
+                continue
+
+            for account in accounts:
+                if account.name in self._account_states:
+                    continue
+                state = _AccountState(account=account)
+                self._account_states[account.name] = state
+                threading.Thread(target=self._run_user_stream_with_reconnect, args=(state,), daemon=True).start()
+                logger.info("Now trading newly added account: %s (picked up live, no restart).", account.name)
 
     def _run_market_stream_with_reconnect(self, contract) -> None:
         """A dropped WebSocket (sleep/wake, Wi-Fi blip, etc.) used to kill
@@ -229,7 +285,12 @@ class TopstepXLiveRunner:
         if self._current_day != day:
             logger.info("New trading day: %s — resetting strategy + all account state.", day)
             self.engine.reset_day()
-            for state in self._account_states.values():
+            # list(...) snapshot: the account hot-reload loop can add a new
+            # entry to self._account_states from another thread concurrently
+            # with this iteration (see _account_refresh_loop) — iterating
+            # the dict view directly would risk "dictionary changed size
+            # during iteration".
+            for state in list(self._account_states.values()):
                 state.reset_day()
             self._current_day = day
 
@@ -258,7 +319,9 @@ class TopstepXLiveRunner:
 
         action = "Buy" if signal.direction == Direction.LONG else "Sell"
         any_order_placed = False
-        for state in self._account_states.values():
+        # list(...) snapshot — see the identical comment above in the
+        # new-trading-day reset for why.
+        for state in list(self._account_states.values()):
             if state.rate_limited:
                 logger.info("Skipping account %s: rate limit already hit today.", state.account.name)
                 continue
@@ -315,7 +378,8 @@ class TopstepXLiveRunner:
         was not enough."""
         while True:
             time_module.sleep(3)
-            for state in self._account_states.values():
+            # list(...) snapshot — see the identical comment in _on_bar.
+            for state in list(self._account_states.values()):
                 if state.pending_signal is None or state.pending_entry_price is None:
                     continue
                 self._check_account_flat(state)

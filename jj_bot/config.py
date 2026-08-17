@@ -53,7 +53,7 @@ def _fetch_active_strategy_config() -> dict | None:
     Creator page has marked is_active=true (Supabase `strategies` table) —
     this is what the live bot actually trades, instead of always the
     built-in JJ default in config.yaml. Single-operator bot (see
-    _fetch_saved_account_names): looks for is_active=true across all rows,
+    fetch_saved_account_names): looks for is_active=true across all rows,
     not scoped to one user. Returns None (fall back to config.yaml) if
     nothing is active or Supabase isn't configured."""
     url = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -109,13 +109,18 @@ def _apply_active_strategy(raw_strategy: dict, raw_risk: dict) -> tuple[dict, di
     return strategy, risk
 
 
-def _fetch_saved_account_names() -> list[str]:
+def fetch_saved_account_names() -> list[str]:
     """Pulls account names saved via the dashboard's "My Accounts" page
     (Supabase `tradovate_accounts` table — used for any broker's account
     names, not just Tradovate's) instead of requiring them to be
     hand-copied into an env var. This assumes a single-operator bot: it
     reads every saved row regardless of which dashboard user added it. If
-    SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY aren't set, returns []."""
+    SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY aren't set, returns [].
+
+    Public (no leading underscore) because live_runner_topstepx.py's account
+    hot-reload loop also calls this directly, on its own timer, to notice
+    newly saved accounts without a process restart — see
+    TopstepXCreds.dashboard_managed."""
     url = os.getenv("SUPABASE_URL", "").rstrip("/")
     key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     if not url or not key:
@@ -244,6 +249,13 @@ class TopstepXCreds:
     api_key: str = ""
     account_names: list[str] = field(default_factory=list)
     allow_live: bool = False
+    # True when TOPSTEPX_ACCOUNT_NAMES was left blank in .env, meaning
+    # account_names above came from the dashboard's "My Accounts" page
+    # (Supabase) rather than an explicit operator override. Only in this
+    # mode does live_runner_topstepx.py's account hot-reload loop run —
+    # an explicit env var is a deliberate pin that a background poll must
+    # never silently expand.
+    dashboard_managed: bool = False
 
 
 @dataclass
@@ -306,7 +318,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     # If neither is set, fall back to whatever's saved on the dashboard's
     # "My Accounts" page (Supabase) — set the env var to override.
     names_raw = os.getenv("TRADOVATE_ACCOUNT_NAMES") or os.getenv("TRADOVATE_ACCOUNT_NAME", "")
-    account_names = [n.strip() for n in names_raw.split(",") if n.strip()] or _fetch_saved_account_names()
+    account_names = [n.strip() for n in names_raw.split(",") if n.strip()] or fetch_saved_account_names()
 
     tradovate_creds = TradovateCreds(
         env=os.getenv("TRADOVATE_ENV", "demo"),
@@ -322,7 +334,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     )
 
     ibkr_names_raw = os.getenv("IBKR_ACCOUNT_NAMES", "")
-    ibkr_account_names = [n.strip() for n in ibkr_names_raw.split(",") if n.strip()] or _fetch_saved_account_names()
+    ibkr_account_names = [n.strip() for n in ibkr_names_raw.split(",") if n.strip()] or fetch_saved_account_names()
     ibkr_creds = IBKRCreds(
         host=os.getenv("IBKR_HOST", "127.0.0.1"),
         port=int(os.getenv("IBKR_PORT", "4002")),
@@ -333,12 +345,13 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     # TOPSTEPX_ACCOUNT_NAMES="EVAL123,FUNDED789" (comma-separated). Leave
     # blank to trade every active account under this TopstepX login.
     topstepx_names_raw = os.getenv("TOPSTEPX_ACCOUNT_NAMES", "")
-    topstepx_account_names = [n.strip() for n in topstepx_names_raw.split(",") if n.strip()] or _fetch_saved_account_names()
+    topstepx_account_names = [n.strip() for n in topstepx_names_raw.split(",") if n.strip()] or fetch_saved_account_names()
     topstepx_creds = TopstepXCreds(
         username=os.getenv("TOPSTEPX_USERNAME", ""),
         api_key=os.getenv("TOPSTEPX_API_KEY", ""),
         account_names=topstepx_account_names,
         allow_live=os.getenv("TOPSTEPX_ALLOW_LIVE", "false").strip().lower() == "true",
+        dashboard_managed=not topstepx_names_raw.strip(),
     )
 
     active_strategy, active_risk = _apply_active_strategy(raw["strategy"], raw["risk"])
