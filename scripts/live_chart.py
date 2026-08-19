@@ -50,6 +50,19 @@ def _seed_recent_bars(log_path: Path, max_bars: int) -> deque:
 def _redraw(bars: deque, account_label: str) -> None:
     if not bars:
         return
+    # CONFIRMED on the real (Windows) machine: plotext's date_form/candlestick
+    # date parsing calls datetime.fromtimestamp() on an internally-computed
+    # epoch offset, which raises OSError("Invalid argument") on Windows for
+    # values datetime.fromtimestamp() rejects there but glibc/Linux accepts
+    # (e.g. a pre-1970 or otherwise out-of-range timestamp) — this reproduced
+    # every redraw once real bars started flowing, even though it worked fine
+    # in local (Linux) testing before this shipped. Sidestepping plotext's
+    # date engine entirely: candlestick only treats an axis as "dates" (and
+    # goes through strings_to_time/fromtimestamp) when the values passed are
+    # strings (see plotext's Monitor.to_time) — passing plain integer
+    # positions instead skips that path completely, and plt.xticks() still
+    # labels those positions with the real HH:MM strings for display.
+    positions = list(range(len(bars)))
     times = [b["time"] for b in bars]
     data = {
         "Open": [float(b["open"]) for b in bars],
@@ -61,9 +74,9 @@ def _redraw(bars: deque, account_label: str) -> None:
 
     plt.clt()  # clear terminal
     plt.cld()  # clear previous chart data
-    plt.date_form("H:M")
-    plt.candlestick(times, data)
-    plt.title(f"{account_label} — {latest['close']} — phase={latest['phase']} — {time.strftime('%H:%M:%S')}")
+    plt.candlestick(positions, data)
+    plt.xticks(positions, times)
+    plt.title(f"{account_label} - {latest['close']} - phase={latest['phase']} - {time.strftime('%H:%M:%S')}")
     plt.xlabel("Time")
     plt.ylabel("Price")
     plt.theme("dark")
