@@ -12,11 +12,14 @@ docstring for the account-state/rate-limit design this shares.
 """
 from __future__ import annotations
 
+import os
+import sys
 import threading
 import time as time_module
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -32,6 +35,27 @@ from .trade_logger import TradeLogger
 from .logging_setup import setup_logging
 
 logger = setup_logging()
+
+
+def _pid_is_running(pid: int) -> bool:
+    """Cross-platform liveness check for a PID. os.kill(pid, 0) works on
+    POSIX but not the same way on Windows (this bot's actual deployment
+    target — see TOPSTEPX_ALLOW_LIVE / README), so use OpenProcess there
+    instead."""
+    if os.name == "nt":
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 @dataclass
@@ -88,6 +112,17 @@ class _AccountState:
 
 
 class TopstepXLiveRunner:
+    # CONFIRMED LIVE (2026-08-11 through 2026-08-18): two separate
+    # `run_live.py` processes ran concurrently, unnoticed, for a full week —
+    # started from different launch paths (a venv python and the system
+    # python), each independently authenticated and placed brackets on
+    # every signal against the same real account. There was nothing in this
+    # class stopping that. This lock makes a second instance refuse to
+    # start instead of silently trading alongside the first one — the same
+    # pattern that protects a NinjaTrader-style desktop bot from a leftover
+    # terminal + a Task Scheduler job both being alive at once.
+    _LOCK_PATH = Path("topstepx_live.lock")
+
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
         self.client = TopstepXClient(cfg.topstepx)
@@ -104,8 +139,63 @@ class TopstepXLiveRunner:
         # (entry to exit is normally minutes, not hours) plus padding before
         # entry, without holding unbounded memory over a multi-day run.
         self._bar_history: deque = deque(maxlen=240)
+        self._holds_lock = False
+
+    def _acquire_single_instance_lock(self) -> None:
+        if self._LOCK_PATH.exists():
+            try:
+                old_pid = int(self._LOCK_PATH.read_text().strip())
+            except (ValueError, OSError):
+                old_pid = None
+            if old_pid is not None and _pid_is_running(old_pid):
+                logger.error(
+                    "Another instance is already running (PID %d, lock file %s). Refusing to "
+                    "start a second instance — check Task Manager / Task Scheduler before "
+                    "forcing this. Running two copies means BOTH can place real orders on the "
+                    "same account for the same signal.",
+                    old_pid, self._LOCK_PATH,
+                )
+                sys.exit(1)
+            logger.warning(
+                "Stale lock file found (PID %s no longer running) — removing and continuing.",
+                old_pid,
+            )
+            try:
+                self._LOCK_PATH.unlink()
+            except OSError:
+                logger.exception(
+                    "Could not remove stale lock file %s — you may need to delete it manually. "
+                    "Continuing anyway since the prior owner (PID %s) is confirmed not running.",
+                    self._LOCK_PATH, old_pid,
+                )
+        try:
+            self._LOCK_PATH.write_text(str(os.getpid()))
+            self._holds_lock = True
+        except OSError:
+            logger.exception(
+                "Could not write lock file %s — single-instance protection is NOT active for "
+                "this run. Fix file permissions before relying on this safeguard.",
+                self._LOCK_PATH,
+            )
+
+    def _release_single_instance_lock(self) -> None:
+        if not self._holds_lock:
+            return
+        try:
+            if self._LOCK_PATH.exists() and self._LOCK_PATH.read_text().strip() == str(os.getpid()):
+                self._LOCK_PATH.unlink()
+        except OSError:
+            logger.exception("Failed to remove lock file on shutdown — remove %s manually before next start.", self._LOCK_PATH)
+        self._holds_lock = False
 
     def start(self) -> None:
+        self._acquire_single_instance_lock()
+        try:
+            self._start_inner()
+        finally:
+            self._release_single_instance_lock()
+
+    def _start_inner(self) -> None:
         logger.info("Authenticating with TopstepX...")
         self.client.authenticate()
         accounts = self.client.load_accounts()
