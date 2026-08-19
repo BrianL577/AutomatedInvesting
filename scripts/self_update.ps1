@@ -1,7 +1,7 @@
 # Safe, unattended self-update for the live TopstepX trading bot. Meant to
 # run once daily via Task Scheduler, well before the 9:30am ET session open,
 # and as the "at startup"/"at logon" action in place of a bare
-# run_live_loop.ps1 launch — see README.md's "Running it fully automated"
+# run_live_loop.ps1 launch - see README.md's "Running it fully automated"
 # section.
 #
 # Flow: stop whatever's currently running -> git fetch + fast-forward-only
@@ -9,15 +9,15 @@
 # pre-pull commit -> (re)launch run_live_loop.ps1, detached.
 #
 # Deliberately conservative:
-#   - Never merges or force-resets onto the new code — a real merge
+#   - Never merges or force-resets onto the new code - a real merge
 #     conflict (local edits on the machine, a rebase, etc.) needs a human,
 #     not an unattended script guessing. Fast-forward-only; on failure, it
 #     just restarts on whatever commit was already there.
 #   - Never leaves the bot running on code that failed its own test suite
-#     — rolls back to the last known-good commit instead.
+#     - rolls back to the last known-good commit instead.
 #   - The bot's own single-instance lock (jj_bot/live_runner_topstepx.py,
 #     topstepx_live.lock) is a second line of defense if the process-kill
-#     step below misses something — a genuinely stuck process just makes
+#     step below misses something - a genuinely stuck process just makes
 #     the freshly-launched one refuse to start, loudly, instead of both
 #     trading at once.
 #
@@ -67,8 +67,8 @@ git fetch origin main 2>&1 | ForEach-Object { Log "  [git] $_" }
 $pullOk = $true
 git merge --ff-only origin/main 2>&1 | ForEach-Object { Log "  [git] $_" }
 if ($LASTEXITCODE -ne 0) {
-    Log "Fast-forward pull failed (local changes on this machine, or a real conflict) — leaving code as-is and restarting on the current commit."
-    Send-UpdateAlert "[AutomatedInvesting] Self-update: pull failed" "git merge --ff-only failed on $RepoRoot (commit $oldCommit). Left the bot on its current commit and restarted. This needs a human to look at logs\self_update.log and resolve manually — auto-update will keep failing every day until then."
+    Log "Fast-forward pull failed (local changes on this machine, or a real conflict) - leaving code as-is and restarting on the current commit."
+    Send-UpdateAlert "[AutomatedInvesting] Self-update: pull failed" "git merge --ff-only failed on $RepoRoot (commit $oldCommit). Left the bot on its current commit and restarted. This needs a human to look at logs\self_update.log and resolve manually - auto-update will keep failing every day until then."
     $pullOk = $false
 }
 
@@ -79,14 +79,14 @@ if ($pullOk -and $newCommit -ne $oldCommit) {
 
     python -m pytest tests\ -q 2>&1 | ForEach-Object { Log "  [pytest] $_" }
     if ($LASTEXITCODE -ne 0) {
-        Log "Tests FAILED on $newCommit — rolling back to $oldCommit and restarting on the last known-good commit."
+        Log "Tests FAILED on $newCommit - rolling back to $oldCommit and restarting on the last known-good commit."
         git reset --hard $oldCommit 2>&1 | ForEach-Object { Log "  [git] $_" }
         Send-UpdateAlert "[AutomatedInvesting] Self-update: rolled back" "New commit $newCommit failed 'pytest tests\' during scripts\self_update.ps1. Rolled back to the last known-good commit $oldCommit and restarted on that. Check logs\self_update.log for the test failure."
     } else {
-        Log "Tests passed on $newCommit — restarting on the new code."
+        Log "Tests passed on $newCommit - restarting on the new code."
     }
 } elseif ($pullOk) {
-    Log "Already up to date at $oldCommit — no code changes, restarting as-is."
+    Log "Already up to date at $oldCommit - no code changes, restarting as-is."
 }
 
 # --- Relaunch, detached, so this scheduled task can exit while the bot
