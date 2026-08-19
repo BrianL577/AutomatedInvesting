@@ -53,7 +53,7 @@ class TradeLogger:
         tmp_path.write_text(json.dumps(trades, indent=2, default=str))
         tmp_path.replace(self.path)
 
-    def log_trade(self, trade: TradeResult, account_name: Optional[str] = None) -> None:
+    def log_trade(self, trade: TradeResult, account_name: Optional[str] = None, chart_path: Optional[str] = None) -> None:
         pnl_dollars = round(trade.pnl_points * self.dollar_per_point * trade.qty, 2)
         record = {
             "timestamp": trade.signal.timestamp.isoformat(),
@@ -72,6 +72,11 @@ class TradeLogger:
             "source": self.source,
             "account_name": account_name,
             "logged_at": datetime.utcnow().isoformat() + "Z",
+            # Path to the candlestick screenshot render_trade_chart() saved
+            # for this trade (jj_bot/trade_chart.py) — None if charting
+            # wasn't wired up for this call site, or rendering failed for
+            # this specific trade (never blocks logging the trade itself).
+            "chart_path": chart_path,
         }
 
         # CRITICAL: this is called from _on_fill() on the fills-tailing

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import threading
 import time as time_module
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -24,7 +25,9 @@ from .bar_aggregator import BarAggregator
 from .config import AppConfig, fetch_saved_account_names
 from .models import Direction, Signal, TradeResult
 from .strategy import StrategyEngine
+from .time_utils import to_et
 from .topstepx_client import REST_BASE, Account, TopstepXClient, TopstepXMarketDataStream, TopstepXUserDataStream
+from .trade_chart import render_trade_chart
 from .trade_logger import TradeLogger
 from .logging_setup import setup_logging
 
@@ -96,6 +99,11 @@ class TopstepXLiveRunner:
         self._account_states: dict[str, _AccountState] = {}
         self._got_first_tick = False
         self._shutting_down = threading.Event()
+        # Rolling context for trade screenshots (see trade_chart.py) — 240
+        # 1-min bars (~4 hours) is comfortably more than one trade window
+        # (entry to exit is normally minutes, not hours) plus padding before
+        # entry, without holding unbounded memory over a multi-day run.
+        self._bar_history: deque = deque(maxlen=240)
 
     def start(self) -> None:
         logger.info("Authenticating with TopstepX...")
@@ -281,6 +289,7 @@ class TopstepXLiveRunner:
             self._on_bar(closed_bar, contract)
 
     def _on_bar(self, bar, contract) -> None:
+        self._bar_history.append(bar)
         day = bar.timestamp.date()
         if self._current_day != day:
             logger.info("New trading day: %s — resetting strategy + all account state.", day)
@@ -432,7 +441,24 @@ class TopstepXLiveRunner:
                     signal=signal, exit_price=exit_price, exit_timestamp=datetime.now(),
                     win=win, pnl_points=pnl_points, qty=self.cfg.risk.contracts_per_trade,
                 )
-                self.trade_logger.log_trade(result, account_name=state.account.name)
+                chart_path = render_trade_chart(
+                    bars=list(self._bar_history),
+                    signal=signal,
+                    exit_price=exit_price,
+                    # to_et, not the raw naive result.exit_timestamp — bars
+                    # are tz-aware America/New_York, and comparing a
+                    # wrong-timezone naive "now" against them can silently
+                    # pick the wrong candle or filter the window empty.
+                    exit_timestamp=to_et(datetime.now(timezone.utc), self.cfg.strategy.timezone),
+                    win=win,
+                    account_name=state.account.name,
+                    stop_price=stop_price,
+                    target_price=target_price,
+                )
+                self.trade_logger.log_trade(
+                    result, account_name=state.account.name,
+                    chart_path=str(chart_path) if chart_path else None,
+                )
                 self.engine.record_trade_result(win, pnl_points=pnl_points)
 
                 state.day_pnl_dollars += realized_pnl

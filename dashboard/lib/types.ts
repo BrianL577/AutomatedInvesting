@@ -16,4 +16,9 @@ export type Trade = {
   source: string;
   account_name?: string | null;
   logged_at: string;
+  // Local filesystem path (on the machine running the bot) to the
+  // candlestick screenshot saved for this trade — see
+  // jj_bot/trade_chart.py. Not a URL; the dashboard can't render it
+  // directly yet since these files never leave the trading machine.
+  chart_path?: string | null;
 };
