@@ -161,6 +161,38 @@ Three pieces, each hosted separately:
 This chat/session cannot itself run the always-on worker — it's an
 ephemeral container. `RAILWAY.md` walks through standing this up properly.
 
+### Self-updating (TopstepX / any always-on local machine)
+
+TopstepX must run on your own local, actively-monitored machine (TopStep
+bans VPS/cloud execution — see above), so code updates can't just be a
+Railway redeploy. `scripts/self_update.ps1` closes that gap: stop the
+running bot, `git fetch` + fast-forward-only pull `main`, `pip install`,
+run the test suite, and only restart on the new code if tests pass —
+otherwise it rolls back to the last known-good commit and restarts on that
+instead. It never merges or force-resets (a real conflict needs a human),
+and it emails an alert (reusing the `SMTP_USER`/`SMTP_PASSWORD` crash-alert
+config below) if a pull fails or a rollback happens, so a failing
+auto-update doesn't go unnoticed.
+
+Set it up once via Task Scheduler:
+
+1. **Action → Create Task...**, name it e.g. `JJ Bot - Self Update`.
+2. **Triggers** → New... → **Daily**, at a time well before your session
+   opens (e.g. 4:00am local) — also add an **At startup** trigger so a
+   reboot goes through the same safe update-then-launch path instead of
+   launching stale code directly.
+3. **Actions** → New... → Start a program:
+   - Program/script: `powershell.exe`
+   - Add arguments: `-ExecutionPolicy Bypass -File "C:\path\to\AutomatedInvesting\scripts\self_update.ps1"`
+4. If you already have a Task Scheduler entry directly launching
+   `run_live_loop.ps1` (e.g. from an earlier manual setup), remove it —
+   `self_update.ps1` launches `run_live_loop.ps1` itself at the end of
+   every run, so having both would start two copies (the bot's own
+   single-instance lock would then refuse the second one, but it's cleaner
+   to just have the one scheduled entry).
+
+Test it manually first: `powershell -ExecutionPolicy Bypass -File scripts\self_update.ps1`, then check `logs\self_update.log`.
+
 ## Accounts & multi-user (dashboard/accounts)
 
 The dashboard has real user accounts (Supabase Auth — sign up / sign in with
