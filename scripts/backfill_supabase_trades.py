@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -34,6 +35,22 @@ LOCAL_TRADES_PATH = REPO_ROOT / "dashboard" / "data" / "trades.json"
 # already in Supabase. A given account can't close two different trades
 # with the exact same entry timestamp, exit timestamp, and account name.
 DEDUPE_KEYS = ("timestamp", "exit_timestamp", "account_name")
+
+
+def _parse_ts(value):
+    """CONFIRMED: comparing raw timestamp strings was wrong — Postgres can
+    round-trip a timestamptz back through PostgREST in a different string
+    form than what Python originally sent (different offset notation,
+    added/dropped fractional seconds) for the exact same instant, which
+    made already-present trades get wrongly flagged as missing. Parsing to
+    an aware datetime and comparing those compares the actual moment in
+    time, not the text representation of it."""
+    if not isinstance(value, str):
+        return value
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
 
 # The exact set of columns the Supabase `trades` table has (see
 # supabase/schema.sql + migrations/003_add_trade_chart_path.sql) — local
@@ -48,7 +65,7 @@ SUPABASE_COLUMNS = (
 
 
 def _dedupe_key(trade: dict) -> tuple:
-    return tuple(trade.get(k) for k in DEDUPE_KEYS)
+    return tuple(_parse_ts(trade.get(k)) if "timestamp" in k else trade.get(k) for k in DEDUPE_KEYS)
 
 
 def main() -> None:
