@@ -32,9 +32,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LOCAL_TRADES_PATH = REPO_ROOT / "dashboard" / "data" / "trades.json"
 
 # Fields this uniquely identifies a trade by, for deduping against what's
-# already in Supabase. A given account can't close two different trades
-# with the exact same entry timestamp, exit timestamp, and account name.
-DEDUPE_KEYS = ("timestamp", "exit_timestamp", "account_name")
+# already in Supabase. Deliberately just (entry timestamp, account_name),
+# NOT exit_timestamp: CONFIRMED live that exit_timestamp is unusable for
+# this — it's captured via datetime.now() (naive, no tzinfo) when a trade
+# closes, while `timestamp` comes from the bar and is tz-aware. Once a
+# naive local value round-trips through Supabase's timestamptz column it
+# comes back tz-aware, and Python's datetime equality silently returns
+# False for naive-vs-aware comparisons (never True, no exception) — every
+# trade's exit_timestamp mismatched, so EVERY trade got wrongly flagged as
+# missing even when already present. (entry timestamp, account_name) alone
+# is already a safe unique key: the bot only ever has one trade open per
+# account at a time, so two trades on the same account can never share an
+# entry signal timestamp.
+DEDUPE_KEYS = ("timestamp", "account_name")
 
 
 def _parse_ts(value):
