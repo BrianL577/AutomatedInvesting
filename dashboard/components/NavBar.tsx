@@ -16,6 +16,7 @@ export default async function NavBar() {
           <NavTabs
             tabs={[
               { href: "/", label: "Dashboard" },
+              { href: "/virtual-practice", label: "Virtual Practice" },
               { href: "/strategies", label: "Strategy Creator" },
               { href: "/accounts", label: "My Accounts" },
             ]}

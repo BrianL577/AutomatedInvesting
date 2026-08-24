@@ -153,6 +153,18 @@ body {
   color: var(--red);
 }
 
+/* Bare .positive/.negative (not scoped to .value) — used on plain table
+   cells, e.g. the trade list's P&L columns. Without this, those cells were
+   rendering with no color at all: the class was applied but nothing
+   matched it. */
+.positive {
+  color: var(--green);
+}
+
+.negative {
+  color: var(--red);
+}
+
 .chart-panel {
   background: var(--panel);
   border: 1px solid var(--panel-border);
