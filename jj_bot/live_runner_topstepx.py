@@ -12,6 +12,7 @@ docstring for the account-state/rate-limit design this shares.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
@@ -123,6 +124,17 @@ class TopstepXLiveRunner:
     # terminal + a Task Scheduler job both being alive at once.
     _LOCK_PATH = Path("topstepx_live.lock")
 
+    # CONFIRMED: this codebase already hit this exact bug class once before
+    # (the old NinjaTrader runner's docstring records it) — daily risk
+    # counters (trades taken, consecutive losses, per-account rate-limit
+    # flags) lived only in memory, so a process restart mid-day silently
+    # reset every daily limit back to zero, letting the bot re-enter after
+    # it should already have stopped for the day. That fix was never
+    # ported to this TopstepX runner. Persisted here, keyed by calendar
+    # date, and restored on startup only if the file's date matches
+    # today's — a genuinely new day still starts from zero as normal.
+    _DAILY_STATE_PATH = Path("daily_risk_state.json")
+
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
         self.client = TopstepXClient(cfg.topstepx)
@@ -187,6 +199,57 @@ class TopstepXLiveRunner:
         except OSError:
             logger.exception("Failed to remove lock file on shutdown — remove %s manually before next start.", self._LOCK_PATH)
         self._holds_lock = False
+
+    # ---- daily state persistence (survives a mid-day process restart) ----
+
+    def _save_daily_state(self, day) -> None:
+        payload = {
+            "date": day.isoformat(),
+            "trades_today": self.engine.trades_today,
+            "consecutive_losses": self.engine.consecutive_losses,
+            "rate_limited": self.engine.rate_limited,
+            "accounts": {
+                name: {"day_pnl_dollars": state.day_pnl_dollars, "rate_limited": state.rate_limited}
+                for name, state in self._account_states.items()
+            },
+        }
+        # Atomic write (temp file + replace) so a crash or antivirus scan
+        # mid-write can never leave a half-written, unparseable state file.
+        tmp_path = self._DAILY_STATE_PATH.with_suffix(".json.tmp")
+        try:
+            tmp_path.write_text(json.dumps(payload))
+            tmp_path.replace(self._DAILY_STATE_PATH)
+        except OSError:
+            logger.exception("Failed to persist daily risk state — limits won't survive a restart right now.")
+        finally:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+
+    def _restore_daily_state_if_same_day(self, day) -> None:
+        if not self._DAILY_STATE_PATH.exists():
+            return
+        try:
+            payload = json.loads(self._DAILY_STATE_PATH.read_text())
+        except (OSError, json.JSONDecodeError):
+            logger.exception("Failed to read persisted daily risk state — starting the day fresh.")
+            return
+        if payload.get("date") != day.isoformat():
+            return  # genuinely a new trading day — zeroed state from reset_day() is correct
+        self.engine.trades_today = payload.get("trades_today", 0)
+        self.engine.consecutive_losses = payload.get("consecutive_losses", 0)
+        self.engine.rate_limited = payload.get("rate_limited", False)
+        for name, saved in (payload.get("accounts") or {}).items():
+            state = self._account_states.get(name)
+            if state is not None:
+                state.day_pnl_dollars = saved.get("day_pnl_dollars", 0.0)
+                state.rate_limited = saved.get("rate_limited", False)
+        logger.info(
+            "Restored today's risk state after restart: trades_today=%d consecutive_losses=%d rate_limited=%s",
+            self.engine.trades_today, self.engine.consecutive_losses, self.engine.rate_limited,
+        )
 
     def start(self) -> None:
         self._acquire_single_instance_lock()
@@ -382,6 +445,7 @@ class TopstepXLiveRunner:
         self._bar_history.append(bar)
         day = bar.timestamp.date()
         if self._current_day != day:
+            is_process_startup = self._current_day is None
             logger.info("New trading day: %s — resetting strategy + all account state.", day)
             self.engine.reset_day()
             # list(...) snapshot: the account hot-reload loop can add a new
@@ -391,7 +455,14 @@ class TopstepXLiveRunner:
             # during iteration".
             for state in list(self._account_states.values()):
                 state.reset_day()
+            # Only meaningful right at process startup — a restart mid-day
+            # is exactly the case this recovers from; a genuine day
+            # rollover later in the same run has nothing to restore (the
+            # zeroed state above is already correct).
+            if is_process_startup:
+                self._restore_daily_state_if_same_day(day)
             self._current_day = day
+            self._save_daily_state(day)
 
         logger.info(
             "Bar %s O:%.2f H:%.2f L:%.2f C:%.2f phase=%s",
@@ -575,6 +646,8 @@ class TopstepXLiveRunner:
             state.entry_placed_at = None
             state.placed_stop_price = None
             state.placed_target_price = None
+            if self._current_day is not None:
+                self._save_daily_state(self._current_day)
         except Exception:
             logger.exception("Position poll failed for account %s", state.account.name)
 
