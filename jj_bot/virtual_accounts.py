@@ -18,8 +18,9 @@ fill the count.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -51,6 +52,7 @@ class VirtualAccountManager:
         source: str = "virtual_practice",
         trade_log_path: Optional[Path] = None,
         chart_renderer: Optional[Callable[[VirtualAccount, TradeResult], Optional[str]]] = None,
+        state_path: Optional[Path] = None,
     ):
         self.cfg = cfg
         self.engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk, instrument_cfg=cfg.instrument)
@@ -64,6 +66,15 @@ class VirtualAccountManager:
         # has no matplotlib dependency and stays trivial to unit test.
         self.chart_renderer = chart_renderer
         self._current_day = None
+        self._is_first_day_check = True
+        # CONFIRMED: without this, a process restart mid-day silently wiped
+        # every account's traded_today back to False (in-memory only, same
+        # bug class the old NinjaTrader runner already hit once — see
+        # live_runner_topstepx.py's identical fix). One virtual account
+        # taking 3 trades in a single real day, all logged normally, is
+        # exactly what that looks like: each restart's first bar treated
+        # the already-in-progress calendar day as brand new.
+        self._state_path = Path(state_path) if state_path else Path("virtual_daily_state.json")
 
     def _idle_account(self) -> Optional[VirtualAccount]:
         for a in self.accounts:
@@ -76,14 +87,59 @@ class VirtualAccountManager:
         for a in self.accounts:
             a.reset_day()
 
+    def _save_state(self, day: date) -> None:
+        payload = {
+            "date": day.isoformat(),
+            "accounts": {a.name: a.traded_today for a in self.accounts},
+        }
+        tmp_path = self._state_path.with_suffix(".json.tmp")
+        try:
+            tmp_path.write_text(json.dumps(payload))
+            tmp_path.replace(self._state_path)
+        except OSError:
+            logger.exception("Failed to persist virtual-account daily state — won't survive a restart right now.")
+        finally:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+
+    def _restore_state_if_same_day(self, day: date) -> None:
+        if not self._state_path.exists():
+            return
+        try:
+            payload = json.loads(self._state_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            logger.exception("Failed to read persisted virtual-account state — starting the session fresh.")
+            return
+        if payload.get("date") != day.isoformat():
+            return  # genuinely a new session — zeroed state is already correct
+        saved_accounts = payload.get("accounts") or {}
+        restored = 0
+        for account in self.accounts:
+            if saved_accounts.get(account.name):
+                account.traded_today = True
+                restored += 1
+        if restored:
+            logger.info(
+                "Restored today's virtual-account state after restart: %d/%d account(s) already traded today.",
+                restored, len(self.accounts),
+            )
+
     def on_bar(self, bar: Bar) -> Optional[tuple[VirtualAccount, Signal]]:
         """Feed one confirmed bar. Returns (account, signal) if a new
         distinct setup was just assigned to a fresh virtual account."""
         day = bar.timestamp.date()
         if self._current_day != day:
+            is_process_startup = self._is_first_day_check
+            self._is_first_day_check = False
             logger.info("New session: %s — resetting %d virtual accounts.", day, len(self.accounts))
             self.reset_day()
+            if is_process_startup:
+                self._restore_state_if_same_day(day)
             self._current_day = day
+            self._save_state(day)
 
         if self._idle_account() is None:
             return None  # every account already has its one trade for today
@@ -109,6 +165,8 @@ class VirtualAccountManager:
             return None
         account.pending_signal = signal
         account.traded_today = True
+        if self._current_day is not None:
+            self._save_state(self._current_day)
         logger.info(
             "%s -> %s %s @ %.2f stop=%.2f target=%.2f grade=%s | %s",
             account.name, signal.phase.value, signal.direction.value,
