@@ -143,6 +143,37 @@ Test Trade**. This is the same connection test, just from the UI instead of
 the CLI — useful once the bot is running on a remote host and you want to
 confirm it's alive without SSHing in.
 
+## Practice mode: 10 abstract virtual accounts
+
+Before increasing size on the real strategy, `scripts/run_virtual_practice.py`
+lets you see it run across multiple accounts at once without needing any
+real TopStep practice accounts:
+
+```bash
+python scripts/run_virtual_practice.py --accounts 10
+```
+
+TopstepX-only (`BROKER=topstepx`, same `TOPSTEPX_ALLOW_LIVE=true` opt-in the
+real bot needs). This process **never calls TopstepX's order-placement
+API** — it only reads live market data — so it's safe to run at the same
+time as `scripts/run_live.py` on the same machine, no extra setup.
+
+Instead of fanning one shared signal out to every account (what
+`run_live.py` does), it keeps scanning the session for new, distinct
+setups and hands each one to the next of the N abstract "Virtual-01"..
+"Virtual-N" accounts that hasn't traded yet today — one trade per account
+per day, same rule as real trading. If the session produces fewer setups
+than accounts, the rest simply sit out that day; nothing is invented to
+fill the count. Trades log to the dashboard with `source: "virtual_practice"`,
+excluded from the real P&L/win-rate stats, with their own candlestick
+charts saved to `trade_charts_virtual/`. Number of accounts defaults to
+`virtual_accounts.count` in `config.yaml` (or the `VIRTUAL_ACCOUNT_COUNT`
+env var).
+
+This is currently a standalone script you start manually (or via its own
+Task Scheduler entry) — it is not yet wired into `run_live_loop.ps1` /
+`self_update.ps1`'s auto-restart/auto-update loop alongside the real bot.
+
 ## Running it fully automated
 
 Three pieces, each hosted separately:

@@ -69,11 +69,13 @@ export type Stats = {
 const PROFIT_CAP = 1520;
 const LOSS_CAP = 1000;
 
-// Connectivity test trades (source=connection_test / phase=test) are excluded
-// from performance stats — they're not real strategy signals, just proof the
-// pipeline can submit an order.
+// Connectivity test trades (source=connection_test / phase=test) and
+// virtual-practice trades (source=virtual_practice — abstract accounts with
+// no real order behind them, see scripts/run_virtual_practice.py) are
+// excluded from performance stats — neither is a real trade against a real
+// TopStep account.
 function isRealTrade(t: Trade): boolean {
-  return t.source !== "connection_test" && t.phase !== "test";
+  return t.source !== "connection_test" && t.phase !== "test" && t.source !== "virtual_practice";
 }
 
 export function computeStats(trades: Trade[]): Stats {
