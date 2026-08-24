@@ -143,6 +143,12 @@ export default async function Page() {
               <tbody>
                 {[...trades].reverse().map((t) => {
                   const isTest = t.source === "connection_test" || t.phase === "test";
+                  // Virtual-practice trades (scripts/run_virtual_practice.py — abstract
+                  // accounts, no real order behind them) get the same "not a real
+                  // result" badge treatment as connection tests, rather than being
+                  // hidden — visible for review, but never mistakable for a real
+                  // win/loss at a glance.
+                  const isVirtual = t.source === "virtual_practice";
                   return (
                     <tr key={t.id}>
                       <td>{fmtTime(t.timestamp)}</td>
@@ -157,6 +163,10 @@ export default async function Page() {
                       <td>
                         {isTest ? (
                           <span className="badge test">Test</span>
+                        ) : isVirtual ? (
+                          <span className="badge test" title={`Virtual practice — ${t.win ? "win" : "loss"}, no real order`}>
+                            Virtual {t.win ? "Win" : "Loss"}
+                          </span>
                         ) : (
                           <span className={`badge ${t.win ? "win" : "loss"}`}>{t.win ? "Win" : "Loss"}</span>
                         )}
