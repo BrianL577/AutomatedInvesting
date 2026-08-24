@@ -187,6 +187,11 @@ class InstrumentConfig:
 
 
 @dataclass
+class VirtualAccountsConfig:
+    count: int = 10
+
+
+@dataclass
 class TopstepEvalConfig:
     account_size: float
     profit_target: float
@@ -281,6 +286,7 @@ class AppConfig:
     risk: RiskConfig
     instrument: InstrumentConfig
     topstep_eval: TopstepEvalConfig
+    virtual_accounts: VirtualAccountsConfig = field(default_factory=VirtualAccountsConfig)
     # "ibkr" (default, free paper trading), "topstepx" (TopStep's own platform —
     # what a real TopStep account actually runs on), or "tradovate" (legacy,
     # only relevant for a Tradovate account opened outside TopStep).
@@ -356,11 +362,17 @@ def load_config(path: str | Path | None = None) -> AppConfig:
 
     active_strategy, active_risk = _apply_active_strategy(raw["strategy"], raw["risk"])
 
+    virtual_accounts_raw = dict(raw.get("virtual_accounts") or {})
+    virtual_count_env = os.getenv("VIRTUAL_ACCOUNT_COUNT")
+    if virtual_count_env:
+        virtual_accounts_raw["count"] = int(virtual_count_env)
+
     return AppConfig(
         strategy=StrategyConfig(**active_strategy),
         risk=RiskConfig(**active_risk),
         instrument=InstrumentConfig(**raw["instrument"]),
         topstep_eval=TopstepEvalConfig(**raw["topstep_eval"]),
+        virtual_accounts=VirtualAccountsConfig(**virtual_accounts_raw),
         broker=os.getenv("BROKER", "ibkr").strip().lower(),
         tradovate=tradovate_creds,
         topstepx=topstepx_creds,

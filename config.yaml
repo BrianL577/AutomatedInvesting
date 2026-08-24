@@ -55,6 +55,17 @@ instrument:
   tick_size: 0.25
   tick_value: 5.0                # USD per tick, NQ
 
+virtual_accounts:
+  # "Practice mode" (scripts/run_virtual_practice.py): simulates N abstract
+  # accounts against live TopstepX market data, with no real order ever
+  # placed. Each distinct setup the strategy finds during the session is
+  # handed to the next idle virtual account instead of being cloned across
+  # all of them (unlike the real live runner's fan-out), so every account
+  # takes its own trade. One trade per account per day, same as real
+  # trading; if the session produces fewer setups than accounts, the rest
+  # simply don't trade that day.
+  count: 10
+
 topstep_eval:                    # used by the backtester AND the live TopstepEvalSimulator
   account_size: 50000
   profit_target: 3000
