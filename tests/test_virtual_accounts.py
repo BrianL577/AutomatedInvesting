@@ -207,6 +207,54 @@ def test_same_move_retrigger_is_skipped_but_genuine_extension_is_not():
     assert signal3.entry_price == 29100.0
 
 
+def test_idle_account_prioritizes_highest_balance():
+    """Per explicit user request: the next setup goes to whichever idle
+    account has the most money on it, not simply the next one in list
+    order — concentrating progress onto the account furthest along instead
+    of spreading it evenly."""
+    cfg = load_config()
+    manager = _manager(cfg, 4)
+    manager.accounts[0].net_dollars = 100.0   # Virtual-01
+    manager.accounts[1].net_dollars = 2500.0  # Virtual-02 — most money
+    manager.accounts[2].net_dollars = -300.0  # Virtual-03
+    # Virtual-04 stays at 0.0
+
+    chosen = manager._idle_account()
+    assert chosen.name == "Virtual-02"
+
+    manager.accounts[1].traded_today = True  # simulate it just got assigned
+    chosen2 = manager._idle_account()
+    assert chosen2.name == "Virtual-01", "next-highest balance among the remaining idle accounts"
+
+
+def test_net_dollars_persists_across_a_restart_and_a_new_day():
+    """net_dollars is a running lifetime total, unlike traded_today (a
+    daily flag) — it must survive both a restart AND a day rollover,
+    where traded_today correctly resets to False."""
+    cfg = load_config()
+    log_path = Path(tempfile.mkstemp(suffix=".json")[1])
+    log_path.write_text("[]")
+    state_path = Path(tempfile.mkstemp(suffix=".json")[1])
+    state_path.unlink()
+
+    manager1 = VirtualAccountManager(cfg, num_accounts=3, trade_log_path=log_path, state_path=state_path)
+    manager1.on_bar(mkbar(9, 30, 100, 100, 100, 100, day=1))  # anchors day=1
+    manager1.accounts[1].net_dollars = 1520.0
+    manager1._save_state(manager1._current_day)
+
+    # Restart on the SAME day: net_dollars restored, traded_today untouched (still False).
+    manager2 = VirtualAccountManager(cfg, num_accounts=3, trade_log_path=log_path, state_path=state_path)
+    manager2.on_bar(mkbar(9, 30, 100, 100, 100, 100, day=1))
+    assert manager2.accounts[1].net_dollars == 1520.0
+    assert manager2.accounts[1].traded_today is False
+
+    # A genuinely new day (day=2): net_dollars still carries over, traded_today stays reset.
+    manager3 = VirtualAccountManager(cfg, num_accounts=3, trade_log_path=log_path, state_path=state_path)
+    manager3.on_bar(mkbar(9, 30, 100, 100, 100, 100, day=2))
+    assert manager3.accounts[1].net_dollars == 1520.0, "lifetime balance must not reset on a new day"
+    assert manager3.accounts[1].traded_today is False
+
+
 if __name__ == "__main__":
     test_signal_assigned_to_one_idle_account()
     test_only_up_to_num_accounts_trade_per_day()
@@ -215,4 +263,6 @@ if __name__ == "__main__":
     test_chart_renderer_hook_is_called_and_passed_through()
     test_restart_mid_day_does_not_let_same_account_retrade()
     test_same_move_retrigger_is_skipped_but_genuine_extension_is_not()
+    test_idle_account_prioritizes_highest_balance()
+    test_net_dollars_persists_across_a_restart_and_a_new_day()
     print("All tests passed.")

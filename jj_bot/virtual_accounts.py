@@ -10,11 +10,14 @@ one trade.
 
 `VirtualAccountManager` keeps a single StrategyEngine scanning bars for
 setups all session long (bypassing its single-shared-account "one trade,
-then stop" gates), and hands each newly detected, distinct setup to the
-next still-idle virtual account. One trade per account per day, same rule
-as real trading. If the session produces fewer setups than accounts, the
-remaining accounts simply don't trade — no synthetic trades are invented to
-fill the count.
+then stop" gates), and hands each newly detected, distinct setup to an
+idle virtual account — the one with the most money on it, not simply the
+next one in list order (per explicit user request: concentrate fresh
+setups on whichever account is furthest along, to reach a pass fastest,
+rather than spread progress evenly). One trade per account per day, same
+rule as real trading. If the session produces fewer setups than accounts,
+the remaining accounts simply don't trade — no synthetic trades are
+invented to fill the count.
 """
 from __future__ import annotations
 
@@ -38,6 +41,11 @@ class VirtualAccount:
     name: str
     pending_signal: Optional[Signal] = None
     traded_today: bool = False
+    # Running lifetime $ P&L across every closed trade this account has
+    # ever taken — NOT reset by reset_day() (unlike traded_today, which is
+    # a daily flag). Drives the per-user-request "trade the account with
+    # the most money on it first" ordering in _idle_account().
+    net_dollars: float = 0.0
 
     def reset_day(self) -> None:
         self.pending_signal = None
@@ -94,10 +102,19 @@ class VirtualAccountManager:
         self._last_signal: Optional[Signal] = None
 
     def _idle_account(self) -> Optional[VirtualAccount]:
-        for a in self.accounts:
-            if not a.traded_today:
-                return a
-        return None
+        """Per explicit user request: assign the next setup to whichever
+        idle account currently has the MOST money on it, not simply the
+        next one in list order — concentrating fresh setups onto whichever
+        account is furthest along accelerates that account's path to
+        passing fastest, rather than spreading progress evenly across all
+        of them. Ties (including the common all-zero case before any
+        account has closed a trade) fall back to list order — max() over a
+        stable iteration returns the first maximum encountered, so
+        Virtual-01 wins ties exactly like the old simple scan did."""
+        idle = [a for a in self.accounts if not a.traded_today]
+        if not idle:
+            return None
+        return max(idle, key=lambda a: a.net_dollars)
 
     def reset_day(self) -> None:
         self.engine.reset_day()
@@ -106,16 +123,22 @@ class VirtualAccountManager:
         self._last_signal = None
 
     def _save_state(self, day: date) -> None:
+        # net_dollars is lifetime (survives day rollovers); traded_today is
+        # scoped to `date` and only meaningful when it matches. Both live in
+        # one file since they're both "state a restart shouldn't lose."
         payload = {
             "date": day.isoformat(),
-            "accounts": {a.name: a.traded_today for a in self.accounts},
+            "accounts": {
+                a.name: {"traded_today": a.traded_today, "net_dollars": a.net_dollars}
+                for a in self.accounts
+            },
         }
         tmp_path = self._state_path.with_suffix(".json.tmp")
         try:
             tmp_path.write_text(json.dumps(payload))
             tmp_path.replace(self._state_path)
         except OSError:
-            logger.exception("Failed to persist virtual-account daily state — won't survive a restart right now.")
+            logger.exception("Failed to persist virtual-account state — won't survive a restart right now.")
         finally:
             try:
                 if tmp_path.exists():
@@ -131,18 +154,26 @@ class VirtualAccountManager:
         except (OSError, json.JSONDecodeError):
             logger.exception("Failed to read persisted virtual-account state — starting the session fresh.")
             return
-        if payload.get("date") != day.isoformat():
-            return  # genuinely a new session — zeroed state is already correct
         saved_accounts = payload.get("accounts") or {}
-        restored = 0
+        same_day = payload.get("date") == day.isoformat()
+        restored_traded = 0
         for account in self.accounts:
-            if saved_accounts.get(account.name):
+            saved = saved_accounts.get(account.name)
+            if not saved:
+                continue
+            # net_dollars is a running lifetime total — always restore it,
+            # regardless of whether today is a new calendar day. Only
+            # traded_today (a daily flag) is gated on the date matching; on
+            # a genuinely new day it correctly stays at the zeroed value
+            # reset_day() already set.
+            account.net_dollars = saved.get("net_dollars", 0.0)
+            if same_day and saved.get("traded_today"):
                 account.traded_today = True
-                restored += 1
-        if restored:
+                restored_traded += 1
+        if restored_traded:
             logger.info(
                 "Restored today's virtual-account state after restart: %d/%d account(s) already traded today.",
-                restored, len(self.accounts),
+                restored_traded, len(self.accounts),
             )
 
     def on_bar(self, bar: Bar) -> Optional[tuple[VirtualAccount, Signal]]:
@@ -248,10 +279,13 @@ class VirtualAccountManager:
             except Exception:
                 logger.exception("Chart rendering failed for %s — trade still logged without a chart.", account.name)
         self.trade_logger.log_trade(result, account_name=account.name, chart_path=chart_path)
+        pnl_dollars = pnl_points * self.dollar_per_point * self.cfg.risk.contracts_per_trade
+        account.net_dollars += pnl_dollars
         logger.info(
-            "%s trade closed: %s pnl=%.2f pts ($%.2f) win=%s",
-            account.name, signal.direction.value, pnl_points,
-            pnl_points * self.dollar_per_point * self.cfg.risk.contracts_per_trade, win,
+            "%s trade closed: %s pnl=%.2f pts ($%.2f) win=%s net=$%.2f",
+            account.name, signal.direction.value, pnl_points, pnl_dollars, win, account.net_dollars,
         )
         account.pending_signal = None
+        if self._current_day is not None:
+            self._save_state(self._current_day)
         return result
