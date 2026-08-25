@@ -1,12 +1,19 @@
-# Safe, unattended self-update for the live TopstepX trading bot. Meant to
-# run once daily via Task Scheduler, well before the 9:30am ET session open,
-# and as the "at startup"/"at logon" action in place of a bare
-# run_live_loop.ps1 launch - see README.md's "Running it fully automated"
-# section.
+# Safe, unattended self-update for the live TopstepX trading bot AND the
+# virtual-practice-accounts process. Meant to run once daily via Task
+# Scheduler, well before the 9:30am ET session open, and as the "at
+# startup"/"at logon" action in place of bare run_live_loop.ps1 /
+# run_virtual_practice_loop.ps1 launches - see README.md's "Running it
+# fully automated" section.
 #
-# Flow: stop whatever's currently running -> git fetch + fast-forward-only
-# pull -> pip install -> pytest -> if tests fail, roll back to the
-# pre-pull commit -> (re)launch run_live_loop.ps1, detached.
+# Flow: stop whatever's currently running (both processes) -> git fetch +
+# fast-forward-only pull -> pip install -> pytest -> if tests fail, roll
+# back to the pre-pull commit -> (re)launch both loops, detached.
+#
+# The virtual-practice process is optional: if run_virtual_practice.py
+# isn't running when this fires (you never started it, or don't use
+# practice mode), it's simply not relaunched -- this script only restarts
+# what was already running before it started, for each of the two
+# processes independently.
 #
 # Deliberately conservative:
 #   - Never merges or force-resets onto the new code - a real merge
@@ -49,11 +56,18 @@ function Send-UpdateAlert($subject, $body) {
 
 Log "=== self_update starting ==="
 
-# --- Stop whatever's currently running (both the wrapper loop and the bot
-# itself), so the git pull / dependency install below doesn't race a live
-# process reading those same files. ---
+# --- Detect whether the virtual-practice process was running BEFORE we
+# touch anything, so we only relaunch it later if it actually was -- this
+# script must not start something that wasn't already running. ---
+$virtualWasRunning = [bool](Get-CimInstance Win32_Process -Filter "Name='python.exe' or Name='powershell.exe'" |
+    Where-Object { $_.CommandLine -match "run_virtual_practice\.py|run_virtual_practice_loop\.ps1" })
+Log "Virtual-practice process was running before this update: $virtualWasRunning"
+
+# --- Stop whatever's currently running (both wrapper loops and both
+# processes), so the git pull / dependency install below doesn't race a
+# live process reading those same files. ---
 Get-CimInstance Win32_Process -Filter "Name='python.exe' or Name='powershell.exe'" |
-    Where-Object { $_.CommandLine -match "run_live\.py|run_live_loop\.ps1" } |
+    Where-Object { $_.CommandLine -match "run_live\.py|run_live_loop\.ps1|run_virtual_practice\.py|run_virtual_practice_loop\.ps1" } |
     ForEach-Object {
         Log "Stopping PID $($_.ProcessId): $($_.CommandLine)"
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
@@ -89,11 +103,20 @@ if ($pullOk -and $newCommit -ne $oldCommit) {
     Log "Already up to date at $oldCommit - no code changes, restarting as-is."
 }
 
-# --- Relaunch, detached, so this scheduled task can exit while the bot
-# keeps running under run_live_loop.ps1's own crash-restart loop. ---
+# --- Relaunch, detached, so this scheduled task can exit while the bot(s)
+# keep running under their own crash-restart loops. ---
 Log "Relaunching run_live_loop.ps1..."
 Start-Process -FilePath "powershell.exe" `
     -ArgumentList "-ExecutionPolicy", "Bypass", "-File", "scripts\run_live_loop.ps1" `
     -WorkingDirectory $RepoRoot -WindowStyle Hidden
+
+if ($virtualWasRunning) {
+    Log "Relaunching run_virtual_practice_loop.ps1 (it was running before this update)..."
+    Start-Process -FilePath "powershell.exe" `
+        -ArgumentList "-ExecutionPolicy", "Bypass", "-File", "scripts\run_virtual_practice_loop.ps1" `
+        -WorkingDirectory $RepoRoot -WindowStyle Hidden
+} else {
+    Log "Virtual-practice process was not running before this update -- not starting it."
+}
 
 Log "=== self_update finished ==="

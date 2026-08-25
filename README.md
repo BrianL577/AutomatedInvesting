@@ -204,13 +204,18 @@ ephemeral container. `RAILWAY.md` walks through standing this up properly.
 TopstepX must run on your own local, actively-monitored machine (TopStep
 bans VPS/cloud execution — see above), so code updates can't just be a
 Railway redeploy. `scripts/self_update.ps1` closes that gap: stop the
-running bot, `git fetch` + fast-forward-only pull `main`, `pip install`,
-run the test suite, and only restart on the new code if tests pass —
-otherwise it rolls back to the last known-good commit and restarts on that
-instead. It never merges or force-resets (a real conflict needs a human),
-and it emails an alert (reusing the `SMTP_USER`/`SMTP_PASSWORD` crash-alert
+running bot (and `scripts/run_virtual_practice.py`, if that's running
+too), `git fetch` + fast-forward-only pull `main`, `pip install`, run the
+test suite, and only restart on the new code if tests pass — otherwise it
+rolls back to the last known-good commit and restarts on that instead. It
+never merges or force-resets (a real conflict needs a human), and it
+emails an alert (reusing the `SMTP_USER`/`SMTP_PASSWORD` crash-alert
 config below) if a pull fails or a rollback happens, so a failing
 auto-update doesn't go unnoticed.
+
+The virtual-practice process is optional and only restarted if it was
+already running before the update started — this script never starts it
+on its own if you haven't.
 
 Set it up once via Task Scheduler:
 
