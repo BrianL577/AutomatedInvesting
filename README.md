@@ -160,11 +160,18 @@ time as `scripts/run_live.py` on the same machine, no extra setup.
 
 Instead of fanning one shared signal out to every account (what
 `run_live.py` does), it keeps scanning the session for new, distinct
-setups and hands each one to the next of the N abstract "Virtual-01"..
-"Virtual-N" accounts that hasn't traded yet today — one trade per account
-per day, same rule as real trading. If the session produces fewer setups
-than accounts, the rest simply sit out that day; nothing is invented to
-fill the count. Trades log to the dashboard with `source: "virtual_practice"`,
+setups and hands each one to an idle N abstract "Virtual-01".."Virtual-N"
+account that hasn't traded yet today — one trade per account per day, same
+rule as real trading. A same-direction setup only counts as genuinely new
+if it's extended at least one full stop's worth beyond the last one
+assigned (otherwise it's the same continuing move re-triggering off a
+rolling structure reference, not a fresh break — see `virtual_accounts.py`).
+Which idle account gets the setup is prioritized by running lifetime
+$ balance, highest first — concentrating progress onto whichever account is
+furthest along reaches a pass fastest, rather than spreading trades evenly
+across all N. If the session produces fewer setups than accounts, the rest
+simply sit out that day; nothing is invented to fill the count. Trades log
+to the dashboard with `source: "virtual_practice"`,
 excluded from the real P&L/win-rate stats, with their own candlestick
 charts saved to `trade_charts_virtual/`. Number of accounts defaults to
 `virtual_accounts.count` in `config.yaml` (or the `VIRTUAL_ACCOUNT_COUNT`
