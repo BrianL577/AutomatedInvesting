@@ -8,7 +8,7 @@ import pytz
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jj_bot.config import load_config
-from jj_bot.models import Bar, Direction
+from jj_bot.models import Bar, Direction, Phase, SetupGrade, Signal
 from jj_bot.virtual_accounts import VirtualAccountManager
 
 ET = pytz.timezone("America/New_York")
@@ -158,6 +158,55 @@ def test_restart_mid_day_does_not_let_same_account_retrade():
     assert manager2._idle_account().name == "Virtual-02", "restart would let Virtual-01 be picked again"
 
 
+def _canned_signal(hh, mm, direction, entry_price, stop_offset=25.0, target_offset=38.0):
+    ts = mkbar(hh, mm, 1, 1, 1, 1).timestamp
+    if direction == Direction.SHORT:
+        stop, target = entry_price + stop_offset, entry_price - target_offset
+    else:
+        stop, target = entry_price - stop_offset, entry_price + target_offset
+    return Signal(
+        timestamp=ts, direction=direction, entry_price=entry_price, stop_price=stop, target_price=target,
+        phase=Phase.CONTINUATION, grade=SetupGrade.A, reason="test",
+    )
+
+
+def test_same_move_retrigger_is_skipped_but_genuine_extension_is_not():
+    """CONFIRMED LIVE: virtual accounts were entering ~1 bar apart, chasing
+    one continuing move instead of taking genuinely distinct setups --
+    _nearest_structure's rolling-extreme fallback trivially re-breaks on
+    the very next bar during any trend, which the real bot never exposes
+    (it stops looking after its one trade/day). Mocking the engine's raw
+    signal output isolates the gate itself from needing to hand-craft two
+    real, independently-valid structural breaks."""
+    cfg = load_config()
+    manager = _manager(cfg, 5)
+    day = mkbar(9, 30, 1, 1, 1, 1).timestamp.date()
+    manager._current_day = day
+    manager._is_first_day_check = False
+
+    manager.engine.on_bar = lambda bar: _canned_signal(9, 31, Direction.SHORT, 29150.0)
+    result1 = manager.on_bar(mkbar(9, 31, 1, 1, 1, 1))
+    assert result1 is not None
+    account1, signal1 = result1
+    assert account1.name == "Virtual-01"
+
+    # Same direction, only 10pts further than the last assigned entry
+    # (< stop_points, 25 by default) -- the same continuing move, not a
+    # fresh setup. Must be skipped, not handed to Virtual-02.
+    manager.engine.on_bar = lambda bar: _canned_signal(9, 32, Direction.SHORT, 29140.0)
+    result2 = manager.on_bar(mkbar(9, 32, 1, 1, 1, 1))
+    assert result2 is None, "same-move retrigger should have been skipped"
+
+    # Same direction, genuinely extended >= stop_points beyond the last
+    # assigned entry -- real fresh continuation, must be accepted.
+    manager.engine.on_bar = lambda bar: _canned_signal(9, 33, Direction.SHORT, 29100.0)
+    result3 = manager.on_bar(mkbar(9, 33, 1, 1, 1, 1))
+    assert result3 is not None
+    account3, signal3 = result3
+    assert account3.name == "Virtual-02", "genuine extension should reach the next idle account"
+    assert signal3.entry_price == 29100.0
+
+
 if __name__ == "__main__":
     test_signal_assigned_to_one_idle_account()
     test_only_up_to_num_accounts_trade_per_day()
@@ -165,4 +214,5 @@ if __name__ == "__main__":
     test_check_exits_resolves_target_hit()
     test_chart_renderer_hook_is_called_and_passed_through()
     test_restart_mid_day_does_not_let_same_account_retrade()
+    test_same_move_retrigger_is_skipped_but_genuine_extension_is_not()
     print("All tests passed.")

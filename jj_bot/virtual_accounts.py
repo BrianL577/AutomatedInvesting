@@ -75,6 +75,23 @@ class VirtualAccountManager:
         # exactly what that looks like: each restart's first bar treated
         # the already-in-progress calendar day as brand new.
         self._state_path = Path(state_path) if state_path else Path("virtual_daily_state.json")
+        # CONFIRMED: without this, virtual accounts weren't taking 10
+        # independent setups — they were chasing the SAME continuing move.
+        # _nearest_structure() (strategy.py) needs a *confirmed* pivot to
+        # track a meaningful swing level; that requires swing_strength bars
+        # of pullback on both sides, which never happens during a fast,
+        # one-directional move. Without one it falls back to "the lowest/
+        # highest recent bar", which during a trend is essentially the
+        # PREVIOUS bar's own extreme — trivially "broken" again on the very
+        # next bar if price keeps extending. The real bot never hits this
+        # because position_open=True stops it looking again after one
+        # trade/day; this manager's "keep scanning" design is what exposes
+        # it. Gate: a same-direction signal only counts as a genuinely new
+        # setup if it's extended at least one full stop's worth beyond the
+        # last one actually assigned — otherwise it's almost certainly the
+        # same move re-triggering off that rolling reference, not a fresh
+        # structural break, so skip it and let the next bar re-check.
+        self._last_signal: Optional[Signal] = None
 
     def _idle_account(self) -> Optional[VirtualAccount]:
         for a in self.accounts:
@@ -86,6 +103,7 @@ class VirtualAccountManager:
         self.engine.reset_day()
         for a in self.accounts:
             a.reset_day()
+        self._last_signal = None
 
     def _save_state(self, day: date) -> None:
         payload = {
@@ -160,11 +178,27 @@ class VirtualAccountManager:
         if signal is None:
             return None
 
+        if self._last_signal is not None and signal.direction == self._last_signal.direction:
+            extension = abs(signal.entry_price - self._last_signal.entry_price)
+            if extension < self.cfg.risk.stop_points:
+                # Same direction, barely moved since the last setup we
+                # actually assigned — almost certainly the same continuing
+                # move re-triggering off _nearest_structure's rolling-extreme
+                # fallback, not a fresh structural break. Not a new setup;
+                # let the next bar re-check instead of handing this out.
+                logger.info(
+                    "Skipping signal %.2f pts from last assigned entry %.2f (< %.2f stop_points) "
+                    "— same move, not a genuinely new setup.",
+                    extension, self._last_signal.entry_price, self.cfg.risk.stop_points,
+                )
+                return None
+
         account = self._idle_account()
         if account is None:
             return None
         account.pending_signal = signal
         account.traded_today = True
+        self._last_signal = signal
         if self._current_day is not None:
             self._save_state(self._current_day)
         logger.info(
