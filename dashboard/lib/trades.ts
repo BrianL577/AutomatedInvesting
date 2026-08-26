@@ -233,11 +233,20 @@ export function simulateAccounts(trades: Trade[]): AccountSim[] {
         if (!funded && balance >= effectiveProfitTarget) {
           funded = true;
           fundedPasses += 1;
+          // CONFIRMED via TopStep's own support: the funded (Express
+          // Funded) account starts at $0 balance -- eval/Combine profit
+          // does NOT carry over, only the pass itself does. Account size
+          // (buying power) stays the same; balance and the trailing
+          // drawdown floor both reset here exactly like a fresh eval
+          // attempt does above, not just at an actual payout.
+          balance = 0;
+          highWater = 0;
+          floor = -EVAL_SIM.TRAILING_DRAWDOWN;
           winningDaysSincePayout = 0;
           profitSincePayout = 0;
           daysSincePayout = 0;
           bestDaySincePayout = -Infinity;
-          balanceAtLastPayout = balance;
+          balanceAtLastPayout = 0;
         }
         if (funded) {
           profitSincePayout += dayPnl;

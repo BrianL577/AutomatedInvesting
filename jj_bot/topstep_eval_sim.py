@@ -192,18 +192,27 @@ class TopstepEvalSimulator:
             self.funded = True
             self.funded_count += 1
             self.fees_paid += self._current_activation_fee
+            # CONFIRMED via TopStep's own support: the funded (Express
+            # Funded) account starts at $0 balance -- eval/Combine profit
+            # does NOT carry over, only the pass itself does. Account size
+            # (buying power) is unchanged; balance and the trailing
+            # drawdown floor both reset here exactly like _start_new_attempt
+            # does above, not just at an actual payout.
+            self.balance = self.cfg.account_size
+            self.high_water = self.balance
+            self.floor = self.balance - self.cfg.trailing_max_drawdown
             self.winning_days_since_payout = 0
             self.profit_since_payout = 0.0
             self.days_since_payout = 0
             self.best_day_since_payout = float("-inf")
-            # Confirmed directly: a payout removes the requested amount
-            # from balance; the NEXT payout requires balance to climb back
-            # ABOVE this reference, not merely back to it. Starts at the
-            # funding balance itself.
+            # A payout removes the requested amount from balance; the NEXT
+            # payout requires balance to climb back ABOVE this reference,
+            # not merely back to it. Starts at the (now-reset) funding
+            # balance itself.
             self._balance_at_last_payout = self.balance
             logger.info(
-                "%s FUNDED! (attempt #%d, cleared $%.2f target) Total fees paid so far: $%.2f",
-                self._tag(), self.attempts_bought, self.effective_profit_target, self.fees_paid,
+                "%s FUNDED! (attempt #%d, cleared $%.2f target) Balance reset to $%.2f. Total fees paid so far: $%.2f",
+                self._tag(), self.attempts_bought, self.effective_profit_target, self.balance, self.fees_paid,
             )
 
         if self.funded:
