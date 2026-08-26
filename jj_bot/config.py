@@ -165,18 +165,28 @@ class RiskConfig:
     daily_profit_cap: float = 1520.0
     daily_loss_cap: float = 1000.0
     # Global, always-applied on top of whichever saved strategy is active
-    # (not part of the Strategy Creator's per-strategy field set) — once the
-    # REAL live account balance is within one static-size trade of clearing
-    # the eval's profit target, shrink the next trade's stop/target down to
-    # exactly what's needed to pass, keeping the same reward:risk ratio as
-    # the static trade. Never grows a trade bigger than the normal static
-    # size — only ever shrinks it. Off by default so this never silently
-    # changes behavior for an account that hasn't explicitly opted in.
+    # (not part of the Strategy Creator's per-strategy field set). Two
+    # balance-based behaviors, both gated by this one flag:
+    #   1. Approaching the eval target: once the REAL live account balance
+    #      is within one static-size trade of clearing the eval's profit
+    #      target, shrink the next trade's stop/target down to exactly
+    #      what's needed to pass, keeping the same reward:risk ratio as the
+    #      static trade — only ever shrinks it, per-trade risk goes down.
+    #   2. Funded (balance at/past the pass line, per explicit user
+    #      request): keep the normal stop, but aim for funded_target_dollars
+    #      instead of the static target_points — grows the target, not the
+    #      risk.
+    # Off by default so this never silently changes behavior for an account
+    # that hasn't explicitly opted in. See live_runner_topstepx.py's
+    # _scaled_stop_target for exact mechanics.
     eval_scale_down_enabled: bool = False
     # Floor below which shrinking stops being worth the added complexity/
     # fee-drag risk — if less than this much is needed to pass, just take
     # the normal full-size trade instead of a near-zero one.
     eval_scale_min_target_dollars: float = 200.0
+    # Funded-stage target (see eval_scale_down_enabled #2 above) — same
+    # stop as a normal trade, bigger target once already funded.
+    funded_target_dollars: float = 4000.0
 
 
 @dataclass

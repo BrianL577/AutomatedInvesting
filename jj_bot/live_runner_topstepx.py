@@ -688,15 +688,28 @@ class TopstepXLiveRunner:
         fresh right now, not a cached/simulated approximation) is within one
         normal-size trade of clearing the eval's profit_target, shrinks the
         stop/target down to exactly what's needed to pass — same
-        reward:risk ratio as the static trade, just smaller. Only ever
-        shrinks; never returns a bigger trade than the static configured
-        size. Falls back to the normal static stop/target (from `signal`,
-        already built from risk_cfg.stop_points/target_points) on ANY
-        uncertainty — a failed balance lookup, an already-funded/way-off
-        balance, or a remaining gap too small to bother with
-        (eval_scale_min_target_dollars) all resolve to "just take the
-        normal trade", never to guessing a bigger or smaller size than
-        intended."""
+        reward:risk ratio as the static trade, just smaller. Falls back to
+        the normal static stop/target (from `signal`, already built from
+        risk_cfg.stop_points/target_points) on ANY uncertainty — a failed
+        balance lookup, an account not found, or a remaining gap too small
+        to bother with (eval_scale_min_target_dollars) all resolve to "just
+        take the normal trade", never to guessing a smaller size than
+        intended.
+
+        Per explicit user request, ALSO covers the funded stage: once
+        balance is at/past the pass line, keep the normal stop but aim for
+        a bigger target (RiskConfig.funded_target_dollars, e.g. risk $1,000
+        to make $4,000 instead of the static $1,520). TopStep's public API
+        has no "is this account funded" endpoint (confirmed elsewhere in
+        this codebase — only Account/Market Data/Orders/Positions/Trades
+        are exposed), so "balance >= pass_line" is used as a proxy for
+        funded status here, same limitation the eval-simulator's own
+        balance-based modeling already has. This can misfire if the account
+        was funded on a prior day and balance has since dipped back below
+        the pass line (e.g. after a loss) while TopStep's own records still
+        show it as funded — in that case this falls back to a normal-size
+        trade instead of the funded-size one, which is the safe direction
+        to be wrong in."""
         if not self.cfg.risk.eval_scale_down_enabled:
             return signal.stop_price, signal.target_price
 
@@ -718,10 +731,28 @@ class TopstepXLiveRunner:
         pass_line = self.cfg.topstep_eval.account_size + self.cfg.topstep_eval.profit_target
         remaining = pass_line - live.balance
 
-        if remaining <= 0 or remaining >= normal_target_dollars:
-            # Already at/past target (or an unexpectedly-funded/rebilled
-            # balance), or the normal trade wouldn't even reach the gap
-            # anyway — either way, no reason to shrink.
+        if remaining <= 0:
+            # At/past the pass line -- funded, by the balance-based proxy
+            # this whole function already relies on. Same stop, bigger
+            # target: risk the normal amount to aim for
+            # funded_target_dollars instead of the static target.
+            funded_target_points = self.cfg.risk.funded_target_dollars / dollar_per_point
+            tick = self.cfg.instrument.tick_size
+            funded_target_points = max(tick, round(funded_target_points / tick) * tick)
+            if signal.direction == Direction.LONG:
+                target_price = signal.entry_price + funded_target_points
+            else:
+                target_price = signal.entry_price - funded_target_points
+            logger.info(
+                "Funded-stage sizing on %s: live balance $%.2f >= pass line $%.2f — "
+                "risking normal stop=%.2f for target=%.2f (%.2fpts, $%.2f).",
+                account.name, live.balance, pass_line, signal.stop_price, target_price,
+                funded_target_points, self.cfg.risk.funded_target_dollars,
+            )
+            return signal.stop_price, target_price
+        if remaining >= normal_target_dollars:
+            # The normal trade wouldn't even reach the gap anyway -- no
+            # reason to shrink.
             return signal.stop_price, signal.target_price
         if remaining < self.cfg.risk.eval_scale_min_target_dollars:
             logger.info(
