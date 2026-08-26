@@ -6,6 +6,23 @@ ever connecting one for real money.
 Mirrors dashboard/lib/backtester.ts's walkAccountEconomics() rule-for-rule.
 Keep both in sync if Topstep changes its rules — see config.yaml for where
 these numbers came from and what's still unconfirmed.
+
+DEAD CODE (as of 2026-08-26): TopstepEvalSimulator is not imported or
+instantiated anywhere outside tests/test_topstep_eval_sim.py. Nothing in
+live_runner_topstepx.py, run_virtual_practice.py, or api_server.py calls
+record_day() on it. The logic here is correct and tested, but it has zero
+effect on the running bot or dashboard right now — the dashboard's own
+Eval Simulator (dashboard/lib/trades.ts's simulateAccounts()) is the live,
+user-visible equivalent of this module.
+
+Intended use (never wired in): instantiate one of these per real/virtual
+account inside the live runner, call record_day(daily_pnl) at end-of-day,
+so jj_bot.log gets a live eval/funded/payout narration alongside the real
+trades. Left unwired deliberately — do NOT delete this file or "clean it
+up" without checking with the user first, and do NOT wire it into
+live_runner_topstepx.py (the real-money order-placing path) without
+explicit user sign-off, since that adds new code to the one process where
+bugs cost real money.
 """
 from __future__ import annotations
 

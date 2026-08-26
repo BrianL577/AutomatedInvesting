@@ -1,3 +1,7 @@
+# NOTE: jj_bot/topstep_eval_sim.py is DEAD CODE — TopstepEvalSimulator is not
+# wired into the live bot anywhere (see the module's own docstring). These
+# tests keep the module correct for whenever it does get wired in, but its
+# logic currently has no effect on the running bot or dashboard.
 import sys
 from pathlib import Path
 
