@@ -591,13 +591,28 @@ class TopstepXLiveRunner:
             if signal is not None and realized_pnl is not None:
                 pnl_points = realized_pnl / (self.dollar_per_point * self.cfg.risk.contracts_per_trade)
                 win = realized_pnl > 0
-                # Use the ACTUAL prices sent to the broker, not the
-                # signal's original ones — eval scale-down can shrink these
-                # for a given account, and falling back to signal.stop_price/
-                # target_price here would silently misreport the trade.
+                # CONFIRMED: exit_price was previously ASSUMED to be exactly
+                # the placed stop/target level, computed completely
+                # independently of pnl_points (which comes from TopStep's
+                # own real trade/fill data — always accurate). Whenever the
+                # real fill differed even slightly from that assumed level
+                # (slippage, tick rounding, fees baked into TopStep's
+                # reported P&L), entry_price/exit_price/pnl_points stopped
+                # being internally consistent — e.g. a displayed Entry/Exit
+                # implying -25.00pts next to a displayed P&L of -19.75pts.
+                # Deriving exit_price FROM the real, ground-truth pnl_points
+                # instead guarantees the three displayed numbers always
+                # agree with each other.
+                exit_price = (
+                    signal.entry_price + pnl_points if signal.direction == Direction.LONG
+                    else signal.entry_price - pnl_points
+                )
+                # Still needed for the chart's dashed stop/target lines,
+                # which should show the ACTUAL levels sent to the broker
+                # (eval scale-down can shrink these) — just no longer used
+                # for exit_price itself.
                 target_price = state.placed_target_price if state.placed_target_price is not None else signal.target_price
                 stop_price = state.placed_stop_price if state.placed_stop_price is not None else signal.stop_price
-                exit_price = target_price if win else stop_price
                 result = TradeResult(
                     signal=signal, exit_price=exit_price, exit_timestamp=datetime.now(),
                     win=win, pnl_points=pnl_points, qty=self.cfg.risk.contracts_per_trade,
