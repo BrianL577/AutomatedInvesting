@@ -59,13 +59,16 @@ class TradeLogger:
         tmp_path.write_text(json.dumps(trades, indent=2, default=str))
         tmp_path.replace(self.path)
 
-    def _ensure_chart_bucket(self) -> None:
+    def _ensure_chart_bucket(self) -> Optional[str]:
         """Best-effort, idempotent: creates the public storage bucket the
         trade charts get uploaded to if it doesn't already exist. Runs at
-        most once per process. Never raises — a failure here just means
-        chart uploads fail too (still not fatal, see _upload_chart)."""
+        most once per process. Never raises — returns an error string
+        instead (surfaced up to _upload_chart, and from there into the
+        trade record's chart_upload_error field) so a failure here is
+        diagnosable remotely via the dashboard/Supabase, not just a log
+        line on whatever machine happens to be running the bot."""
         if self._chart_bucket_ready:
-            return
+            return None
         self._chart_bucket_ready = True  # only ever try once per process
         try:
             resp = requests.post(
@@ -80,22 +83,31 @@ class TradeLogger:
             )
             # 200 = created, 400 = "Bucket already exists" on every run after
             # the first — both are the desired end state, so only genuinely
-            # unexpected statuses get logged.
+            # unexpected statuses count as an error.
             if resp.status_code not in (200, 400):
+                err = f"bucket create: HTTP {resp.status_code} {resp.text[:200]}"
                 logger.warning("Unexpected status creating chart bucket: %s %s", resp.status_code, resp.text)
+                return err
+            return None
         except Exception as exc:
             logger.warning("Could not ensure chart storage bucket exists: %s", exc)
+            return f"bucket create: {exc}"
 
-    def _upload_chart(self, chart_path: str) -> Optional[str]:
-        """Uploads the local chart PNG to Supabase Storage and returns its
-        public URL, or None if anything about that fails — chart upload
-        failures must never block logging the trade itself (the same
-        contract render_trade_chart already follows for rendering)."""
+    def _upload_chart(self, chart_path: str) -> tuple[Optional[str], Optional[str]]:
+        """Uploads the local chart PNG to Supabase Storage. Returns
+        (public_url, error) — exactly one is non-None. A failure here must
+        never block logging the trade itself (the same contract
+        render_trade_chart already follows for rendering); the error string
+        is stored on the trade record instead of only a local log line, so
+        it's diagnosable remotely without needing access to the machine
+        that's actually running the bot."""
         try:
             local_path = Path(chart_path)
             if not local_path.exists():
-                return None
-            self._ensure_chart_bucket()
+                return None, f"local file not found: {chart_path}"
+            bucket_err = self._ensure_chart_bucket()
+            if bucket_err:
+                return None, bucket_err
             image_bytes = local_path.read_bytes()
             resp = requests.post(
                 f"{self.supabase_url}/storage/v1/object/{CHART_BUCKET}/{local_path.name}",
@@ -109,16 +121,17 @@ class TradeLogger:
                 timeout=20,
             )
             resp.raise_for_status()
-            return f"{self.supabase_url}/storage/v1/object/public/{CHART_BUCKET}/{local_path.name}"
+            return f"{self.supabase_url}/storage/v1/object/public/{CHART_BUCKET}/{local_path.name}", None
         except Exception as exc:
             logger.warning("Failed to upload trade chart to Supabase Storage: %s", exc)
-            return None
+            return None, f"upload: {exc}"
 
     def log_trade(self, trade: TradeResult, account_name: Optional[str] = None, chart_path: Optional[str] = None) -> None:
         pnl_dollars = round(trade.pnl_points * self.dollar_per_point * trade.qty, 2)
         chart_url = None
+        chart_upload_error = None
         if chart_path and self.supabase_url and self.supabase_key:
-            chart_url = self._upload_chart(chart_path)
+            chart_url, chart_upload_error = self._upload_chart(chart_path)
         record = {
             "timestamp": trade.signal.timestamp.isoformat(),
             "exit_timestamp": trade.exit_timestamp.isoformat(),
@@ -146,6 +159,11 @@ class TradeLogger:
             # configured, there was no chart to upload, or the upload
             # failed (also never blocks logging the trade itself).
             "chart_url": chart_url,
+            # Why the upload above didn't produce a chart_url, if it didn't
+            # — diagnosable remotely via SQL without needing access to
+            # whatever machine is actually running the bot. Null whenever
+            # chart_url IS set, or when there was never a chart to upload.
+            "chart_upload_error": chart_upload_error,
         }
 
         # CRITICAL: this is called from _on_fill() on the fills-tailing
