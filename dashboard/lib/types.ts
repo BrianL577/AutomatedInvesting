@@ -27,4 +27,8 @@ export type Trade = {
   // before this was wired up, or when the Storage upload failed (chart
   // rendering/upload failures never block logging the trade itself).
   chart_url?: string | null;
+  // Why chart_url is null when a chart WAS expected -- see
+  // jj_bot/trade_logger.py's _upload_chart. Debugging aid only, not shown
+  // in the normal UI.
+  chart_upload_error?: string | null;
 };

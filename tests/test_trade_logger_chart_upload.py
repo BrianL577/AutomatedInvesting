@@ -44,6 +44,7 @@ def test_chart_uploaded_and_public_url_stored_when_supabase_configured(tmp_path,
     assert records[0]["chart_url"] == (
         "https://example.supabase.co/storage/v1/object/public/trade-charts/Virtual-01_20260826_093100_WIN.png"
     )
+    assert records[0]["chart_upload_error"] is None
 
 
 def test_no_chart_url_when_supabase_not_configured(tmp_path, monkeypatch):
@@ -72,6 +73,29 @@ def test_upload_failure_does_not_block_trade_logging(tmp_path, monkeypatch):
     records = json.loads(logger.path.read_text())
     assert len(records) == 1
     assert records[0]["chart_url"] is None
+    assert "network error" in records[0]["chart_upload_error"]
+
+
+def test_bucket_creation_failure_is_captured_in_chart_upload_error(tmp_path, monkeypatch):
+    """CONFIRMED LIVE: chart_url stayed null on every trade after the
+    upload code deployed, with storage.buckets showing zero rows -- bucket
+    creation itself was failing, silently, with nothing queryable to show
+    why. chart_upload_error exists specifically so the exact failure reason
+    is visible via SQL without needing access to the machine running the
+    bot."""
+    logger = _logger(tmp_path, monkeypatch)
+    chart_path = tmp_path / "chart.png"
+    chart_path.write_bytes(b"fake png bytes")
+
+    with patch("jj_bot.trade_logger.requests.post") as mock_post:
+        mock_post.return_value = MagicMock(status_code=403, text="permission denied")
+        logger.log_trade(_trade_result(), account_name="Virtual-01", chart_path=str(chart_path))
+
+    import json
+    records = json.loads(logger.path.read_text())
+    assert records[0]["chart_url"] is None
+    assert "bucket create" in records[0]["chart_upload_error"]
+    assert "403" in records[0]["chart_upload_error"]
 
 
 def test_no_chart_path_means_no_upload_attempted(tmp_path, monkeypatch):
