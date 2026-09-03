@@ -1,5 +1,6 @@
 import { loadTrades } from "../../lib/trades";
 import Reveal from "../../components/Reveal";
+import TradeTable from "../../components/TradeTable";
 import type { Trade } from "../../lib/types";
 
 export const dynamic = "force-dynamic";
@@ -7,17 +8,6 @@ export const dynamic = "force-dynamic";
 function fmtMoney(n: number): string {
   const sign = n < 0 ? "-" : "";
   return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-function fmtTime(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "America/New_York",
-  });
 }
 
 type AccountSummary = {
@@ -142,52 +132,11 @@ export default async function VirtualPracticePage() {
       </Reveal>
 
       <Reveal delayMs={100}>
-        <div className="table-wrap">
-          {trades.length === 0 ? (
-            <div className="empty-state">No virtual practice trades logged yet.</div>
-          ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Entry Time (ET)</th>
-                  <th>Account</th>
-                  <th>Phase</th>
-                  <th>Direction</th>
-                  <th>Grade</th>
-                  <th>Entry</th>
-                  <th>Exit</th>
-                  <th>Result</th>
-                  <th>P&amp;L (pts)</th>
-                  <th>P&amp;L ($)</th>
-                  <th>Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...trades].reverse().map((t) => (
-                  <tr key={t.id}>
-                    <td>{fmtTime(t.timestamp)}</td>
-                    <td>{t.account_name || "—"}</td>
-                    <td>{t.phase}</td>
-                    <td>
-                      <span className={`badge ${t.direction}`}>{t.direction}</span>
-                    </td>
-                    <td>{t.grade}</td>
-                    <td>{t.entry_price.toFixed(2)}</td>
-                    <td>{t.exit_price.toFixed(2)}</td>
-                    <td>
-                      <span className={`badge ${t.win ? "win" : "loss"}`}>{t.win ? "Win" : "Loss"}</span>
-                    </td>
-                    <td className={t.pnl_points >= 0 ? "positive" : "negative"}>{t.pnl_points.toFixed(2)}</td>
-                    <td className={t.pnl_dollars >= 0 ? "positive" : "negative"}>{fmtMoney(t.pnl_dollars)}</td>
-                    <td className="reason-cell" title={t.reason}>
-                      {t.reason}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+        {trades.length === 0 ? (
+          <div className="empty-state">No virtual practice trades logged yet.</div>
+        ) : (
+          <TradeTable trades={trades} />
+        )}
       </Reveal>
     </div>
   );

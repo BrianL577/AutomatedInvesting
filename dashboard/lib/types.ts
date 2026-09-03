@@ -18,7 +18,13 @@ export type Trade = {
   logged_at: string;
   // Local filesystem path (on the machine running the bot) to the
   // candlestick screenshot saved for this trade — see
-  // jj_bot/trade_chart.py. Not a URL; the dashboard can't render it
-  // directly yet since these files never leave the trading machine.
+  // jj_bot/trade_chart.py. Not a URL; kept only as a debugging breadcrumb
+  // since these files never leave the trading machine. Use chart_url below
+  // to actually display the chart.
   chart_path?: string | null;
+  // Publicly-fetchable URL (Supabase Storage "trade-charts" bucket) for the
+  // same chart — this IS renderable by the dashboard. Null for trades from
+  // before this was wired up, or when the Storage upload failed (chart
+  // rendering/upload failures never block logging the trade itself).
+  chart_url?: string | null;
 };

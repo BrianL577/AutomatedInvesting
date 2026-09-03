@@ -207,24 +207,39 @@ def test_same_move_retrigger_is_skipped_but_genuine_extension_is_not():
     assert signal3.entry_price == 29100.0
 
 
-def test_idle_account_prioritizes_highest_balance():
-    """Per explicit user request: the next setup goes to whichever idle
-    account has the most money on it, not simply the next one in list
-    order — concentrating progress onto the account furthest along instead
-    of spreading it evenly."""
+def test_idle_account_prioritizes_untraded_then_highest_then_lowest():
+    """CONFIRMED LIVE BUG: a plain "highest balance wins" scan starves any
+    account still sitting at its untouched $0 starting balance -- $0 always
+    loses to any account that has ever posted even a small win, so only a
+    handful of early winners ever traded, and the rest only got a look-in
+    once every winner had gone net-negative. Priority must be: untraded
+    ($0) accounts first, then highest balance among the rest, then lowest
+    (most negative) last."""
     cfg = load_config()
-    manager = _manager(cfg, 4)
-    manager.accounts[0].net_dollars = 100.0   # Virtual-01
-    manager.accounts[1].net_dollars = 2500.0  # Virtual-02 — most money
-    manager.accounts[2].net_dollars = -300.0  # Virtual-03
-    # Virtual-04 stays at 0.0
+    manager = _manager(cfg, 5)
+    manager.accounts[0].net_dollars = 100.0   # Virtual-01 -- has traded, small win
+    manager.accounts[1].net_dollars = 2500.0  # Virtual-02 -- has traded, biggest win
+    manager.accounts[2].net_dollars = -300.0  # Virtual-03 -- has traded, net loss
+    # Virtual-04, Virtual-05 stay at 0.0 -- never traded yet
 
     chosen = manager._idle_account()
-    assert chosen.name == "Virtual-02"
+    assert chosen.name == "Virtual-04", "an untouched $0 account must win over any account with a balance"
 
-    manager.accounts[1].traded_today = True  # simulate it just got assigned
+    manager.accounts[3].traded_today = True  # simulate Virtual-04 just got assigned
     chosen2 = manager._idle_account()
-    assert chosen2.name == "Virtual-01", "next-highest balance among the remaining idle accounts"
+    assert chosen2.name == "Virtual-05", "the other untouched $0 account is still next, ahead of any balance"
+
+    manager.accounts[4].traded_today = True  # simulate Virtual-05 just got assigned
+    chosen3 = manager._idle_account()
+    assert chosen3.name == "Virtual-02", "once no $0 accounts remain, highest balance wins"
+
+    manager.accounts[1].traded_today = True  # simulate Virtual-02 just got assigned
+    chosen4 = manager._idle_account()
+    assert chosen4.name == "Virtual-01", "next-highest balance among the remaining idle accounts"
+
+    manager.accounts[0].traded_today = True  # simulate Virtual-01 just got assigned
+    chosen5 = manager._idle_account()
+    assert chosen5.name == "Virtual-03", "the only account left is negative -- it still gets picked, last"
 
 
 def test_net_dollars_persists_across_a_restart_and_a_new_day():
@@ -263,6 +278,6 @@ if __name__ == "__main__":
     test_chart_renderer_hook_is_called_and_passed_through()
     test_restart_mid_day_does_not_let_same_account_retrade()
     test_same_move_retrigger_is_skipped_but_genuine_extension_is_not()
-    test_idle_account_prioritizes_highest_balance()
+    test_idle_account_prioritizes_untraded_then_highest_then_lowest()
     test_net_dollars_persists_across_a_restart_and_a_new_day()
     print("All tests passed.")
