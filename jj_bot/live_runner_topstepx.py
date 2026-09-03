@@ -26,6 +26,7 @@ from typing import Optional
 import requests
 
 from .bar_aggregator import BarAggregator
+from .bar_logger import BarLogger
 from .config import AppConfig, fetch_saved_account_names
 from .models import Direction, Signal, TradeResult
 from .strategy import StrategyEngine
@@ -142,6 +143,7 @@ class TopstepXLiveRunner:
         self.aggregator = BarAggregator(tz_name=cfg.strategy.timezone)
         self.dollar_per_point = cfg.instrument.tick_value / cfg.instrument.tick_size
         self.trade_logger = TradeLogger(dollar_per_point=self.dollar_per_point, source="live_topstepx")
+        self.bar_logger = BarLogger()
         self._current_day = None
         self._account_states: dict[str, _AccountState] = {}
         self._got_first_tick = False
@@ -443,6 +445,10 @@ class TopstepXLiveRunner:
 
     def _on_bar(self, bar, contract) -> None:
         self._bar_history.append(bar)
+        # Pure logging -- see bar_logger.py's docstring for why this exists.
+        # Never gates or blocks anything below; a Supabase hiccup here is a
+        # missed history row, not a missed trade.
+        self.bar_logger.log_bar(bar)
         day = bar.timestamp.date()
         if self._current_day != day:
             is_process_startup = self._current_day is None
