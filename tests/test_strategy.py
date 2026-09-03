@@ -47,6 +47,37 @@ def test_continuation_short_signal():
     assert signal.target_price < signal.entry_price
 
 
+def test_marginal_break_is_filtered_as_noise():
+    """CONFIRMED LIVE: a full week where every single trade (real and
+    virtual, both directions, both phases) lost close to its full stop,
+    with a reversal test ruling out a direction/sign bug -- pointed at
+    entry quality instead. break_buffer_points was raised 1.0 -> 3.0
+    because 1.0 point is within normal noise on NQ, letting the bot enter
+    on a marginal, unconfirmed poke past a swing level rather than a real
+    break. This close only clears the swing low by ~1.6pts -- would have
+    triggered a (noise) break at the old 1.0pt buffer, must NOT trigger
+    one now."""
+    cfg = load_config()
+    engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk)
+
+    open_bar = mkbar(9, 30, 100.0, 100.5, 98.0, 98.5)
+    engine.on_bar(open_bar)
+    quiet_bars = [
+        (31, 98.5, 98.6, 98.3, 98.3),
+        (32, 98.3, 98.35, 98.0, 98.1),  # swing low here, price=98.0
+        (33, 98.1, 98.35, 98.05, 98.3),
+        (34, 98.3, 98.5, 98.25, 98.45),
+    ]
+    for m, o, h, l, c in quiet_bars:
+        engine.on_bar(mkbar(9, m, o, h, l, c))
+
+    # Closes only ~1.6pts below the 98.0 swing low -- clears the OLD 1.0pt
+    # buffer (would have broken) but not the new 3.0pt buffer.
+    marginal = mkbar(9, 35, 98.45, 98.5, 96.3, 96.4)
+    signal = engine.on_bar(marginal)
+    assert signal is None, "a marginal 1.6pt break must be filtered as noise, not treated as a real BOS"
+
+
 def test_max_trades_per_day_enforced():
     cfg = load_config()
     engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk)
@@ -85,6 +116,7 @@ def test_first_bar_of_day_past_cutoff_waits_instead_of_ending_day():
 
 if __name__ == "__main__":
     test_continuation_short_signal()
+    test_marginal_break_is_filtered_as_noise()
     test_max_trades_per_day_enforced()
     test_reset_day_clears_state()
     test_first_bar_of_day_past_cutoff_waits_instead_of_ending_day()
