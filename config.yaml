@@ -12,7 +12,18 @@ strategy:
   max_wick_ratio: 0.30           # (total wick) / range must be <= this to count as displacement
   structure_lookback: 30         # minutes to look back for swing high/low ("structure")
   swing_strength: 2              # bars on each side required to confirm a pivot
-  break_buffer_points: 1.0       # close must clear structure by this much to avoid noise breaks
+  # Raised from 1.0 -> 3.0 points after a full week where EVERY trade (real
+  # and virtual, both directions, both phases) lost close to its full stop
+  # -- the reversal test (flip each losing trade's direction) came back 0%,
+  # ruling out a direction/sign bug, which points at entry QUALITY instead.
+  # 1.0 point is a few ticks -- on NQ that's within normal noise, so the old
+  # buffer let the bot enter on a marginal, unconfirmed poke past a swing
+  # level rather than a real break, which is exactly the "buy the top /
+  # sell the bottom, get stopped when it reverts" pattern seen in the data.
+  # This is a reasoned adjustment based on that pattern, NOT a proven root
+  # cause (12 trades is a small sample) -- revert to 1.0 if trade quality
+  # doesn't improve.
+  break_buffer_points: 3.0       # close must clear structure by this much to avoid noise breaks
   htf_bar_minutes: 5             # bars aggregated into a synthetic higher-timeframe candle for bias confluence
 
 risk:
