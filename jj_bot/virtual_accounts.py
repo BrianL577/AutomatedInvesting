@@ -11,13 +11,13 @@ one trade.
 `VirtualAccountManager` keeps a single StrategyEngine scanning bars for
 setups all session long (bypassing its single-shared-account "one trade,
 then stop" gates), and hands each newly detected, distinct setup to an
-idle virtual account — the one with the most money on it, not simply the
-next one in list order (per explicit user request: concentrate fresh
-setups on whichever account is furthest along, to reach a pass fastest,
-rather than spread progress evenly). One trade per account per day, same
-rule as real trading. If the session produces fewer setups than accounts,
-the remaining accounts simply don't trade — no synthetic trades are
-invented to fill the count.
+idle virtual account, prioritized: accounts that haven't taken their first
+trade yet ($0 balance) go first, then whichever idle account has the
+highest balance, then whichever has the lowest (most negative) last (see
+`_idle_account()`). One trade per account per day, same rule as real
+trading. If the session produces fewer setups than accounts, the remaining
+accounts simply don't trade — no synthetic trades are invented to fill the
+count.
 """
 from __future__ import annotations
 
@@ -102,19 +102,36 @@ class VirtualAccountManager:
         self._last_signal: Optional[Signal] = None
 
     def _idle_account(self) -> Optional[VirtualAccount]:
-        """Per explicit user request: assign the next setup to whichever
-        idle account currently has the MOST money on it, not simply the
-        next one in list order — concentrating fresh setups onto whichever
-        account is furthest along accelerates that account's path to
-        passing fastest, rather than spreading progress evenly across all
-        of them. Ties (including the common all-zero case before any
-        account has closed a trade) fall back to list order — max() over a
-        stable iteration returns the first maximum encountered, so
-        Virtual-01 wins ties exactly like the old simple scan did."""
+        """Per explicit user request: 0-balance accounts (never yet traded)
+        get first priority, then whichever idle account has the highest
+        balance, then whichever has the lowest (most negative) balance last.
+
+        CONFIRMED LIVE BUG this replaced: a plain "highest balance wins"
+        scan starves every account still sitting at its untouched $0
+        starting balance, because $0 always loses to any account that has
+        ever posted a single winning trade (however small). In practice
+        only ~6 of 10 accounts ever traded — the early winners kept
+        re-winning every new setup — and the untouched accounts only got a
+        look-in once every winner had gone net-negative and dropped below
+        $0. Putting $0 accounts at the very top of the priority order gives
+        every account its first trade before any account gets a second one,
+        so all 10 participate; once every account has taken at least one
+        trade, priority falls back to concentrating fresh setups on the
+        accounts furthest along (highest balance), with accounts that have
+        gone negative deprioritized to last (they still get their turn once
+        nothing else is idle)."""
         idle = [a for a in self.accounts if not a.traded_today]
         if not idle:
             return None
-        return max(idle, key=lambda a: a.net_dollars)
+
+        def priority(a: VirtualAccount) -> tuple[int, float]:
+            if a.net_dollars == 0:
+                return (2, 0.0)  # never traded yet -- top priority
+            if a.net_dollars > 0:
+                return (1, a.net_dollars)  # ahead -- higher balance wins
+            return (0, a.net_dollars)  # behind -- least-negative wins, but always last
+
+        return max(idle, key=priority)
 
     def reset_day(self) -> None:
         self.engine.reset_day()

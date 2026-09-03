@@ -166,20 +166,27 @@ rule as real trading. A same-direction setup only counts as genuinely new
 if it's extended at least one full stop's worth beyond the last one
 assigned (otherwise it's the same continuing move re-triggering off a
 rolling structure reference, not a fresh break — see `virtual_accounts.py`).
-Which idle account gets the setup is prioritized by running lifetime
-$ balance, highest first — concentrating progress onto whichever account is
-furthest along reaches a pass fastest, rather than spreading trades evenly
-across all N. If the session produces fewer setups than accounts, the rest
-simply sit out that day; nothing is invented to fill the count. Trades log
-to the dashboard with `source: "virtual_practice"`,
+Which idle account gets the setup is prioritized: accounts that haven't
+taken their first trade yet ($0 lifetime balance) go first — this is what
+gives all N accounts a chance to participate at all — then whichever idle
+account has the highest balance (concentrating further progress onto
+whichever account is furthest along), then whichever has the lowest (most
+negative) balance last. If the session produces fewer setups than
+accounts, the rest simply sit out that day; nothing is invented to fill
+the count. Trades log to the dashboard with `source: "virtual_practice"`,
 excluded from the real P&L/win-rate stats, with their own candlestick
-charts saved to `trade_charts_virtual/`. Number of accounts defaults to
-`virtual_accounts.count` in `config.yaml` (or the `VIRTUAL_ACCOUNT_COUNT`
-env var).
+charts saved to `trade_charts_virtual/` and (when Supabase is configured)
+uploaded to the `trade-charts` Storage bucket so the dashboard can display
+them — click any trade row on the dashboard or the Virtual Practice page
+to see its chart snapshot plus its planned gain:loss $ ratio. Number of
+accounts defaults to `virtual_accounts.count` in `config.yaml` (or the
+`VIRTUAL_ACCOUNT_COUNT` env var).
 
-This is currently a standalone script you start manually (or via its own
-Task Scheduler entry) — it is not yet wired into `run_live_loop.ps1` /
-`self_update.ps1`'s auto-restart/auto-update loop alongside the real bot.
+`scripts/run_virtual_practice_loop.ps1` is a crash-restart wrapper for this
+process, the same shape as `run_live_loop.ps1` for the real bot, and IS
+covered by `self_update.ps1`'s auto-restart/auto-update loop — but only if
+it was already running when `self_update.ps1` fires; it's never
+auto-started on its own.
 
 ## Running it fully automated
 
