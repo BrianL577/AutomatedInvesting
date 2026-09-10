@@ -3,6 +3,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 import pytz
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -270,6 +271,96 @@ def test_net_dollars_persists_across_a_restart_and_a_new_day():
     assert manager3.accounts[1].traded_today is False
 
 
+def test_idle_account_prioritizes_funded_over_everything():
+    """Per explicit user request: a funded account always takes priority
+    over every non-funded account, regardless of balance -- even over an
+    untouched $0 account, which otherwise wins every other tie."""
+    cfg = load_config()
+    manager = _manager(cfg, 4)
+    manager.accounts[0].net_dollars = 100.0    # Virtual-01: non-funded, small win
+    manager.accounts[1].funded = True
+    manager.accounts[1].net_dollars = 50.0     # Virtual-02: funded, small balance
+    # Virtual-03 stays at $0, non-funded (would normally win every tie)
+    manager.accounts[3].net_dollars = -300.0   # Virtual-04: non-funded, net loss
+
+    assert manager._idle_account().name == "Virtual-02", "funded account must win even over an untouched $0 account"
+
+
+def test_reaching_profit_target_funds_account_and_resets_balance():
+    cfg = load_config()
+    manager = _manager(cfg, 2)
+    day = mkbar(9, 30, 1, 1, 1, 1).timestamp.date()
+    manager._current_day = day
+
+    account = manager.accounts[0]
+    account.net_dollars = cfg.topstep_eval.profit_target - 500.0  # just short of funding
+    account.pending_signal = _canned_signal(9, 31, Direction.LONG, 29000.0)
+
+    result = manager._resolve_trade(account, exit_price=29038.0, exit_timestamp=mkbar(9, 32, 1, 1, 1, 1).timestamp)
+
+    assert result.win is True
+    assert account.funded is True
+    assert account.net_dollars == 0.0, "balance must reset to $0 on funding, not carry the crossing trade's profit"
+
+
+def test_funded_account_uses_bigger_target_but_same_stop():
+    """Per explicit user request: once funded, risk the same stop but aim
+    for cfg.risk.funded_target_dollars instead of the static target --
+    mirrors the real bot's funded-stage sizing (test_scaled_stop_target.py)."""
+    cfg = load_config()
+    manager = _manager(cfg, 1)
+    account = manager.accounts[0]
+    account.funded = True
+
+    signal = _canned_signal(9, 31, Direction.LONG, 29000.0)
+    sized = manager._sized_signal_for_account(signal, account)
+
+    assert sized.stop_price == signal.stop_price, "stop must stay the same for a funded account"
+    assert sized.target_price > signal.target_price, "funded target must be further than the static target"
+
+    dollar_per_point = manager.dollar_per_point * cfg.risk.contracts_per_trade
+    expected_target_points = cfg.risk.funded_target_dollars / dollar_per_point
+    assert sized.target_price == pytest.approx(signal.entry_price + expected_target_points)
+
+
+def test_funded_account_busts_at_drawdown_and_returns_to_eval():
+    cfg = load_config()
+    manager = _manager(cfg, 1)
+    day = mkbar(9, 30, 1, 1, 1, 1).timestamp.date()
+    manager._current_day = day
+
+    account = manager.accounts[0]
+    account.funded = True
+    account.net_dollars = -cfg.topstep_eval.trailing_max_drawdown + 500.0  # not blown yet
+    account.pending_signal = _canned_signal(9, 31, Direction.SHORT, 29000.0)
+
+    # A losing trade that pushes it past -trailing_max_drawdown.
+    result = manager._resolve_trade(account, exit_price=29025.0, exit_timestamp=mkbar(9, 32, 1, 1, 1, 1).timestamp)
+
+    assert result.win is False
+    assert account.funded is False, "a funded account past the drawdown limit must return to eval"
+    assert account.net_dollars == 0.0, "must reset to a fresh eval attempt, not stay deeply negative"
+
+
+def test_funded_state_persists_across_a_restart():
+    cfg = load_config()
+    log_path = Path(tempfile.mkstemp(suffix=".json")[1])
+    log_path.write_text("[]")
+    state_path = Path(tempfile.mkstemp(suffix=".json")[1])
+    state_path.unlink()
+
+    manager1 = VirtualAccountManager(cfg, num_accounts=2, trade_log_path=log_path, state_path=state_path)
+    manager1.on_bar(mkbar(9, 30, 100, 100, 100, 100, day=1))
+    manager1.accounts[1].funded = True
+    manager1.accounts[1].net_dollars = 500.0
+    manager1._save_state(manager1._current_day)
+
+    manager2 = VirtualAccountManager(cfg, num_accounts=2, trade_log_path=log_path, state_path=state_path)
+    manager2.on_bar(mkbar(9, 30, 100, 100, 100, 100, day=1))
+    assert manager2.accounts[1].funded is True
+    assert manager2.accounts[1].net_dollars == 500.0
+
+
 if __name__ == "__main__":
     test_signal_assigned_to_one_idle_account()
     test_only_up_to_num_accounts_trade_per_day()
@@ -280,4 +371,9 @@ if __name__ == "__main__":
     test_same_move_retrigger_is_skipped_but_genuine_extension_is_not()
     test_idle_account_prioritizes_untraded_then_highest_then_lowest()
     test_net_dollars_persists_across_a_restart_and_a_new_day()
+    test_idle_account_prioritizes_funded_over_everything()
+    test_reaching_profit_target_funds_account_and_resets_balance()
+    test_funded_account_uses_bigger_target_but_same_stop()
+    test_funded_account_busts_at_drawdown_and_returns_to_eval()
+    test_funded_state_persists_across_a_restart()
     print("All tests passed.")

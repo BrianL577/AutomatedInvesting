@@ -11,18 +11,27 @@ one trade.
 `VirtualAccountManager` keeps a single StrategyEngine scanning bars for
 setups all session long (bypassing its single-shared-account "one trade,
 then stop" gates), and hands each newly detected, distinct setup to an
-idle virtual account, prioritized: accounts that haven't taken their first
-trade yet ($0 balance) go first, then whichever idle account has the
-highest balance, then whichever has the lowest (most negative) last (see
-`_idle_account()`). One trade per account per day, same rule as real
-trading. If the session produces fewer setups than accounts, the remaining
-accounts simply don't trade — no synthetic trades are invented to fill the
-count.
+idle virtual account, prioritized: FUNDED accounts always go first, then
+among non-funded accounts, whichever hasn't taken its first trade yet
+($0 balance), then whichever idle account has the highest balance, then
+whichever has the lowest (most negative) last (see `_idle_account()`).
+One trade per account per day, same rule as real trading. If the session
+produces fewer setups than accounts, the remaining accounts simply don't
+trade — no synthetic trades are invented to fill the count.
+
+Each account also runs its own eval/funded state machine, mirroring the
+real account's rules: reaching cfg.topstep_eval.profit_target (net_dollars)
+funds the account (balance resets to $0, and future trades risk the same
+stop but aim for cfg.risk.funded_target_dollars instead of the static
+target); a funded account that draws down to
+-cfg.topstep_eval.trailing_max_drawdown is blown and returns to a fresh,
+unfunded eval attempt (also reset to $0). See `_resolve_trade` and
+`_sized_signal_for_account`.
 """
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Optional
@@ -44,8 +53,18 @@ class VirtualAccount:
     # Running lifetime $ P&L across every closed trade this account has
     # ever taken — NOT reset by reset_day() (unlike traded_today, which is
     # a daily flag). Drives the per-user-request "trade the account with
-    # the most money on it first" ordering in _idle_account().
+    # the most money on it first" ordering in _idle_account(). Rebased to
+    # $0 on funding and again on every fresh eval attempt after a bust —
+    # see VirtualAccountManager._resolve_trade.
     net_dollars: float = 0.0
+    # Per explicit user request: once net_dollars reaches the eval profit
+    # target (cfg.topstep_eval.profit_target), the account is "funded" --
+    # net_dollars resets to $0 and future trades risk the same stop but aim
+    # for a much bigger target (cfg.risk.funded_target_dollars). A funded
+    # account that draws down to -cfg.topstep_eval.trailing_max_drawdown is
+    # "blown" and returns to a fresh (unfunded) eval attempt. Lifetime
+    # state like net_dollars -- NOT reset by reset_day().
+    funded: bool = False
 
     def reset_day(self) -> None:
         self.pending_signal = None
@@ -102,9 +121,14 @@ class VirtualAccountManager:
         self._last_signal: Optional[Signal] = None
 
     def _idle_account(self) -> Optional[VirtualAccount]:
-        """Per explicit user request: 0-balance accounts (never yet traded)
-        get first priority, then whichever idle account has the highest
-        balance, then whichever has the lowest (most negative) balance last.
+        """Per explicit user request: FUNDED accounts always take first
+        priority over every non-funded (eval-stage) account, regardless of
+        balance. Among non-funded accounts: 0-balance ones (never yet
+        traded) go first, then whichever idle account has the highest
+        balance, then whichever has the lowest (most negative) balance
+        last. Among multiple idle funded accounts, highest balance wins
+        (same "concentrate on whichever is furthest along" reasoning as
+        the non-funded tiers).
 
         CONFIRMED LIVE BUG this replaced: a plain "highest balance wins"
         scan starves every account still sitting at its untouched $0
@@ -113,20 +137,22 @@ class VirtualAccountManager:
         only ~6 of 10 accounts ever traded — the early winners kept
         re-winning every new setup — and the untouched accounts only got a
         look-in once every winner had gone net-negative and dropped below
-        $0. Putting $0 accounts at the very top of the priority order gives
-        every account its first trade before any account gets a second one,
-        so all 10 participate; once every account has taken at least one
-        trade, priority falls back to concentrating fresh setups on the
-        accounts furthest along (highest balance), with accounts that have
-        gone negative deprioritized to last (they still get their turn once
-        nothing else is idle)."""
+        $0. Putting $0 accounts at the very top of the non-funded priority
+        order gives every account its first trade before any account gets
+        a second one, so all 10 participate; once every account has taken
+        at least one trade, priority falls back to concentrating fresh
+        setups on the accounts furthest along (highest balance), with
+        accounts that have gone negative deprioritized to last (they still
+        get their turn once nothing else is idle)."""
         idle = [a for a in self.accounts if not a.traded_today]
         if not idle:
             return None
 
         def priority(a: VirtualAccount) -> tuple[int, float]:
+            if a.funded:
+                return (3, a.net_dollars)  # funded always beats every non-funded account
             if a.net_dollars == 0:
-                return (2, 0.0)  # never traded yet -- top priority
+                return (2, 0.0)  # never traded yet -- top priority among non-funded
             if a.net_dollars > 0:
                 return (1, a.net_dollars)  # ahead -- higher balance wins
             return (0, a.net_dollars)  # behind -- least-negative wins, but always last
@@ -146,7 +172,7 @@ class VirtualAccountManager:
         payload = {
             "date": day.isoformat(),
             "accounts": {
-                a.name: {"traded_today": a.traded_today, "net_dollars": a.net_dollars}
+                a.name: {"traded_today": a.traded_today, "net_dollars": a.net_dollars, "funded": a.funded}
                 for a in self.accounts
             },
         }
@@ -178,12 +204,13 @@ class VirtualAccountManager:
             saved = saved_accounts.get(account.name)
             if not saved:
                 continue
-            # net_dollars is a running lifetime total — always restore it,
-            # regardless of whether today is a new calendar day. Only
-            # traded_today (a daily flag) is gated on the date matching; on
-            # a genuinely new day it correctly stays at the zeroed value
-            # reset_day() already set.
+            # net_dollars and funded are running lifetime state — always
+            # restore them, regardless of whether today is a new calendar
+            # day. Only traded_today (a daily flag) is gated on the date
+            # matching; on a genuinely new day it correctly stays at the
+            # zeroed value reset_day() already set.
             account.net_dollars = saved.get("net_dollars", 0.0)
+            account.funded = saved.get("funded", False)
             if same_day and saved.get("traded_today"):
                 account.traded_today = True
                 restored_traded += 1
@@ -192,6 +219,26 @@ class VirtualAccountManager:
                 "Restored today's virtual-account state after restart: %d/%d account(s) already traded today.",
                 restored_traded, len(self.accounts),
             )
+
+    def _sized_signal_for_account(self, signal: Signal, account: VirtualAccount) -> Signal:
+        """Per explicit user request: a funded account keeps the same
+        stop (same $ risk as eval-stage) but aims for
+        cfg.risk.funded_target_dollars instead of the static target --
+        mirrors live_runner_topstepx.py's _scaled_stop_target funded-stage
+        branch, just driven by this account's own `funded` flag instead of
+        a real-balance proxy (virtual accounts always know their own state
+        exactly, so no proxy is needed here)."""
+        if not account.funded:
+            return signal
+        dollar_per_point = self.dollar_per_point * self.cfg.risk.contracts_per_trade
+        tick = self.cfg.instrument.tick_size
+        funded_target_points = self.cfg.risk.funded_target_dollars / dollar_per_point
+        funded_target_points = max(tick, round(funded_target_points / tick) * tick)
+        if signal.direction == Direction.LONG:
+            target_price = signal.entry_price + funded_target_points
+        else:
+            target_price = signal.entry_price - funded_target_points
+        return replace(signal, target_price=target_price)
 
     def on_bar(self, bar: Bar) -> Optional[tuple[VirtualAccount, Signal]]:
         """Feed one confirmed bar. Returns (account, signal) if a new
@@ -244,18 +291,19 @@ class VirtualAccountManager:
         account = self._idle_account()
         if account is None:
             return None
-        account.pending_signal = signal
+        sized_signal = self._sized_signal_for_account(signal, account)
+        account.pending_signal = sized_signal
         account.traded_today = True
         self._last_signal = signal
         if self._current_day is not None:
             self._save_state(self._current_day)
         logger.info(
-            "%s -> %s %s @ %.2f stop=%.2f target=%.2f grade=%s | %s",
-            account.name, signal.phase.value, signal.direction.value,
-            signal.entry_price, signal.stop_price, signal.target_price,
-            signal.grade.value, signal.reason,
+            "%s -> %s %s @ %.2f stop=%.2f target=%.2f grade=%s%s | %s",
+            account.name, sized_signal.phase.value, sized_signal.direction.value,
+            sized_signal.entry_price, sized_signal.stop_price, sized_signal.target_price,
+            sized_signal.grade.value, " [FUNDED]" if account.funded else "", sized_signal.reason,
         )
-        return account, signal
+        return account, sized_signal
 
     def check_exits(self, bar: Bar) -> list[TradeResult]:
         """Walk every account with an open virtual position against this new
@@ -302,6 +350,24 @@ class VirtualAccountManager:
             "%s trade closed: %s pnl=%.2f pts ($%.2f) win=%s net=$%.2f",
             account.name, signal.direction.value, pnl_points, pnl_dollars, win, account.net_dollars,
         )
+
+        # Per explicit user request: reaching the eval profit target funds
+        # the account (balance resets to $0, future trades risk the same
+        # stop but aim for a much bigger target -- see
+        # _sized_signal_for_account); a FUNDED account that draws down to
+        # the trailing drawdown limit is blown and returns to a fresh
+        # (unfunded) eval attempt, also reset to $0.
+        if not account.funded and account.net_dollars >= self.cfg.topstep_eval.profit_target:
+            account.funded = True
+            account.net_dollars = 0.0
+            logger.info("%s FUNDED! Balance reset to $0 -- future trades aim for $%.0f.",
+                        account.name, self.cfg.risk.funded_target_dollars)
+        elif account.funded and account.net_dollars <= -self.cfg.topstep_eval.trailing_max_drawdown:
+            account.funded = False
+            account.net_dollars = 0.0
+            logger.info("%s BLOWN (funded account hit -$%.0f) -- resetting to a fresh eval attempt.",
+                        account.name, self.cfg.topstep_eval.trailing_max_drawdown)
+
         account.pending_signal = None
         if self._current_day is not None:
             self._save_state(self._current_day)
