@@ -271,19 +271,34 @@ def test_net_dollars_persists_across_a_restart_and_a_new_day():
     assert manager3.accounts[1].traded_today is False
 
 
-def test_idle_account_prioritizes_funded_over_everything():
-    """Per explicit user request: a funded account always takes priority
-    over every non-funded account, regardless of balance -- even over an
-    untouched $0 account, which otherwise wins every other tie."""
+def test_idle_account_priority_full_cascade_untraded_funded_positive_negative():
+    """Per explicit user request, four tiers highest-to-lowest: never-
+    traded ($0, not funded) accounts beat EVEN funded accounts (so a fresh
+    account can never be starved out by funded ones); funded accounts beat
+    every other already-traded, non-funded account; then highest balance;
+    then lowest (most negative) balance last."""
     cfg = load_config()
     manager = _manager(cfg, 4)
     manager.accounts[0].net_dollars = 100.0    # Virtual-01: non-funded, small win
     manager.accounts[1].funded = True
     manager.accounts[1].net_dollars = 50.0     # Virtual-02: funded, small balance
-    # Virtual-03 stays at $0, non-funded (would normally win every tie)
+    # Virtual-03 stays at $0, non-funded -- never traded, must beat even funded
     manager.accounts[3].net_dollars = -300.0   # Virtual-04: non-funded, net loss
 
-    assert manager._idle_account().name == "Virtual-02", "funded account must win even over an untouched $0 account"
+    chosen1 = manager._idle_account()
+    assert chosen1.name == "Virtual-03", "never-traded account must win even over a funded account"
+
+    manager.accounts[2].traded_today = True  # Virtual-03 just got assigned
+    chosen2 = manager._idle_account()
+    assert chosen2.name == "Virtual-02", "funded account is next, ahead of any non-funded, already-traded account"
+
+    manager.accounts[1].traded_today = True  # Virtual-02 just got assigned
+    chosen3 = manager._idle_account()
+    assert chosen3.name == "Virtual-01", "highest positive balance among the non-funded remainder"
+
+    manager.accounts[0].traded_today = True  # Virtual-01 just got assigned
+    chosen4 = manager._idle_account()
+    assert chosen4.name == "Virtual-04", "the only account left is negative -- it still gets picked, last"
 
 
 def test_reaching_profit_target_funds_account_and_resets_balance():
@@ -371,7 +386,7 @@ if __name__ == "__main__":
     test_same_move_retrigger_is_skipped_but_genuine_extension_is_not()
     test_idle_account_prioritizes_untraded_then_highest_then_lowest()
     test_net_dollars_persists_across_a_restart_and_a_new_day()
-    test_idle_account_prioritizes_funded_over_everything()
+    test_idle_account_priority_full_cascade_untraded_funded_positive_negative()
     test_reaching_profit_target_funds_account_and_resets_balance()
     test_funded_account_uses_bigger_target_but_same_stop()
     test_funded_account_busts_at_drawdown_and_returns_to_eval()
