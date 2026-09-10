@@ -11,13 +11,15 @@ one trade.
 `VirtualAccountManager` keeps a single StrategyEngine scanning bars for
 setups all session long (bypassing its single-shared-account "one trade,
 then stop" gates), and hands each newly detected, distinct setup to an
-idle virtual account, prioritized: FUNDED accounts always go first, then
-among non-funded accounts, whichever hasn't taken its first trade yet
-($0 balance), then whichever idle account has the highest balance, then
-whichever has the lowest (most negative) last (see `_idle_account()`).
-One trade per account per day, same rule as real trading. If the session
-produces fewer setups than accounts, the remaining accounts simply don't
-trade — no synthetic trades are invented to fill the count.
+idle virtual account, prioritized: accounts that have NEVER traded ($0
+balance, not funded) go first — even above funded accounts, so a fresh
+account can never be starved out — then FUNDED accounts, then among the
+remaining non-funded accounts, whichever idle account has the highest
+balance, then whichever has the lowest (most negative) last (see
+`_idle_account()`). One trade per account per day, same rule as real
+trading. If the session produces fewer setups than accounts, the
+remaining accounts simply don't trade — no synthetic trades are invented
+to fill the count.
 
 Each account also runs its own eval/funded state machine, mirroring the
 real account's rules: reaching cfg.topstep_eval.profit_target (net_dollars)
@@ -121,38 +123,41 @@ class VirtualAccountManager:
         self._last_signal: Optional[Signal] = None
 
     def _idle_account(self) -> Optional[VirtualAccount]:
-        """Per explicit user request: FUNDED accounts always take first
-        priority over every non-funded (eval-stage) account, regardless of
-        balance. Among non-funded accounts: 0-balance ones (never yet
-        traded) go first, then whichever idle account has the highest
-        balance, then whichever has the lowest (most negative) balance
-        last. Among multiple idle funded accounts, highest balance wins
-        (same "concentrate on whichever is furthest along" reasoning as
-        the non-funded tiers).
+        """Per explicit user request, four tiers, highest priority first:
 
-        CONFIRMED LIVE BUG this replaced: a plain "highest balance wins"
-        scan starves every account still sitting at its untouched $0
-        starting balance, because $0 always loses to any account that has
-        ever posted a single winning trade (however small). In practice
-        only ~6 of 10 accounts ever traded — the early winners kept
-        re-winning every new setup — and the untouched accounts only got a
-        look-in once every winner had gone net-negative and dropped below
-        $0. Putting $0 accounts at the very top of the non-funded priority
-        order gives every account its first trade before any account gets
-        a second one, so all 10 participate; once every account has taken
-        at least one trade, priority falls back to concentrating fresh
-        setups on the accounts furthest along (highest balance), with
-        accounts that have gone negative deprioritized to last (they still
-        get their turn once nothing else is idle)."""
+        1. Never-traded accounts ($0 balance, not funded) -- ABOVE even
+           funded accounts. This is deliberate: an account that's never
+           taken a single trade must never get starved out by accounts
+           that are already funded, or the exact starvation bug below
+           reappears in a new shape (funded accounts perpetually winning
+           instead of balance-leaders perpetually winning).
+        2. Funded accounts -- beat every other non-funded, already-traded
+           account regardless of balance. Among multiple idle funded
+           accounts, highest balance wins.
+        3. Non-funded accounts with a positive balance -- highest wins.
+        4. Non-funded accounts with a negative balance -- least-negative
+           wins, but always last.
+
+        CONFIRMED LIVE BUG tier 1 exists to prevent: a plain "highest
+        balance wins" scan starves every account still sitting at its
+        untouched $0 starting balance, because $0 always loses to any
+        account that has ever posted a single winning trade (however
+        small). In practice only ~6 of 10 accounts ever traded — the early
+        winners kept re-winning every new setup — and the untouched
+        accounts only got a look-in once every winner had gone net-negative
+        and dropped below $0. Putting untouched accounts at the very top
+        of the priority order (above even funded accounts) gives every
+        account its first trade before any account gets a second one, so
+        all 10 participate."""
         idle = [a for a in self.accounts if not a.traded_today]
         if not idle:
             return None
 
         def priority(a: VirtualAccount) -> tuple[int, float]:
+            if a.net_dollars == 0 and not a.funded:
+                return (3, 0.0)  # never traded yet -- top priority, above even funded
             if a.funded:
-                return (3, a.net_dollars)  # funded always beats every non-funded account
-            if a.net_dollars == 0:
-                return (2, 0.0)  # never traded yet -- top priority among non-funded
+                return (2, a.net_dollars)  # funded beats every non-funded, already-traded account
             if a.net_dollars > 0:
                 return (1, a.net_dollars)  # ahead -- higher balance wins
             return (0, a.net_dollars)  # behind -- least-negative wins, but always last
