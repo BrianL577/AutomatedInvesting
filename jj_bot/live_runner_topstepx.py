@@ -89,6 +89,21 @@ class _AccountState:
     # the exchange's own trade history regardless of this.
     placed_stop_price: Optional[float] = None
     placed_target_price: Optional[float] = None
+    # Own tracked eval/funded state for THIS account, independent of the
+    # real TopStep balance. CONFIRMED LIVE BUG this exists to fix: a real
+    # funded account's broker balance resets to ~$0 the moment TopStep
+    # actually funds it (confirmed via TopStep's own support chat -- see
+    # topstep_eval_sim.py), so "live balance >= pass_line" can basically
+    # never be true again for a genuinely funded account -- the
+    # funded-stage sizing branch in _scaled_stop_target silently never
+    # fired, even though the dashboard's own Eval Simulator (replaying the
+    # same trade history independently) correctly showed the account as
+    # Funded. Tracking realized P&L ourselves, exactly like
+    # VirtualAccount.net_dollars/funded, sidesteps needing any real-balance
+    # proxy for "is this funded" at all. Lifetime state -- NOT reset by
+    # reset_day(), same as net_dollars/funded on VirtualAccount.
+    stage_balance: float = 0.0
+    funded: bool = False
     # CONFIRMED LIVE (real account): the 3s poll thread and the real-time
     # push-callback thread both call _check_account_flat() independently —
     # the code assumed this was safe because order CANCELLATION is
@@ -211,7 +226,10 @@ class TopstepXLiveRunner:
             "consecutive_losses": self.engine.consecutive_losses,
             "rate_limited": self.engine.rate_limited,
             "accounts": {
-                name: {"day_pnl_dollars": state.day_pnl_dollars, "rate_limited": state.rate_limited}
+                name: {
+                    "day_pnl_dollars": state.day_pnl_dollars, "rate_limited": state.rate_limited,
+                    "stage_balance": state.stage_balance, "funded": state.funded,
+                }
                 for name, state in self._account_states.items()
             },
         }
@@ -238,16 +256,25 @@ class TopstepXLiveRunner:
         except (OSError, json.JSONDecodeError):
             logger.exception("Failed to read persisted daily risk state — starting the day fresh.")
             return
-        if payload.get("date") != day.isoformat():
-            return  # genuinely a new trading day — zeroed state from reset_day() is correct
+        same_day = payload.get("date") == day.isoformat()
+        for name, saved in (payload.get("accounts") or {}).items():
+            state = self._account_states.get(name)
+            if state is None:
+                continue
+            # stage_balance/funded are lifetime state (like
+            # VirtualAccount.net_dollars/funded) -- restore them regardless
+            # of whether today is a new calendar day. day_pnl_dollars/
+            # rate_limited are daily flags, gated on the date matching.
+            state.stage_balance = saved.get("stage_balance", 0.0)
+            state.funded = saved.get("funded", False)
+            if same_day:
+                state.day_pnl_dollars = saved.get("day_pnl_dollars", 0.0)
+                state.rate_limited = saved.get("rate_limited", False)
+        if not same_day:
+            return  # genuinely a new trading day — zeroed engine state from reset_day() is correct
         self.engine.trades_today = payload.get("trades_today", 0)
         self.engine.consecutive_losses = payload.get("consecutive_losses", 0)
         self.engine.rate_limited = payload.get("rate_limited", False)
-        for name, saved in (payload.get("accounts") or {}).items():
-            state = self._account_states.get(name)
-            if state is not None:
-                state.day_pnl_dollars = saved.get("day_pnl_dollars", 0.0)
-                state.rate_limited = saved.get("rate_limited", False)
         logger.info(
             "Restored today's risk state after restart: trades_today=%d consecutive_losses=%d rate_limited=%s",
             self.engine.trades_today, self.engine.consecutive_losses, self.engine.rate_limited,
@@ -505,7 +532,7 @@ class TopstepXLiveRunner:
                 logger.info("Skipping account %s: already in a trade.", state.account.name)
                 continue
             try:
-                stop_price, target_price = self._scaled_stop_target(signal, state.account)
+                stop_price, target_price = self._scaled_stop_target(signal, state)
                 # Captured BEFORE placing the order (not after) so a fill
                 # that happens fast can never land a hair earlier than this
                 # timestamp and get excluded from the P&L query below.
@@ -651,6 +678,28 @@ class TopstepXLiveRunner:
                     state.rate_limited = True
                     logger.info("Account %s hit daily loss cap ($%.2f) — done for the day.", state.account.name, state.day_pnl_dollars)
 
+                # Own tracked eval/funded state -- see _AccountState's
+                # stage_balance/funded docstring for why this can't be
+                # derived from the real TopStep balance. Same thresholds
+                # and mirrors the exact same transition logic as
+                # VirtualAccount/_resolve_trade in virtual_accounts.py.
+                state.stage_balance += realized_pnl
+                if not state.funded and state.stage_balance >= self.cfg.topstep_eval.profit_target:
+                    state.funded = True
+                    state.stage_balance = 0.0
+                    logger.info(
+                        "%s FUNDED (tracked stage balance crossed $%.0f) — resetting to $0, "
+                        "future trades aim for $%.0f.",
+                        state.account.name, self.cfg.topstep_eval.profit_target, self.cfg.risk.funded_target_dollars,
+                    )
+                elif state.funded and state.stage_balance <= -self.cfg.topstep_eval.trailing_max_drawdown:
+                    state.funded = False
+                    state.stage_balance = 0.0
+                    logger.info(
+                        "%s BLOWN (funded, tracked stage balance hit -$%.0f) — back to eval tracking, reset to $0.",
+                        state.account.name, self.cfg.topstep_eval.trailing_max_drawdown,
+                    )
+
                 logger.info(
                     "Trade closed on %s: %s pnl=$%.2f win=%s day_pnl=$%.2f",
                     state.account.name, signal.direction.value, realized_pnl, win, state.day_pnl_dollars,
@@ -688,7 +737,7 @@ class TopstepXLiveRunner:
             logger.exception("Could not fetch trade history to resolve realized P&L.")
             return None
 
-    def _scaled_stop_target(self, signal: Signal, account: Account) -> tuple[float, float]:
+    def _scaled_stop_target(self, signal: Signal, state: _AccountState) -> tuple[float, float]:
         """Per-account eval scale-down (RiskConfig.eval_scale_down_enabled,
         off by default). Once this account's REAL live balance (queried
         fresh right now, not a cached/simulated approximation) is within one
@@ -703,22 +752,46 @@ class TopstepXLiveRunner:
         intended.
 
         Per explicit user request, ALSO covers the funded stage: once
-        balance is at/past the pass line, keep the normal stop but aim for
-        a bigger target (RiskConfig.funded_target_dollars, e.g. risk $1,000
-        to make $4,000 instead of the static $1,520). TopStep's public API
-        has no "is this account funded" endpoint (confirmed elsewhere in
-        this codebase — only Account/Market Data/Orders/Positions/Trades
-        are exposed), so "balance >= pass_line" is used as a proxy for
-        funded status here, same limitation the eval-simulator's own
-        balance-based modeling already has. This can misfire if the account
-        was funded on a prior day and balance has since dipped back below
-        the pass line (e.g. after a loss) while TopStep's own records still
-        show it as funded — in that case this falls back to a normal-size
-        trade instead of the funded-size one, which is the safe direction
-        to be wrong in."""
+        this account's OWN TRACKED state (state.funded, see
+        _AccountState's docstring) says it's funded, keep the normal stop
+        but aim for a bigger target (RiskConfig.funded_target_dollars, e.g.
+        risk $1,000 to make $4,000 instead of the static $1,520).
+
+        CONFIRMED LIVE BUG this replaced: funded status used to be inferred
+        as "live balance >= pass_line" — but a real funded account's broker
+        balance resets to ~$0 the moment TopStep actually funds it, so that
+        proxy could basically never fire again once an account was
+        genuinely funded (the pass_line, e.g. $53,000, would need to be
+        crossed again from a $0 base). state.funded is tracked directly
+        from this account's own realized P&L instead (updated in
+        _check_account_flat_locked), so it isn't fooled by the balance
+        reset."""
         if not self.cfg.risk.eval_scale_down_enabled:
             return signal.stop_price, signal.target_price
 
+        account = state.account
+        dollar_per_point = self.dollar_per_point * self.cfg.risk.contracts_per_trade
+
+        if state.funded:
+            funded_target_points = self.cfg.risk.funded_target_dollars / dollar_per_point
+            tick = self.cfg.instrument.tick_size
+            funded_target_points = max(tick, round(funded_target_points / tick) * tick)
+            if signal.direction == Direction.LONG:
+                target_price = signal.entry_price + funded_target_points
+            else:
+                target_price = signal.entry_price - funded_target_points
+            logger.info(
+                "Funded-stage sizing on %s: tracked stage balance $%.2f — "
+                "risking normal stop=%.2f for target=%.2f (%.2fpts, $%.2f).",
+                account.name, state.stage_balance, signal.stop_price, target_price,
+                funded_target_points, self.cfg.risk.funded_target_dollars,
+            )
+            return signal.stop_price, target_price
+
+        # Not yet funded (per our own tracking) -- shrinking toward the
+        # pass line still uses the REAL, live TopStep balance, since that's
+        # an accurate live signal of "how close is this account to actually
+        # passing" while genuinely still in eval.
         try:
             accounts = self.client.get_live_balances()
         except Exception:
@@ -730,32 +803,12 @@ class TopstepXLiveRunner:
             logger.warning("Eval scale-down: account %s not found in balance lookup — using normal static size.", account.name)
             return signal.stop_price, signal.target_price
 
-        dollar_per_point = self.dollar_per_point * self.cfg.risk.contracts_per_trade
         normal_target_dollars = self.cfg.risk.target_points * dollar_per_point
         normal_stop_dollars = self.cfg.risk.stop_points * dollar_per_point
 
         pass_line = self.cfg.topstep_eval.account_size + self.cfg.topstep_eval.profit_target
         remaining = pass_line - live.balance
 
-        if remaining <= 0:
-            # At/past the pass line -- funded, by the balance-based proxy
-            # this whole function already relies on. Same stop, bigger
-            # target: risk the normal amount to aim for
-            # funded_target_dollars instead of the static target.
-            funded_target_points = self.cfg.risk.funded_target_dollars / dollar_per_point
-            tick = self.cfg.instrument.tick_size
-            funded_target_points = max(tick, round(funded_target_points / tick) * tick)
-            if signal.direction == Direction.LONG:
-                target_price = signal.entry_price + funded_target_points
-            else:
-                target_price = signal.entry_price - funded_target_points
-            logger.info(
-                "Funded-stage sizing on %s: live balance $%.2f >= pass line $%.2f — "
-                "risking normal stop=%.2f for target=%.2f (%.2fpts, $%.2f).",
-                account.name, live.balance, pass_line, signal.stop_price, target_price,
-                funded_target_points, self.cfg.risk.funded_target_dollars,
-            )
-            return signal.stop_price, target_price
         if remaining >= normal_target_dollars:
             # The normal trade wouldn't even reach the gap anyway -- no
             # reason to shrink.
