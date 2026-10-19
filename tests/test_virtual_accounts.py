@@ -1,5 +1,6 @@
 import sys
 import tempfile
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -20,12 +21,29 @@ def mkbar(hh, mm, o, h, l, c, day=1):
     return Bar(timestamp=ts, open=o, high=h, low=l, close=c, volume=100)
 
 
+def _temp_path(suffix=".json") -> Path:
+    """tempfile.mkstemp() returns an OPEN file descriptor alongside the
+    path and leaves it open -- harmless on POSIX (an open fd doesn't block
+    unlink/delete), but CONFIRMED LIVE to silently fail self_update.ps1's
+    pytest gate on the actual Windows machine every single day for two
+    months straight: Windows refuses to delete a file that's still open in
+    the current process (PermissionError: WinError 32), so every test
+    using the old `Path(tempfile.mkstemp(...)[1])` pattern failed on
+    Windows even though it always passed here (this sandbox is Linux).
+    self_update.ps1 rolled back every time, so nothing past this bug's
+    introduction ever actually shipped. Closing the fd immediately is the
+    fix -- the path is still usable afterward exactly like before."""
+    fd, path_str = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    return Path(path_str)
+
+
 def _manager(cfg, num_accounts):
     # Scratch trade log + state file so tests never touch
     # dashboard/data/trades.json or the real virtual_daily_state.json.
-    log_path = Path(tempfile.mkstemp(suffix=".json")[1])
+    log_path = _temp_path()
     log_path.write_text("[]")
-    state_path = Path(tempfile.mkstemp(suffix=".json")[1])
+    state_path = _temp_path()
     state_path.unlink()  # must not exist yet — _restore_state_if_same_day treats "exists" as "has saved state"
     return VirtualAccountManager(cfg, num_accounts=num_accounts, trade_log_path=log_path, state_path=state_path)
 
@@ -106,9 +124,9 @@ def test_check_exits_resolves_target_hit():
 
 def test_chart_renderer_hook_is_called_and_passed_through():
     cfg = load_config()
-    log_path = Path(tempfile.mkstemp(suffix=".json")[1])
+    log_path = _temp_path()
     log_path.write_text("[]")
-    state_path = Path(tempfile.mkstemp(suffix=".json")[1])
+    state_path = _temp_path()
     state_path.unlink()
     calls = []
 
@@ -136,9 +154,9 @@ def test_restart_mid_day_does_not_let_same_account_retrade():
     state_path (simulating a restart) must see Virtual-01 as already-traded
     and never offer it up as idle again."""
     cfg = load_config()
-    log_path = Path(tempfile.mkstemp(suffix=".json")[1])
+    log_path = _temp_path()
     log_path.write_text("[]")
-    state_path = Path(tempfile.mkstemp(suffix=".json")[1])
+    state_path = _temp_path()
     state_path.unlink()
 
     manager1 = VirtualAccountManager(cfg, num_accounts=3, trade_log_path=log_path, state_path=state_path)
@@ -248,9 +266,9 @@ def test_net_dollars_persists_across_a_restart_and_a_new_day():
     daily flag) — it must survive both a restart AND a day rollover,
     where traded_today correctly resets to False."""
     cfg = load_config()
-    log_path = Path(tempfile.mkstemp(suffix=".json")[1])
+    log_path = _temp_path()
     log_path.write_text("[]")
-    state_path = Path(tempfile.mkstemp(suffix=".json")[1])
+    state_path = _temp_path()
     state_path.unlink()
 
     manager1 = VirtualAccountManager(cfg, num_accounts=3, trade_log_path=log_path, state_path=state_path)
@@ -359,9 +377,9 @@ def test_funded_account_busts_at_drawdown_and_returns_to_eval():
 
 def test_funded_state_persists_across_a_restart():
     cfg = load_config()
-    log_path = Path(tempfile.mkstemp(suffix=".json")[1])
+    log_path = _temp_path()
     log_path.write_text("[]")
-    state_path = Path(tempfile.mkstemp(suffix=".json")[1])
+    state_path = _temp_path()
     state_path.unlink()
 
     manager1 = VirtualAccountManager(cfg, num_accounts=2, trade_log_path=log_path, state_path=state_path)
