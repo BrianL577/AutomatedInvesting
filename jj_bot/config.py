@@ -153,12 +153,31 @@ class StrategyConfig:
     swing_strength: int
     break_buffer_points: float = 1.0
     htf_bar_minutes: int = 5
+    # Per explicit user request: JJ's strategy also trades EU/Asia + a
+    # second NY window, not just the 9:30 AM NY open. Each entry here is
+    # {"name": str, "open": "HH:MM"} (ET) -- same continuation/reversion
+    # SHAPE as the NY AM session (continuation_end_minutes still applies to
+    # all of them), just anchored at a different time and running for
+    # additional_session_duration_minutes instead of NY AM's own
+    # reversion_end_minutes/hard_cutoff, which stay exactly as they already
+    # were. See strategy.py's _SessionWindow/_SessionState for how these
+    # are turned into independent, non-overlapping session state machines.
+    additional_sessions: list = field(default_factory=list)
+    additional_session_duration_minutes: int = 120
 
 
 @dataclass
 class RiskConfig:
     stop_points: float
     target_points: float
+    # NOTE: as of the multi-session change (strategy.py), the live engine
+    # no longer reads this field at all -- "one trade per day" became "one
+    # trade per SESSION" (hardcoded in strategy.py, not configurable here)
+    # once JJ's strategy started trading 5 independent daily sessions
+    # instead of just the NY open, per explicit user request. Kept in the
+    # schema only because the Strategy Creator dashboard still maps
+    # maxTradesPerDay onto it -- setting it from there currently has no
+    # live effect.
     max_trades_per_day: int
     stop_after_consecutive_losses: int
     contracts_per_trade: int

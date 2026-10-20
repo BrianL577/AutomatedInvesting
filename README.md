@@ -24,25 +24,37 @@ strategy described by the YouTuber JJ. Three brokers are supported:
 
 ## How the strategy is encoded
 
-1. **Anchor**: the 9:30 AM ET 1-minute candle (or the pre-news candle on red-folder
-   news days) is treated as "fair price."
-2. **Phase 1 — Continuation (0–10 min after open)**: trade in the direction of
-   the opening candle's body, on the first displacement candle that breaks and
-   closes beyond recent structure.
-3. **Phase 2 — Mean reversion (10–90 min after open)**: once price has
-   displaced away from the open, trade the reversion back toward the open on
-   the next displacement/break-of-structure candle in the opposite direction.
+Per explicit user request, this strategy now runs across **5 independent
+daily sessions** (all ET), each applying the exact same rules below just
+anchored at a different time: **NY AM** (09:30, unchanged — 90 min total,
+cutoff 11:00), **NY PM** (14:00), **Session** (18:00), **Asia** (20:00),
+and **London** (03:00) — the latter four each run for
+`strategy.additional_session_duration_minutes` (2 hours). None of these
+windows overlap. Each session gets its own independent one-trade shot —
+see `jj_bot/strategy.py`'s `_SessionWindow`/`_SessionState`.
+
+1. **Anchor**: each session's own opening 1-minute candle is treated as
+   that session's "fair price."
+2. **Phase 1 — Continuation (0–10 min after a session's own open)**: trade
+   in the direction of that session's opening candle's body, on the first
+   displacement candle that breaks and closes beyond recent structure.
+3. **Phase 2 — Mean reversion (10 min after open until that session's own
+   cutoff)**: once price has displaced away from that session's open,
+   trade the reversion back toward it on the next displacement/break-of-
+   structure candle in the opposite direction.
 4. **Entry trigger**: a "displacement" candle — range notably larger than the
    recent average / previous candle, with small wicks — that closes beyond a
    recent swing high/low (break of structure).
 5. **Risk**: fixed R:R (default 50 pt stop / 64.5 pt target on NQ — $1,000 / $1,290),
    configurable in `config.yaml`.
-6. **Trade caps**: max 3–4 trades/day, stop after 2 consecutive losses, no new
-   entries after the configured session cutoff (default 11:00 AM ET).
+6. **Trade caps**: one trade per SESSION (not per day — each of the 5
+   sessions gets its own shot), stop after 2 consecutive losses for the
+   rest of the day, no new entries after a session's own cutoff.
 7. **Daily rate limiter**: not specified in JJ's transcript, so set per
-   instruction — trading stops for the day once running P&L hits a **+$1,520
-   profit cap** or a **-$1,000 loss cap** (`risk.daily_profit_cap` /
-   `risk.daily_loss_cap` in `config.yaml`).
+   instruction — trading stops for the rest of the day (across all 5
+   sessions) once running P&L hits a **+$1,520 profit cap** or a **-$1,000
+   loss cap** (`risk.daily_profit_cap` / `risk.daily_loss_cap` in
+   `config.yaml`).
 
 All of this is implemented as an explicit, backtestable state machine in
 `jj_bot/strategy.py` — see that file for the exact rules, since "displacement"

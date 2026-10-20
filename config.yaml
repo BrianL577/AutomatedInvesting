@@ -25,6 +25,25 @@ strategy:
   # doesn't improve.
   break_buffer_points: 3.0       # close must clear structure by this much to avoid noise breaks
   htf_bar_minutes: 5             # bars aggregated into a synthetic higher-timeframe candle for bias confluence
+  # Per explicit user request: JJ's strategy trades more than just the NY
+  # open -- these 4 additional anchors (all ET, user-provided) each run the
+  # EXACT same shape/rules as the NY AM session above (same
+  # continuation_end_minutes, same displacement/BOS/HTF-bias grading, same
+  # one-trade-per-session cap) just anchored at a different time, for
+  # additional_session_duration_minutes (2 hours) instead of NY AM's own
+  # reversion_end_minutes/hard_cutoff, which stay exactly as they already
+  # were (unchanged, per explicit instruction). None of these windows
+  # overlap each other or NY AM's 09:30-11:00 window.
+  additional_sessions:
+    - name: "NY PM"
+      open: "14:00"
+    - name: "Session"
+      open: "18:00"
+    - name: "Asia"
+      open: "20:00"
+    - name: "London"
+      open: "03:00"
+  additional_session_duration_minutes: 120
 
 risk:
   # Reverted from the AI-Optimize "Row #1" geometry (45pt/35pt on 3 contracts):

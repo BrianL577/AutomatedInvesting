@@ -1,21 +1,34 @@
-"""Core rules engine for JJ's NY-session strategy.
+"""Core rules engine for JJ's strategy.
 
-Turns the discretionary ideas from the video into concrete, backtestable rules:
+Turns the discretionary ideas from the video (plus a trader's live-session
+notes) into concrete, backtestable rules:
 
-- Anchor = the 9:30 AM ET opening 1-minute candle ("fair price").
-- Phase 1 (0-10 min after open): continuation in the direction of the opening
-  candle's body.
-- Phase 2 (10-90 min after open, until a hard cutoff): mean reversion back
-  toward the open, once price has displaced away from it.
+- Anchor = the opening 1-minute candle of a trading session ("fair price").
+  Per explicit user request, this now runs across FIVE independent daily
+  sessions, not just the NY open: NY AM (09:30 ET, unchanged from before --
+  90 min total, cutoff 11:00), plus NY PM (14:00), Session (18:00), Asia
+  (20:00), and London (03:00), each running the exact same shape/rules as
+  NY AM just anchored at a different time and lasting
+  additional_session_duration_minutes (2 hours) instead of NY AM's own
+  reversion_end_minutes/hard_cutoff. None of these windows overlap.
+- Phase 1 (0-10 min after a session's own open): continuation in the
+  direction of that session's opening candle's body.
+- Phase 2 (10 min after open until that session's own cutoff): mean
+  reversion back toward that session's own open, once price has displaced
+  away from it.
 - Entry trigger ("displacement" + "break of structure and close"): a candle
   whose *true range* (volatility-adjusted, gap-aware) is notably larger than
   recent bars and the previous bar, whose body dominates the candle (small
   wicks), that closes beyond a recent swing high/low by more than a small
   noise buffer.
 - Fixed 1:1.5 R:R (configurable stop/target in points).
-- Caps: max trades/day, stop after N consecutive losses, no entries after the
-  hard cutoff, and a daily dollar rate limiter (stop trading once the day's
-  running P&L hits a profit cap or a loss cap).
+- Caps: one trade per SESSION (not per day -- each of the 5 sessions gets
+  its own independent shot), stop after N consecutive losses in the day,
+  no entries after a session's own cutoff, and a daily dollar rate limiter
+  (stop trading for the rest of the day once the day's running P&L hits a
+  profit cap or a loss cap) -- these day-level risk controls are shared
+  across all 5 sessions, not reset per session, since they're a dollar-risk
+  circuit breaker, not a per-session opportunity.
 
 The engine is fed one confirmed (closed) bar at a time via `on_bar`. It is
 pure decision logic — it does not manage open positions or place orders;
@@ -50,47 +63,108 @@ class _Pivot:
 
 
 @dataclass
+class _SessionWindow:
+    """Static config for one daily session: when it opens and how long it
+    runs. continuation_end_minutes is shared across ALL sessions
+    (strategy_cfg.continuation_end_minutes) since every session uses the
+    same shape -- only the anchor time and total duration differ."""
+    name: str
+    open_hour: int
+    open_minute: int
+    duration_minutes: int
+
+
+@dataclass
+class _SessionState:
+    """Runtime state for one session, reset once per calendar day. Mirrors
+    exactly what used to be the engine's own single set of fields back when
+    there was only ever one session (NY AM)."""
+    window: _SessionWindow
+    open_bar: Optional[Bar] = None
+    open_price: Optional[float] = None
+    open_dt: Optional[datetime] = None
+    cutoff_dt: Optional[datetime] = None
+    phase: Phase = Phase.WAITING_FOR_OPEN
+    continuation_direction: Optional[Direction] = None
+    traded: bool = False  # this session has already taken its one trade today
+
+    def reset(self) -> None:
+        self.open_bar = None
+        self.open_price = None
+        self.open_dt = None
+        self.cutoff_dt = None
+        self.phase = Phase.WAITING_FOR_OPEN
+        self.continuation_direction = None
+        self.traded = False
+
+
+@dataclass
 class StrategyEngine:
     strategy_cfg: StrategyConfig
     risk_cfg: RiskConfig
     instrument_cfg: Optional[InstrumentConfig] = None
 
     day_bars: list[Bar] = field(default_factory=list)
-    open_bar: Optional[Bar] = None
-    open_price: Optional[float] = None
     phase: Phase = Phase.WAITING_FOR_OPEN
-    # Fixed at anchor time and reused for every later bar in the session —
-    # NOT recomputed per bar — so an overnight session (e.g. open 21:00,
-    # cutoff 02:30 the next calendar day) doesn't have its window silently
-    # recomputed against a later bar's own (now rolled-over) calendar date.
-    open_dt: Optional[datetime] = None
-    cutoff_dt: Optional[datetime] = None
 
     pivot_highs: list[_Pivot] = field(default_factory=list)
     pivot_lows: list[_Pivot] = field(default_factory=list)
 
+    # Day-level (NOT per-session) risk state -- shared across all 5
+    # sessions deliberately, since these are dollar-risk circuit breakers
+    # for the whole day, not a per-session opportunity count.
     trades_today: int = 0
     consecutive_losses: int = 0
     position_open: bool = False
-    continuation_direction: Optional[Direction] = None
     day_pnl_points: float = 0.0
     rate_limited: bool = False
 
+    sessions: list[_SessionState] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.sessions:
+            return  # already constructed (e.g. a test passed sessions= explicitly)
+        windows = [_SessionWindow("NY AM", *_hhmm(self.strategy_cfg.session_open), self.strategy_cfg.reversion_end_minutes)]
+        for entry in self.strategy_cfg.additional_sessions:
+            hour, minute = _hhmm(entry["open"])
+            windows.append(_SessionWindow(entry["name"], hour, minute, self.strategy_cfg.additional_session_duration_minutes))
+        self.sessions = [_SessionState(window=w) for w in windows]
+
+    # ---- backward-compatible accessors for the NY AM session specifically
+    # (tests and structure_debug's own bookkeeping read these; before multi-
+    # session support, these WERE the engine's own top-level fields) ----
+    @property
+    def open_bar(self) -> Optional[Bar]:
+        return self.sessions[0].open_bar
+
+    @property
+    def open_price(self) -> Optional[float]:
+        return self.sessions[0].open_price
+
+    @property
+    def open_dt(self) -> Optional[datetime]:
+        return self.sessions[0].open_dt
+
+    @property
+    def cutoff_dt(self) -> Optional[datetime]:
+        return self.sessions[0].cutoff_dt
+
+    @property
+    def continuation_direction(self) -> Optional[Direction]:
+        return self.sessions[0].continuation_direction
+
     def reset_day(self) -> None:
         self.day_bars = []
-        self.open_bar = None
-        self.open_price = None
-        self.open_dt = None
-        self.cutoff_dt = None
         self.phase = Phase.WAITING_FOR_OPEN
         self.pivot_highs = []
         self.pivot_lows = []
         self.trades_today = 0
         self.consecutive_losses = 0
         self.position_open = False
-        self.continuation_direction = None
         self.day_pnl_points = 0.0
         self.rate_limited = False
+        for session in self.sessions:
+            session.reset()
 
     def _dollar_per_point(self) -> float:
         # Per-contract dollar value times contracts_per_trade — the daily
@@ -118,24 +192,19 @@ class StrategyEngine:
             self.rate_limited = True
             self.phase = Phase.DONE_FOR_DAY
 
-    def _session_open_time(self, dt: datetime) -> datetime:
-        t = parse_hhmm(self.strategy_cfg.session_open)
-        return dt.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
-
-    def _hard_cutoff_time(self, open_dt: datetime) -> datetime:
-        """Cutoff relative to the session's own open_dt, not an arbitrary
-        bar's calendar date — an overnight session (e.g. open 21:00, cutoff
-        02:30) has a cutoff time-of-day that is numerically *earlier* than
-        the open; naively replacing hour/minute on the same date as the
-        bar would land the cutoff hours *before* the open (confirmed live:
-        every bar from the moment of anchoring onward saw itself as already
-        past cutoff), so roll to the next calendar day whenever the cutoff
-        time-of-day is at or before the open time-of-day."""
-        t = parse_hhmm(self.strategy_cfg.hard_cutoff)
-        cutoff = open_dt.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
-        if cutoff <= open_dt:
-            cutoff += timedelta(days=1)
-        return cutoff
+    def _find_session(self, ts: datetime) -> Optional[_SessionState]:
+        """Which configured session window (by time-of-day) this bar falls
+        in, if any -- sessions are configured to never overlap and never
+        cross midnight, so at most one can ever match. Recomputed fresh
+        from ts's own date every call (unlike the old single-session code,
+        there's no overnight-rollover ambiguity to guard against here)."""
+        for session in self.sessions:
+            w = session.window
+            window_open = ts.replace(hour=w.open_hour, minute=w.open_minute, second=0, microsecond=0)
+            window_cutoff = window_open + timedelta(minutes=w.duration_minutes)
+            if window_open <= ts < window_cutoff:
+                return session
+        return None
 
     def _update_pivots(self) -> None:
         n = len(self.day_bars)
@@ -263,32 +332,34 @@ class StrategyEngine:
 
     def structure_debug(self) -> Optional[str]:
         """Compact one-liner explaining why the current bar did/didn't break
-        structure — the direction being watched, the tracked level, and the
-        distance to the break threshold. Meant to be tacked onto the
-        existing per-bar log line so a "why didn't it trade" question is
-        answerable straight from bot_log.txt, instead of needing to
-        reconstruct pivot state after the fact from a partial bar history
-        (confirmed painful and error-prone live — a session's zero-signal
-        outcome was impossible to fully explain days later without this).
-        Returns None when there's nothing meaningful to show (no open bar
-        yet, a position is already open, or day is done)."""
-        if self.open_bar is None or self.position_open or self.phase not in (Phase.CONTINUATION, Phase.REVERSION):
+        structure — the session, direction being watched, the tracked
+        level, and the distance to the break threshold. Meant to be tacked
+        onto the existing per-bar log line so a "why didn't it trade"
+        question is answerable straight from bot_log.txt. Returns None when
+        there's no active session, it already traded, a position is
+        already open, or there's nothing meaningful to show yet."""
+        if not self.day_bars:
             return None
         bar = self.day_bars[-1]
-        if self.phase == Phase.CONTINUATION:
-            if self.continuation_direction is None:
+        session = self._find_session(bar.timestamp)
+        if session is None or session.open_bar is None or session.traded or self.position_open:
+            return None
+        if session.phase not in (Phase.CONTINUATION, Phase.REVERSION):
+            return None
+        if session.phase == Phase.CONTINUATION:
+            if session.continuation_direction is None:
                 return None
-            direction = self.continuation_direction
+            direction = session.continuation_direction
             extension_note = ""
         else:
-            extension = bar.close - self.open_price
+            extension = bar.close - session.open_price
             if abs(extension) < self.strategy_cfg.min_extension_points:
-                return f"reversion: extension {extension:+.2f} below min {self.strategy_cfg.min_extension_points}"
+                return f"[{session.window.name}] reversion: extension {extension:+.2f} below min {self.strategy_cfg.min_extension_points}"
             direction = Direction.SHORT if extension > 0 else Direction.LONG
             extension_note = f" ext={extension:+.2f}"
         bos, level = self._break_of_structure(bar, direction)
         if level is None:
-            return f"{self.phase.value}: dir={direction.value}{extension_note} no tracked level yet"
+            return f"[{session.window.name}] {session.phase.value}: dir={direction.value}{extension_note} no tracked level yet"
         buffer = self.strategy_cfg.break_buffer_points
         threshold = level - buffer if direction == Direction.SHORT else level + buffer
         # Signed margin: how far past the break threshold the close is, in
@@ -296,7 +367,7 @@ class StrategyEngine:
         # negative = short of it by that many points).
         margin = threshold - bar.close if direction == Direction.SHORT else bar.close - threshold
         return (
-            f"{self.phase.value}: dir={direction.value}{extension_note} level={level:.2f} "
+            f"[{session.window.name}] {session.phase.value}: dir={direction.value}{extension_note} level={level:.2f} "
             f"threshold={threshold:.2f} {'BROKE' if bos else f'{abs(margin):.2f}pts short'}"
         )
 
@@ -305,69 +376,65 @@ class StrategyEngine:
         self.day_bars.append(bar)
         self._update_pivots()
 
-        if self.open_bar is None:
-            open_dt = self._session_open_time(bar.timestamp)
-            if bar.timestamp < open_dt:
-                return None
-            # First bar at or after the session open anchors "fair price" —
-            # NOT an exact-equality match. A live process that starts or
-            # restarts (e.g. a crash-recovery restart mid-session) after the
-            # literal open-minute bar has already passed would otherwise
-            # never see a bar equal to open_dt and get stuck in
-            # WAITING_FOR_OPEN for the rest of the day, silently never
-            # trading again until the next calendar day — confirmed live.
-            # Anchoring on a later bar than the true 09:30 candle uses a
-            # stale-ish open price on a late restart, but that's still far
-            # better than never anchoring at all.
-            cutoff_dt = self._hard_cutoff_time(open_dt)
-            if bar.timestamp >= cutoff_dt:
-                # This date's open→cutoff window is already over and we
-                # never anchored an open — e.g. the first bar after a
-                # weekend gap lands Sunday evening, long past that date's
-                # cutoff. No session for this date ever happened, so stay
-                # WAITING_FOR_OPEN (rather than DONE_FOR_DAY) and just wait
-                # for the next calendar-day reset instead of prematurely
-                # shutting the bot down for a date it never actually traded.
-                return None
-            self.open_bar = bar
-            self.open_price = bar.open
-            self.open_dt = open_dt
-            self.cutoff_dt = cutoff_dt
-            self.continuation_direction = Direction.SHORT if not bar.is_green else Direction.LONG
-            self.phase = Phase.CONTINUATION
-            return None
-
         if self.rate_limited:
-            self.phase = Phase.DONE_FOR_DAY
-            return None
-        if self.trades_today >= self.risk_cfg.max_trades_per_day:
             self.phase = Phase.DONE_FOR_DAY
             return None
         if self.consecutive_losses >= self.risk_cfg.stop_after_consecutive_losses:
             self.phase = Phase.DONE_FOR_DAY
             return None
-        if bar.timestamp >= self.cutoff_dt:
-            self.phase = Phase.DONE_FOR_DAY
+
+        session = self._find_session(bar.timestamp)
+        if session is None:
+            # Between sessions (or past the last one for today) -- nothing
+            # to do, just wait for the next one. Deliberately NOT
+            # DONE_FOR_DAY: a later session still gets its own chance.
+            self.phase = Phase.WAITING_FOR_OPEN
             return None
 
-        # Keep `phase` current every bar regardless of whether a position is
-        # open, so it reflects the actual time-of-day window rather than
-        # freezing at whatever it was when the last trade opened — a bar
-        # that never reaches the entry logic below (because position_open is
-        # True) must still update this for anyone reading it live.
-        mins = minutes_since(self.open_dt, bar.timestamp)
+        if session.open_bar is None:
+            # First bar seen within this session's window anchors its "fair
+            # price" — not necessarily the literal first minute (a live
+            # process restarting mid-window anchors late rather than never
+            # anchoring at all, same reasoning the single-session version
+            # used to document here).
+            open_dt = bar.timestamp.replace(hour=session.window.open_hour, minute=session.window.open_minute, second=0, microsecond=0)
+            session.open_bar = bar
+            session.open_price = bar.open
+            session.open_dt = open_dt
+            session.cutoff_dt = open_dt + timedelta(minutes=session.window.duration_minutes)
+            session.continuation_direction = Direction.SHORT if not bar.is_green else Direction.LONG
+            session.phase = Phase.CONTINUATION
+            self.phase = session.phase
+            return None
+
+        if session.traded:
+            # This session already took its one trade today -- a LATER
+            # session (not this one) still gets its own independent shot,
+            # so this is WAITING_FOR_OPEN from this session's perspective,
+            # not a day-ending state.
+            session.phase = Phase.DONE_FOR_DAY
+            self.phase = session.phase
+            return None
+
+        if bar.timestamp >= session.cutoff_dt:
+            session.phase = Phase.DONE_FOR_DAY
+            self.phase = session.phase
+            return None
+
+        mins = minutes_since(session.open_dt, bar.timestamp)
         if mins <= self.strategy_cfg.continuation_end_minutes:
-            self.phase = Phase.CONTINUATION
-        elif mins <= self.strategy_cfg.reversion_end_minutes:
-            self.phase = Phase.REVERSION
+            session.phase = Phase.CONTINUATION
+        elif mins <= session.window.duration_minutes:
+            session.phase = Phase.REVERSION
         else:
-            self.phase = Phase.DONE_FOR_DAY
+            session.phase = Phase.DONE_FOR_DAY
+        self.phase = session.phase
 
         if self.position_open:
             return None
 
         if mins <= self.strategy_cfg.continuation_end_minutes:
-            direction = self.continuation_direction
+            direction = session.continuation_direction
             if direction is None:
                 return None
             # Break of structure is the mandatory trigger — no BOS, no trade.
@@ -386,7 +453,7 @@ class StrategyEngine:
             else:
                 grade = SetupGrade.B_PLUS
             reason = (
-                f"Continuation of {direction.value} opening flow, "
+                f"[{session.window.name}] Continuation of {direction.value} opening flow, "
                 f"{'displacement + ' if displaced else ''}"
                 f"{'HTF-aligned + ' if htf_aligned else ''}"
                 f"close through structure {level:.2f}"
@@ -395,10 +462,11 @@ class StrategyEngine:
                 bar, direction, Phase.CONTINUATION, grade, reason=reason,
             )
             self.position_open = True
+            session.traded = True
             return signal
 
-        if mins <= self.strategy_cfg.reversion_end_minutes:
-            extension = bar.close - self.open_price
+        if mins <= session.window.duration_minutes:
+            extension = bar.close - session.open_price
             if abs(extension) < self.strategy_cfg.min_extension_points:
                 return None
             direction = Direction.SHORT if extension > 0 else Direction.LONG
@@ -420,7 +488,7 @@ class StrategyEngine:
             signal = self._build_signal(
                 bar, direction, Phase.REVERSION, grade,
                 reason=(
-                    f"Mean reversion toward open {self.open_price:.2f} "
+                    f"[{session.window.name}] Mean reversion toward open {session.open_price:.2f} "
                     f"(extended {extension:+.2f} pts), "
                     f"{'displacement + ' if displaced else ''}"
                     f"{'HTF-aligned + ' if htf_aligned else ''}"
@@ -428,6 +496,12 @@ class StrategyEngine:
                 ),
             )
             self.position_open = True
+            session.traded = True
             return signal
 
         return None
+
+
+def _hhmm(s: str) -> tuple[int, int]:
+    t = parse_hhmm(s)
+    return t.hour, t.minute
