@@ -366,3 +366,5 @@ extensively before trusting it with anything real, and note that TopStep's
 rules generally prohibit unattended/fully automated trading on evaluation and
 funded accounts without prior approval — this project is for paper/demo
 accounts and strategy research.
+
+<!-- vercel-deploy-diagnostic-test 2026-10-20T17:53:41Z -->
