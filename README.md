@@ -368,3 +368,4 @@ funded accounts without prior approval — this project is for paper/demo
 accounts and strategy research.
 
 <!-- vercel-deploy-diagnostic-test 2026-10-20T17:53:41Z -->
+<!-- retest after reconnecting vercel github integration 2026-10-20T17:56:37Z -->
