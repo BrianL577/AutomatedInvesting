@@ -87,3 +87,4 @@ Then open http://localhost:3000.
    `.env.example` in this directory. Use the **anon** key only, never the
    service role key.
 6. Deploy.
+<!-- retest #3: touches a file inside dashboard/ after disabling 'skip if no root dir changes' 2026-10-20T18:05:07Z -->
