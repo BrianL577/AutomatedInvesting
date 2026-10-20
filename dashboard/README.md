@@ -87,3 +87,5 @@ Then open http://localhost:3000.
    `.env.example` in this directory. Use the **anon** key only, never the
    service role key.
 6. Deploy.
+
+<!-- vercel-deploy-test: GitHub App reinstalled, confirming auto-deploy works -->
