@@ -262,17 +262,24 @@ class VirtualAccountManager:
         if self._idle_account() is None:
             return None  # every account already has its one trade for today
 
-        # The engine's own position_open / max_trades_per_day / consecutive-
-        # loss / rate-limit gates model a single shared account waiting for
-        # its one trade to resolve before looking for another. Practice mode
-        # instead wants the engine to keep scanning for the *next* distinct
-        # setup regardless of whether earlier ones are still open elsewhere
-        # (each goes to a different account) — per-account "one trade a day"
-        # is enforced below instead.
+        # The engine's own position_open / per-session "already traded" /
+        # consecutive-loss / rate-limit gates model a single shared account
+        # waiting for its one trade (per session) to resolve before looking
+        # for another. Practice mode instead wants the engine to keep
+        # scanning for the *next* distinct setup regardless of whether
+        # earlier ones are still open elsewhere (each goes to a different
+        # account), REGARDLESS of which of the 5 daily sessions is
+        # currently active — per-account "one trade a day" is enforced
+        # below instead. Without resetting session.traded too, each of the
+        # 5 sessions would silently cap out at exactly one setup/day here,
+        # same as the real single-trade-per-session account, instead of
+        # this manager's deliberately different "keep scanning" design.
         self.engine.position_open = False
         self.engine.trades_today = 0
         self.engine.consecutive_losses = 0
         self.engine.rate_limited = False
+        for session in self.engine.sessions:
+            session.traded = False
 
         signal = self.engine.on_bar(bar)
         if signal is None:

@@ -226,6 +226,31 @@ def test_same_move_retrigger_is_skipped_but_genuine_extension_is_not():
     assert signal3.entry_price == 29100.0
 
 
+def test_session_traded_flag_is_reset_every_bar_so_virtual_can_keep_scanning():
+    """CONFIRMED: per explicit user request, the live engine now runs 5
+    independent daily sessions, each gated to one trade via its own
+    session.traded flag (strategy.py). Without resetting that flag every
+    bar alongside the engine's other day-level gates, each session would
+    silently cap virtual scanning at one setup/day/session -- same as the
+    real single-trade-per-session account -- defeating this manager's
+    whole "keep scanning for distinct setups" design."""
+    cfg = load_config()
+    manager = _manager(cfg, 5)
+    day = mkbar(9, 30, 1, 1, 1, 1).timestamp.date()
+    manager._current_day = day
+    manager._is_first_day_check = False
+
+    manager.engine.on_bar = lambda bar: _canned_signal(9, 31, Direction.SHORT, 29150.0)
+    result1 = manager.on_bar(mkbar(9, 31, 1, 1, 1, 1))
+    assert result1 is not None
+    manager.engine.sessions[0].traded = True  # simulate the real engine marking NY AM as already-traded
+
+    manager.engine.on_bar = lambda bar: _canned_signal(9, 33, Direction.SHORT, 29100.0)
+    result2 = manager.on_bar(mkbar(9, 33, 1, 1, 1, 1))
+    assert result2 is not None, "virtual must keep getting setups even after the engine marks this session traded"
+    assert manager.engine.sessions[0].traded is False, "manager must reset session.traded back to False every bar"
+
+
 def test_idle_account_prioritizes_untraded_then_highest_then_lowest():
     """CONFIRMED LIVE BUG: a plain "highest balance wins" scan starves any
     account still sitting at its untouched $0 starting balance -- $0 always
@@ -402,6 +427,7 @@ if __name__ == "__main__":
     test_chart_renderer_hook_is_called_and_passed_through()
     test_restart_mid_day_does_not_let_same_account_retrade()
     test_same_move_retrigger_is_skipped_but_genuine_extension_is_not()
+    test_session_traded_flag_is_reset_every_bar_so_virtual_can_keep_scanning()
     test_idle_account_prioritizes_untraded_then_highest_then_lowest()
     test_net_dollars_persists_across_a_restart_and_a_new_day()
     test_idle_account_priority_full_cascade_untraded_funded_positive_negative()

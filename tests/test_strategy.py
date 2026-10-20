@@ -78,14 +78,18 @@ def test_marginal_break_is_filtered_as_noise():
     assert signal is None, "a marginal 1.6pt break must be filtered as noise, not treated as a real BOS"
 
 
-def test_max_trades_per_day_enforced():
+def test_session_only_trades_once_but_a_later_session_still_gets_its_own_shot():
+    """Per explicit user request: max_trades_per_day now means "one trade
+    per SESSION", not one trade for the whole day -- each of the 5 daily
+    sessions (NY AM, NY PM, Session, Asia, London) gets its own
+    independent shot. A session that already traded must not trade again."""
     cfg = load_config()
     engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk)
-    engine.trades_today = cfg.risk.max_trades_per_day
     open_bar = mkbar(9, 30, 100.0, 100.5, 99.5, 100.2)
-    engine.on_bar(open_bar)
+    engine.on_bar(open_bar)  # anchors NY AM
+    engine.sessions[0].traded = True  # simulate NY AM having already taken its one trade
     next_bar = mkbar(9, 31, 100.2, 105.0, 100.1, 104.9)
-    assert engine.on_bar(next_bar) is None
+    assert engine.on_bar(next_bar) is None, "NY AM already traded -- a real BOS must still be ignored"
 
 
 def test_reset_day_clears_state():
@@ -93,31 +97,82 @@ def test_reset_day_clears_state():
     engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk)
     engine.trades_today = 3
     engine.consecutive_losses = 2
+    engine.sessions[0].traded = True
     engine.reset_day()
     assert engine.trades_today == 0
     assert engine.consecutive_losses == 0
     assert engine.open_price is None
+    assert engine.sessions[0].traded is False
 
 
-def test_first_bar_of_day_past_cutoff_waits_instead_of_ending_day():
-    # Simulates a weekend reopen: the first bar seen for this trading day
-    # arrives Sunday evening, long after today's hard_cutoff (11:00) has
-    # already passed for that calendar date. No session for this date ever
-    # happened, so the engine should stay WAITING_FOR_OPEN (and wait for
-    # tomorrow's open) rather than jumping straight to DONE_FOR_DAY.
+def test_bar_between_sessions_waits_instead_of_ending_day():
+    # Per explicit user request, there are now 5 daily sessions (NY AM
+    # 09:30-11:00, NY PM 14:00-16:00, Session 18:00-20:00, Asia 20:00-22:00,
+    # London 03:00-05:00 ET) -- this bar (23:30) falls in the one genuine
+    # gap between all of them (after Asia closes, before London opens). No
+    # session covers this time, so the engine should stay WAITING_FOR_OPEN
+    # (for the next session to open) rather than jumping to DONE_FOR_DAY.
     cfg = load_config()
     engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk)
 
-    late_bar = mkbar(18, 1, 100.0, 100.5, 99.5, 100.2)
+    late_bar = mkbar(23, 30, 100.0, 100.5, 99.5, 100.2)
     assert engine.on_bar(late_bar) is None
     assert engine.phase == Phase.WAITING_FOR_OPEN
     assert engine.open_bar is None
 
 
+def test_second_session_trades_independently_of_an_already_traded_first_session():
+    """Per explicit user request: 5 independent daily sessions, not one.
+    NY AM having already taken its trade must not block Asia (20:00 ET)
+    from taking its own, completely independent trade."""
+    cfg = load_config()
+    engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk)
+    engine.sessions[0].traded = True  # NY AM already traded today
+
+    # Opening candle for the Asia session (20:00 ET): red -> SHORT continuation direction
+    open_bar = mkbar(20, 0, 100.0, 100.5, 98.0, 98.5)
+    assert engine.on_bar(open_bar) is None
+    asia = next(s for s in engine.sessions if s.window.name == "Asia")
+    assert asia.continuation_direction == Direction.SHORT
+
+    quiet_bars = [
+        (20, 1, 98.5, 98.6, 98.3, 98.3),
+        (20, 2, 98.3, 98.35, 98.0, 98.1),
+        (20, 3, 98.1, 98.35, 98.05, 98.3),
+        (20, 4, 98.3, 98.5, 98.25, 98.45),
+    ]
+    for hh, mm, o, h, l, c in quiet_bars:
+        engine.on_bar(mkbar(hh, mm, o, h, l, c))
+    prev_close = quiet_bars[-1][4]
+
+    disp = mkbar(20, 5, prev_close, prev_close + 0.1, prev_close - 5, prev_close - 4.9)
+    signal = engine.on_bar(disp)
+    assert signal is not None
+    assert signal.direction == Direction.SHORT
+    assert "[Asia]" in signal.reason
+    assert asia.traded is True
+
+
+def test_day_level_consecutive_losses_cap_blocks_every_session():
+    """The day-level risk caps (consecutive_losses, rate_limited) are
+    shared across all 5 sessions, not reset per session -- a dollar-risk
+    circuit breaker, not a per-session opportunity. Confirms this blocks
+    entry before a session even gets to anchor."""
+    cfg = load_config()
+    engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk)
+    engine.consecutive_losses = cfg.risk.stop_after_consecutive_losses
+    open_bar = mkbar(9, 30, 100.0, 100.5, 99.5, 100.2)
+    assert engine.on_bar(open_bar) is None
+    assert engine.phase == Phase.DONE_FOR_DAY
+    assert engine.open_bar is None, "must not even anchor once the day-level loss-streak cap is hit"
+
+
 if __name__ == "__main__":
     test_continuation_short_signal()
     test_marginal_break_is_filtered_as_noise()
-    test_max_trades_per_day_enforced()
+    test_session_only_trades_once_but_a_later_session_still_gets_its_own_shot()
     test_reset_day_clears_state()
-    test_first_bar_of_day_past_cutoff_waits_instead_of_ending_day()
+    test_bar_between_sessions_waits_instead_of_ending_day()
+    test_second_session_trades_independently_of_an_already_traded_first_session()
+    test_day_level_consecutive_losses_cap_blocks_every_session()
     print("All tests passed.")
