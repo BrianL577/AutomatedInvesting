@@ -27,11 +27,11 @@ strategy described by the YouTuber JJ. Three brokers are supported:
 Per explicit user request, this strategy now runs across **5 independent
 daily sessions** (all ET), each applying the exact same rules below just
 anchored at a different time: **NY AM** (09:30, unchanged — 90 min total,
-cutoff 11:00), **NY PM** (14:00), **Session** (18:00), **Asia** (20:00),
+cutoff 11:00), **NY Close** (14:00), **EU** (18:00), **Asian** (20:00),
 and **London** (03:00) — the latter four each run for
-`strategy.additional_session_duration_minutes` (2 hours). None of these
-windows overlap. Each session gets its own independent one-trade shot —
-see `jj_bot/strategy.py`'s `_SessionWindow`/`_SessionState`.
+`strategy.additional_session_duration_minutes` (90 min, same length as NY
+AM). None of these windows overlap. Each session gets its own independent
+one-trade shot — see `jj_bot/strategy.py`'s `_SessionWindow`/`_SessionState`.
 
 1. **Anchor**: each session's own opening 1-minute candle is treated as
    that session's "fair price."

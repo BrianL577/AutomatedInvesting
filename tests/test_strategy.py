@@ -123,17 +123,17 @@ def test_bar_between_sessions_waits_instead_of_ending_day():
 
 def test_second_session_trades_independently_of_an_already_traded_first_session():
     """Per explicit user request: 5 independent daily sessions, not one.
-    NY AM having already taken its trade must not block Asia (20:00 ET)
+    NY AM having already taken its trade must not block Asian (20:00 ET)
     from taking its own, completely independent trade."""
     cfg = load_config()
     engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk)
     engine.sessions[0].traded = True  # NY AM already traded today
 
-    # Opening candle for the Asia session (20:00 ET): red -> SHORT continuation direction
+    # Opening candle for the Asian session (20:00 ET): red -> SHORT continuation direction
     open_bar = mkbar(20, 0, 100.0, 100.5, 98.0, 98.5)
     assert engine.on_bar(open_bar) is None
-    asia = next(s for s in engine.sessions if s.window.name == "Asia")
-    assert asia.continuation_direction == Direction.SHORT
+    asian = next(s for s in engine.sessions if s.window.name == "Asian")
+    assert asian.continuation_direction == Direction.SHORT
 
     quiet_bars = [
         (20, 1, 98.5, 98.6, 98.3, 98.3),
@@ -149,8 +149,8 @@ def test_second_session_trades_independently_of_an_already_traded_first_session(
     signal = engine.on_bar(disp)
     assert signal is not None
     assert signal.direction == Direction.SHORT
-    assert "[Asia]" in signal.reason
-    assert asia.traded is True
+    assert "[Asian]" in signal.reason
+    assert asian.traded is True
 
 
 def test_day_level_consecutive_losses_cap_blocks_every_session():
