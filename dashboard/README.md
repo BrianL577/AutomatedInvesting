@@ -89,3 +89,4 @@ Then open http://localhost:3000.
 6. Deploy.
 
 <!-- vercel-deploy-test: GitHub App reinstalled, confirming auto-deploy works -->
+<!-- vercel-deploy-test-2: personal Git login connection reconnected, confirming auto-deploy works -->
