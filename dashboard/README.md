@@ -90,3 +90,4 @@ Then open http://localhost:3000.
 
 <!-- vercel-deploy-test: GitHub App reinstalled, confirming auto-deploy works -->
 <!-- vercel-deploy-test-2: personal Git login connection reconnected, confirming auto-deploy works -->
+<!-- vercel-deploy-test-3: GitHub default branch corrected from stale branch to main, confirming auto-deploy works -->
