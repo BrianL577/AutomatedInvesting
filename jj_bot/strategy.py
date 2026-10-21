@@ -22,13 +22,20 @@ notes) into concrete, backtestable rules:
   wicks), that closes beyond a recent swing high/low by more than a small
   noise buffer.
 - Fixed 1:1.5 R:R (configurable stop/target in points).
-- Caps: one trade per SESSION (not per day -- each of the 5 sessions gets
-  its own independent shot), stop after N consecutive losses in the day,
-  no entries after a session's own cutoff, and a daily dollar rate limiter
-  (stop trading for the rest of the day once the day's running P&L hits a
-  profit cap or a loss cap) -- these day-level risk controls are shared
-  across all 5 sessions, not reset per session, since they're a dollar-risk
-  circuit breaker, not a per-session opportunity.
+- Caps: one trade per ACCOUNT per DAY (risk_cfg.max_trades_per_day) -- all 5
+  sessions are scanned, but once any one of them produces that day's trade
+  the rest of the day is done, regardless of which session got there first.
+  (VirtualAccountManager deliberately resets this gate every bar so its
+  underlying engine keeps finding fresh distinct setups across all 5
+  sessions all day, to hand out to whichever of its own several accounts
+  hasn't traded yet -- see jj_bot/virtual_accounts.py. A plain single-account
+  engine, as the real live runner uses, is NOT wrapped that way, so this gate
+  applies to it exactly as it reads.) Also: stop after N consecutive losses
+  in the day, no entries after a session's own cutoff, and a daily dollar
+  rate limiter (stop trading for the rest of the day once the day's running
+  P&L hits a profit cap or a loss cap) -- these day-level risk controls are
+  shared across all 5 sessions, not reset per session, since they're a
+  dollar-risk circuit breaker, not a per-session opportunity.
 
 The engine is fed one confirmed (closed) bar at a time via `on_bar`. It is
 pure decision logic — it does not manage open positions or place orders;
@@ -380,6 +387,13 @@ class StrategyEngine:
             self.phase = Phase.DONE_FOR_DAY
             return None
         if self.consecutive_losses >= self.risk_cfg.stop_after_consecutive_losses:
+            self.phase = Phase.DONE_FOR_DAY
+            return None
+        if self.trades_today >= self.risk_cfg.max_trades_per_day:
+            # Per explicit user request: one trade per ACCOUNT per DAY, not
+            # per session -- all 5 sessions are still scanned, but once any
+            # one of them has produced the day's trade, every later session
+            # must stay quiet for the rest of the day too.
             self.phase = Phase.DONE_FOR_DAY
             return None
 

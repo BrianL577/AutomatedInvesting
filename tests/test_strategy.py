@@ -121,19 +121,26 @@ def test_bar_between_sessions_waits_instead_of_ending_day():
     assert engine.open_bar is None
 
 
-def test_second_session_trades_independently_of_an_already_traded_first_session():
-    """Per explicit user request: 5 independent daily sessions, not one.
-    NY AM having already taken its trade must not block Asian (20:00 ET)
-    from taking its own, completely independent trade."""
+def test_a_later_session_does_not_get_an_independent_trade_once_the_day_cap_is_hit():
+    """Per explicit user request: one trade per ACCOUNT per DAY, not per
+    session -- all 5 sessions are still scanned, but once trades_today hits
+    risk_cfg.max_trades_per_day (1), a later session (e.g. Asian, 20:00 ET)
+    must NOT get its own independent trade just because IT hasn't traded
+    yet. This is the single-account engine the real live runner uses
+    directly (NOT wrapped by VirtualAccountManager, which deliberately
+    bypasses this gate every bar for its own different reasons -- see
+    test_virtual_accounts.py)."""
     cfg = load_config()
     engine = StrategyEngine(strategy_cfg=cfg.strategy, risk_cfg=cfg.risk)
-    engine.sessions[0].traded = True  # NY AM already traded today
+    engine.trades_today = 1  # the account already took its one trade today (some earlier session)
 
-    # Opening candle for the Asian session (20:00 ET): red -> SHORT continuation direction
+    # Opening candle for the Asian session (20:00 ET): red -> SHORT continuation direction.
+    # Even anchoring is skipped -- the day-level cap is checked before a session gets to open.
     open_bar = mkbar(20, 0, 100.0, 100.5, 98.0, 98.5)
     assert engine.on_bar(open_bar) is None
+    assert engine.phase == Phase.DONE_FOR_DAY
     asian = next(s for s in engine.sessions if s.window.name == "Asian")
-    assert asian.continuation_direction == Direction.SHORT
+    assert asian.open_bar is None, "a later session must not even anchor once the day's trade cap is hit"
 
     quiet_bars = [
         (20, 1, 98.5, 98.6, 98.3, 98.3),
@@ -142,15 +149,11 @@ def test_second_session_trades_independently_of_an_already_traded_first_session(
         (20, 4, 98.3, 98.5, 98.25, 98.45),
     ]
     for hh, mm, o, h, l, c in quiet_bars:
-        engine.on_bar(mkbar(hh, mm, o, h, l, c))
+        assert engine.on_bar(mkbar(hh, mm, o, h, l, c)) is None
     prev_close = quiet_bars[-1][4]
 
     disp = mkbar(20, 5, prev_close, prev_close + 0.1, prev_close - 5, prev_close - 4.9)
-    signal = engine.on_bar(disp)
-    assert signal is not None
-    assert signal.direction == Direction.SHORT
-    assert "[Asian]" in signal.reason
-    assert asian.traded is True
+    assert engine.on_bar(disp) is None, "a real BOS in a later session must still be ignored once the day cap is hit"
 
 
 def test_day_level_consecutive_losses_cap_blocks_every_session():

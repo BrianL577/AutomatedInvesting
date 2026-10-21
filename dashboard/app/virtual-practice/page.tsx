@@ -83,9 +83,22 @@ function summarizeByAccount(trades: Trade[]): AccountSummary[] {
 // accounts, no real order behind them) live on this dedicated page so they
 // never dilute the real trade log on "/", the same reason they're excluded
 // from computeStats()/simulateAccounts() there (see dashboard/lib/trades.ts).
+// Every real signal jj_bot/strategy.py ever produces has a reason string
+// prefixed "[SessionName] ..." (continuation/reversion reasons both build it
+// this way — see StrategyEngine.on_bar). A row with no such prefix did not
+// come from the live engine at all: it's synthetic/corrupted data (manually
+// inserted test rows, a broken write, etc.) that slipped into Supabase with
+// source="virtual_practice" anyway. Stage/Funded is replayed from trade
+// history in date order (see replayStage below), so even one such row with
+// a bogus date can silently fund an account that never actually crossed the
+// real $3,000 target — this guard is what stops that from happening again.
+function isGenuineVirtualPracticeTrade(t: Trade): boolean {
+  return /^\[[^\]]+\]/.test(t.reason || "");
+}
+
 export default async function VirtualPracticePage() {
   const allTrades = await loadTrades();
-  const trades = allTrades.filter((t) => t.source === "virtual_practice");
+  const trades = allTrades.filter((t) => t.source === "virtual_practice" && isGenuineVirtualPracticeTrade(t));
   const summaries = summarizeByAccount(trades);
 
   const totalTrades = trades.length;

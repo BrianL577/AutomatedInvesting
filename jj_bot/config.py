@@ -170,14 +170,14 @@ class StrategyConfig:
 class RiskConfig:
     stop_points: float
     target_points: float
-    # NOTE: as of the multi-session change (strategy.py), the live engine
-    # no longer reads this field at all -- "one trade per day" became "one
-    # trade per SESSION" (hardcoded in strategy.py, not configurable here)
-    # once JJ's strategy started trading 5 independent daily sessions
-    # instead of just the NY open, per explicit user request. Kept in the
-    # schema only because the Strategy Creator dashboard still maps
-    # maxTradesPerDay onto it -- setting it from there currently has no
-    # live effect.
+    # Per explicit user request: even with 5 independent daily sessions
+    # (strategy.py), the account itself still only takes max_trades_per_day
+    # (1) trade(s) total per day -- all 5 sessions are scanned, but once one
+    # of them produces that day's trade, every later session stays quiet for
+    # the rest of the day too. VirtualAccountManager deliberately bypasses
+    # this per bar so it can keep finding fresh setups all day to hand out
+    # across its own several virtual accounts -- see
+    # jj_bot/virtual_accounts.py.
     max_trades_per_day: int
     stop_after_consecutive_losses: int
     contracts_per_trade: int
