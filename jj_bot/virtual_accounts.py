@@ -21,14 +21,17 @@ trading. If the session produces fewer setups than accounts, the
 remaining accounts simply don't trade — no synthetic trades are invented
 to fill the count.
 
-Each account also runs its own eval/funded state machine, mirroring the
-real account's rules: reaching cfg.topstep_eval.profit_target (net_dollars)
-funds the account (balance resets to $0, and future trades risk the same
-stop but aim for cfg.risk.funded_target_dollars instead of the static
-target); a funded account that draws down to
--cfg.topstep_eval.trailing_max_drawdown is blown and returns to a fresh,
-unfunded eval attempt (also reset to $0). See `_resolve_trade` and
-`_sized_signal_for_account`.
+Each account also runs its own eval/funded/busted state machine. Per
+explicit user request, each virtual account simulates one real TopStep
+account, so a bust must be permanent (as it would be for a real funded
+account), not a free reset: reaching cfg.topstep_eval.profit_target
+(net_dollars) funds the account (balance resets to $0, and future trades
+risk the same stop but aim for cfg.risk.funded_target_dollars instead of
+the static target); a funded account that draws down
+cfg.topstep_eval.trailing_max_drawdown below its own TRAILING high-water
+mark since funding (not a flat drawdown from $0) is permanently BUSTED --
+excluded from ever trading again. See `_resolve_trade`, `_idle_account`,
+and `_sized_signal_for_account`.
 """
 from __future__ import annotations
 
@@ -56,17 +59,30 @@ class VirtualAccount:
     # ever taken — NOT reset by reset_day() (unlike traded_today, which is
     # a daily flag). Drives the per-user-request "trade the account with
     # the most money on it first" ordering in _idle_account(). Rebased to
-    # $0 on funding and again on every fresh eval attempt after a bust —
-    # see VirtualAccountManager._resolve_trade.
+    # $0 on funding — see VirtualAccountManager._resolve_trade.
     net_dollars: float = 0.0
     # Per explicit user request: once net_dollars reaches the eval profit
     # target (cfg.topstep_eval.profit_target), the account is "funded" --
     # net_dollars resets to $0 and future trades risk the same stop but aim
-    # for a much bigger target (cfg.risk.funded_target_dollars). A funded
-    # account that draws down to -cfg.topstep_eval.trailing_max_drawdown is
-    # "blown" and returns to a fresh (unfunded) eval attempt. Lifetime
+    # for a much bigger target (cfg.risk.funded_target_dollars). Lifetime
     # state like net_dollars -- NOT reset by reset_day().
     funded: bool = False
+    # Highest net_dollars reached since this account's most recent funding
+    # (the TRAILING drawdown reference point -- NOT a flat -$2,000 from the
+    # $0 reset). Reset to 0.0 every time `funded` newly becomes True. Only
+    # meaningful while funded.
+    funded_high_water: float = 0.0
+    # Per explicit user request: a virtual account exists to simulate one
+    # real TopStep account, and busting a real funded account does NOT
+    # grant a free do-over -- you'd have to buy a brand new eval to try
+    # again. So once a funded account draws down
+    # cfg.topstep_eval.trailing_max_drawdown below its funded_high_water,
+    # it's permanently "busted": excluded from _idle_account() forever,
+    # never trades again, and its final funded/net_dollars state is left
+    # exactly as it was at the moment of the bust (not reset) so the
+    # dashboard can show what it actually ended at. Lifetime state -- NOT
+    # reset by reset_day().
+    busted: bool = False
 
     def reset_day(self) -> None:
         self.pending_signal = None
@@ -148,8 +164,12 @@ class VirtualAccountManager:
         and dropped below $0. Putting untouched accounts at the very top
         of the priority order (above even funded accounts) gives every
         account its first trade before any account gets a second one, so
-        all 10 participate."""
-        idle = [a for a in self.accounts if not a.traded_today]
+        all 10 participate.
+
+        Busted accounts (see VirtualAccount.busted) are excluded entirely,
+        at every tier -- per explicit user request, a busted account must
+        never trade again, full stop."""
+        idle = [a for a in self.accounts if not a.traded_today and not a.busted]
         if not idle:
             return None
 
@@ -177,7 +197,13 @@ class VirtualAccountManager:
         payload = {
             "date": day.isoformat(),
             "accounts": {
-                a.name: {"traded_today": a.traded_today, "net_dollars": a.net_dollars, "funded": a.funded}
+                a.name: {
+                    "traded_today": a.traded_today,
+                    "net_dollars": a.net_dollars,
+                    "funded": a.funded,
+                    "funded_high_water": a.funded_high_water,
+                    "busted": a.busted,
+                }
                 for a in self.accounts
             },
         }
@@ -209,13 +235,16 @@ class VirtualAccountManager:
             saved = saved_accounts.get(account.name)
             if not saved:
                 continue
-            # net_dollars and funded are running lifetime state — always
-            # restore them, regardless of whether today is a new calendar
-            # day. Only traded_today (a daily flag) is gated on the date
-            # matching; on a genuinely new day it correctly stays at the
-            # zeroed value reset_day() already set.
+            # net_dollars, funded, funded_high_water, and busted are all
+            # running lifetime state — always restore them, regardless of
+            # whether today is a new calendar day. Only traded_today (a
+            # daily flag) is gated on the date matching; on a genuinely new
+            # day it correctly stays at the zeroed value reset_day() already
+            # set.
             account.net_dollars = saved.get("net_dollars", 0.0)
             account.funded = saved.get("funded", False)
+            account.funded_high_water = saved.get("funded_high_water", 0.0)
+            account.busted = saved.get("busted", False)
             if same_day and saved.get("traded_today"):
                 account.traded_today = True
                 restored_traded += 1
@@ -366,19 +395,31 @@ class VirtualAccountManager:
         # Per explicit user request: reaching the eval profit target funds
         # the account (balance resets to $0, future trades risk the same
         # stop but aim for a much bigger target -- see
-        # _sized_signal_for_account); a FUNDED account that draws down to
-        # the trailing drawdown limit is blown and returns to a fresh
-        # (unfunded) eval attempt, also reset to $0.
+        # _sized_signal_for_account). Once funded, a TRAILING drawdown is
+        # tracked against the account's own high-water mark since funding
+        # (NOT a flat -$2,000 from the $0 reset) -- drawing down
+        # trailing_max_drawdown below that peak permanently BUSTS the
+        # account: it simulates one real TopStep account, and busting a
+        # real funded account doesn't grant a free do-over, so it's
+        # excluded from ever trading again (_idle_account), with its
+        # funded/net_dollars state left exactly as it was at the moment of
+        # the bust -- not reset.
         if not account.funded and account.net_dollars >= self.cfg.topstep_eval.profit_target:
             account.funded = True
             account.net_dollars = 0.0
+            account.funded_high_water = 0.0
             logger.info("%s FUNDED! Balance reset to $0 -- future trades aim for $%.0f.",
                         account.name, self.cfg.risk.funded_target_dollars)
-        elif account.funded and account.net_dollars <= -self.cfg.topstep_eval.trailing_max_drawdown:
-            account.funded = False
-            account.net_dollars = 0.0
-            logger.info("%s BLOWN (funded account hit -$%.0f) -- resetting to a fresh eval attempt.",
-                        account.name, self.cfg.topstep_eval.trailing_max_drawdown)
+        elif account.funded and not account.busted:
+            account.funded_high_water = max(account.funded_high_water, account.net_dollars)
+            bust_floor = account.funded_high_water - self.cfg.topstep_eval.trailing_max_drawdown
+            if account.net_dollars <= bust_floor:
+                account.busted = True
+                logger.info(
+                    "%s BUSTED (funded account drew down $%.0f from its $%.0f peak) -- "
+                    "permanently done trading, same as losing a real funded account.",
+                    account.name, self.cfg.topstep_eval.trailing_max_drawdown, account.funded_high_water,
+                )
 
         account.pending_signal = None
         if self._current_day is not None:
