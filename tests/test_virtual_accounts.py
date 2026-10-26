@@ -381,7 +381,12 @@ def test_funded_account_uses_bigger_target_but_same_stop():
     assert sized.target_price == pytest.approx(signal.entry_price + expected_target_points)
 
 
-def test_funded_account_busts_at_drawdown_and_returns_to_eval():
+def test_funded_account_busts_permanently_instead_of_resetting_to_eval():
+    """Per explicit user request: each virtual account simulates one real
+    TopStep account. Busting a real funded account doesn't grant a free
+    do-over, so busting here must be permanent -- excluded from trading
+    forever, with funded/net_dollars left exactly as they were at the
+    moment of the bust (not reset to a fresh eval attempt)."""
     cfg = load_config()
     manager = _manager(cfg, 1)
     day = mkbar(9, 30, 1, 1, 1, 1).timestamp.date()
@@ -392,12 +397,48 @@ def test_funded_account_busts_at_drawdown_and_returns_to_eval():
     account.net_dollars = -cfg.topstep_eval.trailing_max_drawdown + 500.0  # not blown yet
     account.pending_signal = _canned_signal(9, 31, Direction.SHORT, 29000.0)
 
-    # A losing trade that pushes it past -trailing_max_drawdown.
+    # A losing trade that pushes it past -trailing_max_drawdown (below its
+    # $0 funded_high_water, since this account hasn't posted a funded-stage
+    # win yet).
     result = manager._resolve_trade(account, exit_price=29025.0, exit_timestamp=mkbar(9, 32, 1, 1, 1, 1).timestamp)
 
     assert result.win is False
-    assert account.funded is False, "a funded account past the drawdown limit must return to eval"
-    assert account.net_dollars == 0.0, "must reset to a fresh eval attempt, not stay deeply negative"
+    assert account.busted is True, "drawing down past the trailing limit must permanently bust the account"
+    assert account.funded is True, "funded flag must be left as-is at the moment of the bust, not reset"
+    assert account.net_dollars == -cfg.topstep_eval.trailing_max_drawdown - 500.0, "balance must be left as-is, not reset to 0"
+
+    account.traded_today = False
+    assert manager._idle_account() is None, "a busted account must never be selected to trade again"
+
+
+def test_funded_bust_is_measured_against_the_trailing_high_water_mark():
+    """The bust floor trails the account's own peak since funding (NOT a
+    flat -trailing_max_drawdown from the $0 reset) -- an account that
+    climbed well above $0 after funding gets a correspondingly higher bust
+    floor, same as a real TopStep trailing drawdown."""
+    cfg = load_config()
+    manager = _manager(cfg, 1)
+    day = mkbar(9, 30, 1, 1, 1, 1).timestamp.date()
+    manager._current_day = day
+
+    account = manager.accounts[0]
+    account.funded = True
+    account.net_dollars = 3000.0  # climbed well above $0 since funding
+    account.funded_high_water = 3000.0
+    account.pending_signal = _canned_signal(9, 31, Direction.SHORT, 29000.0)
+
+    # Loses $1,000, landing at $2,000 -- still $1,000 above the trailing
+    # floor (3000 - 2000 = 1000), so must NOT bust yet.
+    manager._resolve_trade(account, exit_price=29025.0, exit_timestamp=mkbar(9, 32, 1, 1, 1, 1).timestamp)
+    assert account.busted is False, "must not bust while still above its own trailing floor"
+    assert account.net_dollars == 2000.0
+
+    account.traded_today = False
+    account.pending_signal = _canned_signal(10, 31, Direction.SHORT, 29000.0)
+    # Another $1,000 loss, landing exactly at the trailing floor (1000 - 1000 = 0).
+    manager._resolve_trade(account, exit_price=29025.0, exit_timestamp=mkbar(10, 32, 1, 1, 1, 1).timestamp)
+    assert account.busted is True, "hitting the trailing floor exactly must bust the account"
+    assert account.net_dollars == 1000.0
 
 
 def test_funded_state_persists_across_a_restart():
@@ -433,6 +474,7 @@ if __name__ == "__main__":
     test_idle_account_priority_full_cascade_untraded_funded_positive_negative()
     test_reaching_profit_target_funds_account_and_resets_balance()
     test_funded_account_uses_bigger_target_but_same_stop()
-    test_funded_account_busts_at_drawdown_and_returns_to_eval()
+    test_funded_account_busts_permanently_instead_of_resetting_to_eval()
+    test_funded_bust_is_measured_against_the_trailing_high_water_mark()
     test_funded_state_persists_across_a_restart()
     print("All tests passed.")

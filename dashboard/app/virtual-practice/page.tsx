@@ -11,7 +11,7 @@ function fmtMoney(n: number): string {
   return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-type Stage = "eval" | "funded";
+type Stage = "eval" | "funded" | "busted";
 
 type AccountSummary = {
   account: string;
@@ -24,29 +24,40 @@ type AccountSummary = {
   stageBalance: number;
 };
 
-/** Replays one account's trades in order against the SAME funded state
- * machine jj_bot/virtual_accounts.py runs live (VirtualAccountManager.
+/** Replays one account's trades in order against the SAME funded/busted
+ * state machine jj_bot/virtual_accounts.py runs live (VirtualAccountManager.
  * _resolve_trade): starts in Eval at $0, crossing EVAL_TARGET funds the
- * account and resets its stage balance to $0, and a funded account that
- * draws down to -TRAILING_DRAWDOWN busts back to a fresh Eval attempt
- * (also reset to $0). netDollars (the naive lifetime sum) is kept
- * alongside this since it's still useful as an at-a-glance "how much has
- * this account made in total, across every reset" figure -- but it's
- * NOT what "Stage Balance" means, and conflating the two is exactly what
- * made it look like accounts crossing $3,000 were "stuck" instead of
- * funded. */
+ * account and resets its stage balance to $0. Once funded, a TRAILING
+ * drawdown is tracked against the account's own high-water mark since
+ * funding (NOT a flat -TRAILING_DRAWDOWN from the $0 reset) -- drawing down
+ * TRAILING_DRAWDOWN below that peak permanently BUSTS the account. Per
+ * explicit user request, each virtual account simulates one real TopStep
+ * account, so a bust does NOT grant a free do-over back to Eval -- once
+ * busted, the stage stays "busted" forever regardless of any later rows
+ * (the live engine excludes busted accounts from ever trading again, so
+ * there shouldn't be any, but the replay stays terminal defensively either
+ * way). netDollars (the naive lifetime sum) is kept alongside this since
+ * it's still useful as an at-a-glance "how much has this account made in
+ * total, across every reset" figure -- but it's NOT what "Stage Balance"
+ * means, and conflating the two is exactly what made it look like accounts
+ * crossing $3,000 were "stuck" instead of funded. */
 function replayStage(trades: Trade[]): { stage: Stage; stageBalance: number } {
   const sorted = [...trades].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   let stage: Stage = "eval";
   let balance = 0;
+  let fundedHighWater = 0;
   for (const t of sorted) {
+    if (stage === "busted") break;
     balance += t.pnl_dollars;
     if (stage === "eval" && balance >= EVAL_SIM.EVAL_TARGET) {
       stage = "funded";
       balance = 0;
-    } else if (stage === "funded" && balance <= -EVAL_SIM.TRAILING_DRAWDOWN) {
-      stage = "eval";
-      balance = 0;
+      fundedHighWater = 0;
+    } else if (stage === "funded") {
+      fundedHighWater = Math.max(fundedHighWater, balance);
+      if (balance <= fundedHighWater - EVAL_SIM.TRAILING_DRAWDOWN) {
+        stage = "busted";
+      }
     }
   }
   return { stage, stageBalance: balance };
@@ -107,6 +118,7 @@ export default async function VirtualPracticePage() {
   const winRate = totalTrades ? (totalWins / totalTrades) * 100 : 0;
   const netDollars = trades.reduce((sum, t) => sum + t.pnl_dollars, 0);
   const fundedCount = summaries.filter((s) => s.stage === "funded").length;
+  const bustedCount = summaries.filter((s) => s.stage === "busted").length;
 
   return (
     <div className="container">
@@ -117,9 +129,11 @@ export default async function VirtualPracticePage() {
             Abstract &quot;Virtual-01&quot;..&quot;Virtual-N&quot; accounts, each taking its own distinct setup from
             the NY-session strategy against live TopstepX market data — no real order is ever placed. One trade
             per account per day, same rule as real trading. Not counted toward the real P&amp;L/win-rate stats or
-            the Eval Simulator on the main dashboard. Each account runs the same Eval/Funded stages as a real
-            account: crossing +$3,000 funds it (balance resets to $0, future trades aim for $4,000 risking
-            $1,000); a funded account that draws down $2,000 busts back to a fresh Eval attempt.
+            the Eval Simulator on the main dashboard. Each account simulates one real TopStep account end to end,
+            including the stakes of losing one: crossing +$3,000 funds it (balance resets to $0, future trades aim
+            for $4,000 risking $1,000); a funded account that draws down $2,000 from its own highest point since
+            funding is permanently <strong>Busted</strong> and never trades again — same as a real funded account,
+            busting it does not hand you a free new one.
           </p>
         </div>
       </div>
@@ -134,6 +148,12 @@ export default async function VirtualPracticePage() {
             <div className="label">Funded Accounts</div>
             <div className={`value ${fundedCount > 0 ? "positive" : ""}`}>
               {fundedCount} / {summaries.length}
+            </div>
+          </div>
+          <div className="stat-card">
+            <div className="label">Busted Accounts</div>
+            <div className={`value ${bustedCount > 0 ? "negative" : ""}`}>
+              {bustedCount} / {summaries.length}
             </div>
           </div>
           <div className="stat-card">
@@ -181,8 +201,11 @@ export default async function VirtualPracticePage() {
                   <tr key={s.account}>
                     <td>{s.account}</td>
                     <td>
-                      <span className={`badge ${s.stage === "funded" ? "win" : "test"}`}>
-                        {s.stage === "funded" ? "Funded" : "Eval"}
+                      <span
+                        className={`badge ${s.stage === "funded" ? "win" : s.stage === "busted" ? "loss" : "test"}`}
+                        title={s.stage === "busted" ? "Permanently done trading -- drew down from its funded peak, same as losing a real funded account" : undefined}
+                      >
+                        {s.stage === "funded" ? "Funded" : s.stage === "busted" ? "Busted" : "Eval"}
                       </span>
                     </td>
                     <td>{s.trades}</td>
