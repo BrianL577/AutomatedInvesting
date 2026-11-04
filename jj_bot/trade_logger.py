@@ -213,6 +213,25 @@ class TradeLogger:
             # already logged above).
             logger.warning("Failed to write trade to Supabase: %s", exc)
 
+    def fetch_trades(self) -> list[dict]:
+        """All previously logged trades for this logger's source: from
+        Supabase when configured (durable across restarts/redeploys), else
+        the local JSON log."""
+        if self.supabase_url and self.supabase_key:
+            try:
+                resp = requests.get(
+                    f"{self.supabase_url}/rest/v1/trades",
+                    params={"source": f"eq.{self.source}", "select": "account_name,timestamp,pnl_dollars,reason",
+                            "order": "timestamp.asc", "limit": "100000"},
+                    headers={"apikey": self.supabase_key, "Authorization": f"Bearer {self.supabase_key}"},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                return resp.json()
+            except Exception as exc:
+                logger.warning("Could not fetch trades from Supabase, using local log: %s", exc)
+        return [t for t in self._read() if t.get("source") == self.source]
+
     def clear(self) -> None:
         try:
             self._write([])
