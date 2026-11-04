@@ -86,6 +86,12 @@ risk:
   eval_scale_down_enabled: true
   eval_scale_min_target_dollars: 200
   funded_target_dollars: 4000
+  # Virtual accounts only: after a funded account reaches funded_target_dollars,
+  # it trades 500:250 (target:stop) until it wins 5 of them, then is CASHED OUT
+  # and never trades again.
+  cashout_stop_dollars: 250
+  cashout_target_dollars: 500
+  cashout_wins_required: 5
 
 instrument:
   symbol: "NQ"                   # Nasdaq-100 e-mini futures, front month resolved at runtime

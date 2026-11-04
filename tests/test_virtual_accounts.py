@@ -460,6 +460,59 @@ def test_funded_state_persists_across_a_restart():
     assert manager2.accounts[1].net_dollars == 500.0
 
 
+def _funded_account(manager, idx=0):
+    a = manager.accounts[idx]
+    a.funded = True
+    return a
+
+
+def test_reaching_funded_target_enters_cashout_stage_with_500_250_trades():
+    cfg = load_config()
+    manager = _manager(cfg, 2)
+    a = _funded_account(manager)
+    manager._apply_pnl(a, 4000.0)
+    assert a.cashout_stage is True and a.cashout_wins == 0
+    signal = Signal(
+        timestamp=ET.localize(datetime(2024, 1, 1, 9, 30)), direction=Direction.SHORT, phase=Phase.CONTINUATION,
+        grade=SetupGrade.A, entry_price=1000.0, stop_price=1025.0, target_price=962.0, reason="[NY AM] x",
+    )
+    sized = manager._sized_signal_for_account(signal, a)
+    dpp = manager.dollar_per_point * cfg.risk.contracts_per_trade
+    assert abs((sized.stop_price - 1000.0) * dpp - cfg.risk.cashout_stop_dollars) < 1e-6
+    assert abs((1000.0 - sized.target_price) * dpp - cfg.risk.cashout_target_dollars) < 1e-6
+
+
+def test_five_cashout_wins_cash_out_account_and_it_never_trades_again():
+    cfg = load_config()
+    manager = _manager(cfg, 1)
+    a = _funded_account(manager)
+    manager._apply_pnl(a, 4000.0)
+    for i in range(4):
+        manager._apply_pnl(a, 500.0)
+        assert a.cashed_out is False and a.cashout_wins == i + 1
+    manager._apply_pnl(a, -250.0)  # a loss does not count
+    assert a.cashout_wins == 4
+    manager._apply_pnl(a, 500.0)
+    assert a.cashed_out is True
+    assert manager._idle_account() is None
+
+
+def test_busted_state_is_rebuilt_from_trade_history_when_state_file_is_lost():
+    cfg = load_config()
+    log_path = _temp_path()
+    state_path = _temp_path()
+    state_path.unlink()
+    import json
+    rows = [{"timestamp": f"2024-01-0{i}T10:00:00", "account_name": "Virtual-01", "source": "virtual_practice",
+             "pnl_dollars": p, "reason": "[NY AM] x"}
+            for i, p in enumerate([3000.0, -1000.0, -1000.0, -1000.0], start=1)]
+    log_path.write_text(json.dumps(rows))
+    manager = VirtualAccountManager(cfg, num_accounts=2, trade_log_path=log_path, state_path=state_path)
+    manager.on_bar(mkbar(9, 30, 100, 100, 100, 100, day=9))
+    assert manager.accounts[0].busted is True
+    assert manager._idle_account().name == "Virtual-02"
+
+
 if __name__ == "__main__":
     test_signal_assigned_to_one_idle_account()
     test_only_up_to_num_accounts_trade_per_day()
@@ -477,4 +530,7 @@ if __name__ == "__main__":
     test_funded_account_busts_permanently_instead_of_resetting_to_eval()
     test_funded_bust_is_measured_against_the_trailing_high_water_mark()
     test_funded_state_persists_across_a_restart()
+    test_reaching_funded_target_enters_cashout_stage_with_500_250_trades()
+    test_five_cashout_wins_cash_out_account_and_it_never_trades_again()
+    test_busted_state_is_rebuilt_from_trade_history_when_state_file_is_lost()
     print("All tests passed.")

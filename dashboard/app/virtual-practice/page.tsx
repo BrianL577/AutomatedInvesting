@@ -11,7 +11,11 @@ function fmtMoney(n: number): string {
   return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-type Stage = "eval" | "funded" | "busted";
+type Stage = "eval" | "funded" | "busted" | "cashout";
+
+// Mirrors cfg.risk.cashout_wins_required / funded_target_dollars in config.yaml.
+const FUNDED_TARGET = 4000;
+const CASHOUT_WINS_REQUIRED = 5;
 
 type AccountSummary = {
   account: string;
@@ -46,8 +50,10 @@ function replayStage(trades: Trade[]): { stage: Stage; stageBalance: number } {
   let stage: Stage = "eval";
   let balance = 0;
   let fundedHighWater = 0;
+  let cashoutStage = false;
+  let cashoutWins = 0;
   for (const t of sorted) {
-    if (stage === "busted") break;
+    if (stage === "busted" || stage === "cashout") break;
     balance += t.pnl_dollars;
     if (stage === "eval" && balance >= EVAL_SIM.EVAL_TARGET) {
       stage = "funded";
@@ -57,6 +63,10 @@ function replayStage(trades: Trade[]): { stage: Stage; stageBalance: number } {
       fundedHighWater = Math.max(fundedHighWater, balance);
       if (balance <= fundedHighWater - EVAL_SIM.TRAILING_DRAWDOWN) {
         stage = "busted";
+      } else if (cashoutStage) {
+        if (t.pnl_dollars > 0 && ++cashoutWins >= CASHOUT_WINS_REQUIRED) stage = "cashout";
+      } else if (balance >= FUNDED_TARGET) {
+        cashoutStage = true;
       }
     }
   }
@@ -202,10 +212,10 @@ export default async function VirtualPracticePage() {
                     <td>{s.account}</td>
                     <td>
                       <span
-                        className={`badge ${s.stage === "funded" ? "win" : s.stage === "busted" ? "loss" : "test"}`}
+                        className={`badge ${s.stage === "funded" ? "win" : s.stage === "busted" ? "loss" : s.stage === "cashout" ? "win" : "test"}`}
                         title={s.stage === "busted" ? "Permanently done trading -- drew down from its funded peak, same as losing a real funded account" : undefined}
                       >
-                        {s.stage === "funded" ? "Funded" : s.stage === "busted" ? "Busted" : "Eval"}
+                        {s.stage === "funded" ? "Funded" : s.stage === "busted" ? "Busted" : s.stage === "cashout" ? "Cash Out" : "Eval"}
                       </span>
                     </td>
                     <td>{s.trades}</td>

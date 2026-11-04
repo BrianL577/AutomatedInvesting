@@ -206,6 +206,14 @@ class RiskConfig:
     # Funded-stage target (see eval_scale_down_enabled #2 above) — same
     # stop as a normal trade, bigger target once already funded.
     funded_target_dollars: float = 4000.0
+    # Per explicit user request: once a funded virtual account's balance
+    # reaches funded_target_dollars, it drops to small "cash-out stage"
+    # trades (cashout_stop_dollars risk : cashout_target_dollars reward).
+    # After cashout_wins_required winning cash-out-stage trades the account
+    # is flagged CASHED OUT and never trades again.
+    cashout_stop_dollars: float = 250.0
+    cashout_target_dollars: float = 500.0
+    cashout_wins_required: int = 5
 
 
 @dataclass

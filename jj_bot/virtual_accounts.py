@@ -83,6 +83,19 @@ class VirtualAccount:
     # dashboard can show what it actually ended at. Lifetime state -- NOT
     # reset by reset_day().
     busted: bool = False
+    # Per explicit user request: once a funded account's balance reaches
+    # cfg.risk.funded_target_dollars ($4,000) it enters the "cash-out stage":
+    # future trades are cashout_target:cashout_stop ($500:$250) instead of
+    # 4000:1000. `cashout_wins` counts winning cash-out-stage trades; at
+    # cfg.risk.cashout_wins_required (5) the account is flagged `cashed_out`
+    # and, like a busted account, never trades again. Lifetime state.
+    cashout_stage: bool = False
+    cashout_wins: int = 0
+    cashed_out: bool = False
+
+    @property
+    def retired(self) -> bool:
+        return self.busted or self.cashed_out
 
     def reset_day(self) -> None:
         self.pending_signal = None
@@ -169,7 +182,7 @@ class VirtualAccountManager:
         Busted accounts (see VirtualAccount.busted) are excluded entirely,
         at every tier -- per explicit user request, a busted account must
         never trade again, full stop."""
-        idle = [a for a in self.accounts if not a.traded_today and not a.busted]
+        idle = [a for a in self.accounts if not a.traded_today and not a.retired]
         if not idle:
             return None
 
@@ -203,6 +216,9 @@ class VirtualAccountManager:
                     "funded": a.funded,
                     "funded_high_water": a.funded_high_water,
                     "busted": a.busted,
+                    "cashout_stage": a.cashout_stage,
+                    "cashout_wins": a.cashout_wins,
+                    "cashed_out": a.cashed_out,
                 }
                 for a in self.accounts
             },
@@ -220,7 +236,48 @@ class VirtualAccountManager:
             except OSError:
                 pass
 
+    def _apply_replayed_history(self, had_state_file: bool) -> None:
+        """The state file lives on the bot's local disk, which is wiped on
+        every redeploy/restart of an ephemeral host -- that is how a BUSTED
+        account ended up trading again (its busted flag vanished and it
+        looked like a fresh $0 account). The trade history (Supabase/local
+        log) is the durable source of truth, so replay it through the same
+        state machine. Terminal states (busted / cashed out) found in the
+        history always win; with no state file at all, the replayed state is
+        used wholesale."""
+        try:
+            rows = self.trade_logger.fetch_trades()
+        except Exception:
+            logger.exception("Could not load trade history to rebuild virtual-account state.")
+            return
+        by_account: dict[str, list[float]] = {}
+        for r in sorted(rows, key=lambda r: str(r.get("timestamp", ""))):
+            if not str(r.get("reason") or "").startswith("["):
+                continue  # not a genuine engine trade (same guard as the dashboard)
+            by_account.setdefault(r.get("account_name") or "", []).append(float(r.get("pnl_dollars", 0.0)))
+        for account in self.accounts:
+            pnls = by_account.get(account.name)
+            if not pnls:
+                continue
+            replayed = VirtualAccount(name=account.name)
+            for pnl in pnls:
+                self._apply_pnl(replayed, pnl)
+            if replayed.retired or not had_state_file:
+                for f in ("net_dollars", "funded", "funded_high_water", "busted",
+                          "cashout_stage", "cashout_wins", "cashed_out"):
+                    setattr(account, f, getattr(replayed, f))
+                if replayed.retired:
+                    logger.info("%s is %s per trade history -- will not trade.",
+                                account.name, "BUSTED" if replayed.busted else "CASHED OUT")
+
     def _restore_state_if_same_day(self, day: date) -> None:
+        had_state_file = self._state_path.exists()
+        try:
+            self._restore_from_state_file(day)
+        finally:
+            self._apply_replayed_history(had_state_file)
+
+    def _restore_from_state_file(self, day: date) -> None:
         if not self._state_path.exists():
             return
         try:
@@ -245,6 +302,9 @@ class VirtualAccountManager:
             account.funded = saved.get("funded", False)
             account.funded_high_water = saved.get("funded_high_water", 0.0)
             account.busted = saved.get("busted", False)
+            account.cashout_stage = saved.get("cashout_stage", False)
+            account.cashout_wins = saved.get("cashout_wins", 0)
+            account.cashed_out = saved.get("cashed_out", False)
             if same_day and saved.get("traded_today"):
                 account.traded_today = True
                 restored_traded += 1
@@ -266,6 +326,18 @@ class VirtualAccountManager:
             return signal
         dollar_per_point = self.dollar_per_point * self.cfg.risk.contracts_per_trade
         tick = self.cfg.instrument.tick_size
+        if account.cashout_stage:
+            # Cash-out stage: small 500:250 trades (target:stop).
+            def pts(dollars: float) -> float:
+                return max(tick, round(dollars / dollar_per_point / tick) * tick)
+            stop_pts = pts(self.cfg.risk.cashout_stop_dollars)
+            target_pts = pts(self.cfg.risk.cashout_target_dollars)
+            sign = 1 if signal.direction == Direction.LONG else -1
+            return replace(
+                signal,
+                stop_price=signal.entry_price - sign * stop_pts,
+                target_price=signal.entry_price + sign * target_pts,
+            )
         funded_target_points = self.cfg.risk.funded_target_dollars / dollar_per_point
         funded_target_points = max(tick, round(funded_target_points / tick) * tick)
         if signal.direction == Direction.LONG:
@@ -342,7 +414,7 @@ class VirtualAccountManager:
             "%s -> %s %s @ %.2f stop=%.2f target=%.2f grade=%s%s | %s",
             account.name, sized_signal.phase.value, sized_signal.direction.value,
             sized_signal.entry_price, sized_signal.stop_price, sized_signal.target_price,
-            sized_signal.grade.value, " [FUNDED]" if account.funded else "", sized_signal.reason,
+            sized_signal.grade.value, (" [CASH-OUT STAGE]" if account.cashout_stage else " [FUNDED]" if account.funded else ""), sized_signal.reason,
         )
         return account, sized_signal
 
@@ -386,31 +458,32 @@ class VirtualAccountManager:
                 logger.exception("Chart rendering failed for %s — trade still logged without a chart.", account.name)
         self.trade_logger.log_trade(result, account_name=account.name, chart_path=chart_path)
         pnl_dollars = pnl_points * self.dollar_per_point * self.cfg.risk.contracts_per_trade
-        account.net_dollars += pnl_dollars
         logger.info(
             "%s trade closed: %s pnl=%.2f pts ($%.2f) win=%s net=$%.2f",
-            account.name, signal.direction.value, pnl_points, pnl_dollars, win, account.net_dollars,
+            account.name, signal.direction.value, pnl_points, pnl_dollars, win, account.net_dollars + pnl_dollars,
         )
 
-        # Per explicit user request: reaching the eval profit target funds
-        # the account (balance resets to $0, future trades risk the same
-        # stop but aim for a much bigger target -- see
-        # _sized_signal_for_account). Once funded, a TRAILING drawdown is
-        # tracked against the account's own high-water mark since funding
-        # (NOT a flat -$2,000 from the $0 reset) -- drawing down
-        # trailing_max_drawdown below that peak permanently BUSTS the
-        # account: it simulates one real TopStep account, and busting a
-        # real funded account doesn't grant a free do-over, so it's
-        # excluded from ever trading again (_idle_account), with its
-        # funded/net_dollars state left exactly as it was at the moment of
-        # the bust -- not reset.
+        self._apply_pnl(account, pnl_dollars)
+
+        account.pending_signal = None
+        if self._current_day is not None:
+            self._save_state(self._current_day)
+        return result
+
+    def _apply_pnl(self, account: VirtualAccount, pnl_dollars: float) -> None:
+        """Eval -> funded -> cash-out stage -> cashed out / busted state
+        machine, advanced by one closed trade. Shared by live resolution and
+        by history replay on startup."""
+        account.net_dollars += pnl_dollars
+        risk = self.cfg.risk
         if not account.funded and account.net_dollars >= self.cfg.topstep_eval.profit_target:
             account.funded = True
             account.net_dollars = 0.0
             account.funded_high_water = 0.0
             logger.info("%s FUNDED! Balance reset to $0 -- future trades aim for $%.0f.",
-                        account.name, self.cfg.risk.funded_target_dollars)
-        elif account.funded and not account.busted:
+                        account.name, risk.funded_target_dollars)
+        elif account.funded and not account.retired:
+            was_cashout_stage = account.cashout_stage
             account.funded_high_water = max(account.funded_high_water, account.net_dollars)
             bust_floor = account.funded_high_water - self.cfg.topstep_eval.trailing_max_drawdown
             if account.net_dollars <= bust_floor:
@@ -420,8 +493,16 @@ class VirtualAccountManager:
                     "permanently done trading, same as losing a real funded account.",
                     account.name, self.cfg.topstep_eval.trailing_max_drawdown, account.funded_high_water,
                 )
-
-        account.pending_signal = None
-        if self._current_day is not None:
-            self._save_state(self._current_day)
-        return result
+            elif was_cashout_stage:
+                if pnl_dollars > 0:
+                    account.cashout_wins += 1
+                    logger.info("%s cash-out win %d/%d.", account.name, account.cashout_wins, risk.cashout_wins_required)
+                    if account.cashout_wins >= risk.cashout_wins_required:
+                        account.cashed_out = True
+                        logger.info("%s CASHED OUT -- permanently done trading.", account.name)
+            elif account.net_dollars >= risk.funded_target_dollars:
+                account.cashout_stage = True
+                account.cashout_wins = 0
+                logger.info("%s reached $%.0f -- future trades are $%.0f:$%.0f until %d wins, then CASH OUT.",
+                            account.name, risk.funded_target_dollars, risk.cashout_target_dollars,
+                            risk.cashout_stop_dollars, risk.cashout_wins_required)
