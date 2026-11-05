@@ -262,6 +262,12 @@ class VirtualAccountManager:
             replayed = VirtualAccount(name=account.name)
             for pnl in pnls:
                 self._apply_pnl(replayed, pnl)
+            # A state file written by older code (or a restart mid-update) can
+            # lack the cash-out fields; the history is authoritative, so never
+            # let a funded account at/after $4,000 fall back to 4000:1000.
+            if replayed.cashout_stage and not account.cashout_stage and not account.retired:
+                account.cashout_stage = True
+                account.cashout_wins = max(account.cashout_wins, replayed.cashout_wins)
             if replayed.retired or not had_state_file:
                 for f in ("net_dollars", "funded", "funded_high_water", "busted",
                           "cashout_stage", "cashout_wins", "cashed_out"):
@@ -305,6 +311,10 @@ class VirtualAccountManager:
             account.cashout_stage = saved.get("cashout_stage", False)
             account.cashout_wins = saved.get("cashout_wins", 0)
             account.cashed_out = saved.get("cashed_out", False)
+            # Older state files predate the cash-out fields: derive the stage.
+            if (account.funded and not account.retired and not account.cashout_stage
+                    and account.funded_high_water >= self.cfg.risk.funded_target_dollars):
+                account.cashout_stage = True
             if same_day and saved.get("traded_today"):
                 account.traded_today = True
                 restored_traded += 1
