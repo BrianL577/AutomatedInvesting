@@ -513,6 +513,35 @@ def test_busted_state_is_rebuilt_from_trade_history_when_state_file_is_lost():
     assert manager._idle_account().name == "Virtual-02"
 
 
+def test_old_state_file_without_cashout_fields_still_enters_cashout_stage():
+    import json
+    cfg = load_config()
+    log_path = _temp_path(); log_path.write_text("[]")
+    state_path = _temp_path()
+    state_path.write_text(json.dumps({"date": "2024-01-01", "accounts": {
+        "Virtual-01": {"traded_today": False, "net_dollars": 4000.0, "funded": True,
+                       "funded_high_water": 4000.0, "busted": False}}}))
+    manager = VirtualAccountManager(cfg, num_accounts=1, trade_log_path=log_path, state_path=state_path)
+    manager.on_bar(mkbar(9, 30, 100, 100, 100, 100, day=1))
+    assert manager.accounts[0].cashout_stage is True
+
+
+def test_history_replay_restores_cashout_stage_over_stale_state_file():
+    import json
+    cfg = load_config()
+    log_path = _temp_path()
+    rows = [{"timestamp": "2024-01-01T10:00:00", "account_name": "Virtual-01", "source": "virtual_practice",
+             "pnl_dollars": p, "reason": "[NY AM] x"} for p in (3040.0, 4000.0)]
+    log_path.write_text(json.dumps(rows))
+    state_path = _temp_path()
+    state_path.write_text(json.dumps({"date": "2024-01-01", "accounts": {
+        "Virtual-01": {"traded_today": False, "net_dollars": 0.0, "funded": True,
+                       "funded_high_water": 0.0, "busted": False}}}))
+    manager = VirtualAccountManager(cfg, num_accounts=1, trade_log_path=log_path, state_path=state_path)
+    manager.on_bar(mkbar(9, 30, 100, 100, 100, 100, day=1))
+    assert manager.accounts[0].cashout_stage is True
+
+
 if __name__ == "__main__":
     test_signal_assigned_to_one_idle_account()
     test_only_up_to_num_accounts_trade_per_day()
