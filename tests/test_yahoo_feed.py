@@ -48,3 +48,16 @@ def test_forming_bar_excluded_and_old_bars_not_reprocessed():
 def test_runner_needs_no_topstepx_credentials():
     r = _runner()
     assert r.client is None and r.symbol == "NQ=F"
+
+
+def test_off_minute_latest_price_snapshot_is_not_a_bar():
+    """Yahoo appends a flat-OHLC 'current price' entry at an off-minute
+    timestamp; it shares the real bar's minute label and must be dropped."""
+    payload = {"chart": {"result": [{
+        "timestamp": [T0, T0 + 60, T0 + 75],
+        "indicators": {"quote": [{
+            "open": [100.0, 101.0, 105.0], "high": [102.0, 103.0, 105.0],
+            "low": [99.0, 100.0, 105.0], "close": [101.0, 102.0, 105.0], "volume": [10, 20, 0]}]}}]}}
+    bars = parse_yahoo_bars(payload)
+    assert [b.timestamp.strftime("%H:%M") for b in bars] == ["09:30", "09:31"]
+    assert bars[1].high == 103.0 and bars[1].close == 102.0
