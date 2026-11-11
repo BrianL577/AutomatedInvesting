@@ -268,6 +268,9 @@ class VirtualAccountManager:
             if replayed.cashout_stage and not account.cashout_stage and not account.retired:
                 account.cashout_stage = True
                 account.cashout_wins = max(account.cashout_wins, replayed.cashout_wins)
+            if not replayed.retired and replayed.funded == account.funded:
+                # Older state files never tracked the Eval-stage peak.
+                account.funded_high_water = max(account.funded_high_water, replayed.funded_high_water)
             if replayed.retired or not had_state_file:
                 for f in ("net_dollars", "funded", "funded_high_water", "busted",
                           "cashout_stage", "cashout_wins", "cashed_out"):
@@ -484,14 +487,30 @@ class VirtualAccountManager:
         """Eval -> funded -> cash-out stage -> cashed out / busted state
         machine, advanced by one closed trade. Shared by live resolution and
         by history replay on startup."""
+        if account.retired:
+            return  # busted / cashed out: frozen exactly as it ended
         account.net_dollars += pnl_dollars
         risk = self.cfg.risk
-        if not account.funded and account.net_dollars >= self.cfg.topstep_eval.profit_target:
-            account.funded = True
-            account.net_dollars = 0.0
-            account.funded_high_water = 0.0
-            logger.info("%s FUNDED! Balance reset to $0 -- future trades aim for $%.0f.",
-                        account.name, risk.funded_target_dollars)
+        if not account.funded and not account.retired:
+            # Eval stage: same TRAILING max drawdown as the funded stage (and
+            # therefore never looser than a flat -trailing_max_drawdown from $0,
+            # since the high-water mark starts at $0). Per explicit user
+            # request an unfunded account that hits it is permanently BUSTED.
+            account.funded_high_water = max(account.funded_high_water, account.net_dollars)
+            if account.net_dollars >= self.cfg.topstep_eval.profit_target:
+                account.funded = True
+                account.net_dollars = 0.0
+                account.funded_high_water = 0.0
+                logger.info("%s FUNDED! Balance reset to $0 -- future trades aim for $%.0f.",
+                            account.name, risk.funded_target_dollars)
+            elif account.net_dollars <= account.funded_high_water - self.cfg.topstep_eval.trailing_max_drawdown:
+                account.busted = True
+                logger.info(
+                    "%s BUSTED IN EVAL (balance $%.0f is $%.0f below its $%.0f peak) -- "
+                    "permanently done trading.",
+                    account.name, account.net_dollars, self.cfg.topstep_eval.trailing_max_drawdown,
+                    account.funded_high_water,
+                )
         elif account.funded and not account.retired:
             was_cashout_stage = account.cashout_stage
             account.funded_high_water = max(account.funded_high_water, account.net_dollars)

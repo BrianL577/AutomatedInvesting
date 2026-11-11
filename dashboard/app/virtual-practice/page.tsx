@@ -55,10 +55,17 @@ function replayStage(trades: Trade[]): { stage: Stage; stageBalance: number } {
   for (const t of sorted) {
     if (stage === "busted" || stage === "cashout") break;
     balance += t.pnl_dollars;
-    if (stage === "eval" && balance >= EVAL_SIM.EVAL_TARGET) {
-      stage = "funded";
-      balance = 0;
-      fundedHighWater = 0;
+    if (stage === "eval") {
+      // Eval: same trailing max drawdown as funded (never looser than a flat
+      // -TRAILING_DRAWDOWN from $0, since the peak starts at $0).
+      fundedHighWater = Math.max(fundedHighWater, balance);
+      if (balance >= EVAL_SIM.EVAL_TARGET) {
+        stage = "funded";
+        balance = 0;
+        fundedHighWater = 0;
+      } else if (balance <= fundedHighWater - EVAL_SIM.TRAILING_DRAWDOWN) {
+        stage = "busted";
+      }
     } else if (stage === "funded") {
       fundedHighWater = Math.max(fundedHighWater, balance);
       if (balance <= fundedHighWater - EVAL_SIM.TRAILING_DRAWDOWN) {
