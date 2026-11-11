@@ -103,15 +103,35 @@ if ($pullOk -and $newCommit -ne $oldCommit) {
     Log "Already up to date at $oldCommit - no code changes, restarting as-is."
 }
 
+# --- Optional switches read from .env (defaults keep the old behaviour):
+#   LIVE_BOT_ENABLED=false  -> do NOT relaunch the live trading bot (e.g. while
+#                              the TopStep/TopstepX subscriptions are paused).
+#   VIRTUAL_FEED=yahoo      -> the practice bot needs no TopStep login, so always
+#                              start it (also after a reboot), not only if it was
+#                              already running before this update. ---
+function Get-DotEnvValue($name) {
+    $envFile = Join-Path $RepoRoot ".env"
+    if (-not (Test-Path $envFile)) { return $null }
+    $line = Get-Content $envFile | Where-Object { $_ -match "^\s*$name\s*=" } | Select-Object -Last 1
+    if (-not $line) { return $null }
+    return (($line -split "=", 2)[1]).Trim().Trim('"').Trim("'")
+}
+$liveEnabled = ((Get-DotEnvValue "LIVE_BOT_ENABLED") -ne "false")
+$startVirtual = $virtualWasRunning -or ((Get-DotEnvValue "VIRTUAL_FEED") -eq "yahoo")
+
 # --- Relaunch, detached, so this scheduled task can exit while the bot(s)
 # keep running under their own crash-restart loops. ---
-Log "Relaunching run_live_loop.ps1..."
-Start-Process -FilePath "powershell.exe" `
-    -ArgumentList "-ExecutionPolicy", "Bypass", "-File", "scripts\run_live_loop.ps1" `
-    -WorkingDirectory $RepoRoot -WindowStyle Hidden
+if ($liveEnabled) {
+    Log "Relaunching run_live_loop.ps1..."
+    Start-Process -FilePath "powershell.exe" `
+        -ArgumentList "-ExecutionPolicy", "Bypass", "-File", "scripts\run_live_loop.ps1" `
+        -WorkingDirectory $RepoRoot -WindowStyle Hidden
+} else {
+    Log "LIVE_BOT_ENABLED=false in .env -- not starting the live trading bot."
+}
 
-if ($virtualWasRunning) {
-    Log "Relaunching run_virtual_practice_loop.ps1 (it was running before this update)..."
+if ($startVirtual) {
+    Log "Relaunching run_virtual_practice_loop.ps1 (was running before, or VIRTUAL_FEED=yahoo)..."
     Start-Process -FilePath "powershell.exe" `
         -ArgumentList "-ExecutionPolicy", "Bypass", "-File", "scripts\run_virtual_practice_loop.ps1" `
         -WorkingDirectory $RepoRoot -WindowStyle Hidden
