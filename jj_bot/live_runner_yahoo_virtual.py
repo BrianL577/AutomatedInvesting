@@ -55,11 +55,16 @@ def parse_yahoo_bars(payload: dict, tz_name: str = "America/New_York") -> list[B
             continue
         if None in (o, h, l, c):
             continue
+        if ts % 60 != 0:
+            # Yahoo appends an off-minute "latest price" snapshot (flat OHLC,
+            # same minute label as the real bar) -- not a real 1-minute bar.
+            continue
         minute = to_et(datetime.fromtimestamp(ts, tz=timezone.utc), tz_name).replace(second=0, microsecond=0)
         v = vols[i] if i < len(vols) and vols[i] is not None else 0
         bars.append(Bar(timestamp=minute, open=float(o), high=float(h), low=float(l), close=float(c), volume=int(v)))
     bars.sort(key=lambda b: b.timestamp)
-    return bars
+    deduped: dict = {b.timestamp: b for b in bars}  # one bar per minute, belt and braces
+    return sorted(deduped.values(), key=lambda b: b.timestamp)
 
 
 class YahooVirtualPracticeRunner(TopstepXVirtualPracticeRunner):
