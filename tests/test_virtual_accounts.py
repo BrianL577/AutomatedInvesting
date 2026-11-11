@@ -542,6 +542,42 @@ def test_history_replay_restores_cashout_stage_over_stale_state_file():
     assert manager.accounts[0].cashout_stage is True
 
 
+def test_eval_account_busts_permanently_at_minus_2000_flat_floor():
+    cfg = load_config()
+    manager = _manager(cfg, 2)
+    a = manager.accounts[0]
+    manager._apply_pnl(a, -1000.0)
+    manager._apply_pnl(a, -960.0)
+    assert a.busted is False
+    manager._apply_pnl(a, -40.0)  # exactly -$2,000
+    assert a.busted is True and a.funded is False
+    assert manager._idle_account().name == "Virtual-02"
+
+
+def test_eval_account_busts_on_trailing_drawdown_from_its_peak():
+    cfg = load_config()
+    manager = _manager(cfg, 1)
+    a = manager.accounts[0]
+    manager._apply_pnl(a, 1500.0)
+    manager._apply_pnl(a, -1900.0)   # -$400: only $1,900 off the peak
+    assert a.busted is False
+    manager._apply_pnl(a, -100.0)    # -$500: $2,000 off the $1,500 peak
+    assert a.busted is True
+
+
+def test_eval_busted_state_is_rebuilt_from_history():
+    import json
+    cfg = load_config()
+    log_path = _temp_path()
+    rows = [{"timestamp": f"2024-01-0{i}T10:00:00", "account_name": "Virtual-01", "source": "virtual_practice",
+             "pnl_dollars": p, "reason": "[NY AM] x"} for i, p in enumerate([-1000.0, -1000.0, 1520.0], start=1)]
+    log_path.write_text(json.dumps(rows))
+    state_path = _temp_path(); state_path.unlink()
+    manager = VirtualAccountManager(cfg, num_accounts=1, trade_log_path=log_path, state_path=state_path)
+    manager.on_bar(mkbar(9, 30, 100, 100, 100, 100, day=9))
+    assert manager.accounts[0].busted is True, "busted in eval stays busted even though a later trade won"
+
+
 if __name__ == "__main__":
     test_signal_assigned_to_one_idle_account()
     test_only_up_to_num_accounts_trade_per_day()
