@@ -43,7 +43,10 @@ from typing import Callable, Optional
 
 from .config import AppConfig
 from .models import Bar, Direction, Signal, TradeResult
+from dateutil.parser import isoparse
+
 from .strategy import StrategyEngine
+from .time_utils import to_et
 from .trade_logger import TradeLogger
 from .logging_setup import setup_logging
 
@@ -236,7 +239,7 @@ class VirtualAccountManager:
             except OSError:
                 pass
 
-    def _apply_replayed_history(self, had_state_file: bool) -> None:
+    def _apply_replayed_history(self, had_state_file: bool, day: Optional[date] = None) -> None:
         """The state file lives on the bot's local disk, which is wiped on
         every redeploy/restart of an ephemeral host -- that is how a BUSTED
         account ended up trading again (its busted flag vanished and it
@@ -251,17 +254,30 @@ class VirtualAccountManager:
             logger.exception("Could not load trade history to rebuild virtual-account state.")
             return
         by_account: dict[str, list[float]] = {}
+        traded_on_day: set[str] = set()
         for r in sorted(rows, key=lambda r: str(r.get("timestamp", ""))):
             if not str(r.get("reason") or "").startswith("["):
                 continue  # not a genuine engine trade (same guard as the dashboard)
-            by_account.setdefault(r.get("account_name") or "", []).append(float(r.get("pnl_dollars", 0.0)))
+            name = r.get("account_name") or ""
+            by_account.setdefault(name, []).append(float(r.get("pnl_dollars", 0.0)))
+            if day is not None:
+                try:
+                    entry_day = to_et(isoparse(str(r.get("timestamp"))), self.cfg.strategy.timezone).date()
+                    if entry_day == day:
+                        traded_on_day.add(name)
+                except (ValueError, TypeError):
+                    pass
+        # One trade per account per day must survive losing the state file too.
+        for account in self.accounts:
+            if account.name in traded_on_day:
+                account.traded_today = True
         for account in self.accounts:
             pnls = by_account.get(account.name)
             if not pnls:
                 continue
             replayed = VirtualAccount(name=account.name)
             for pnl in pnls:
-                self._apply_pnl(replayed, pnl)
+                self._apply_pnl(replayed, pnl, enforce_eval_bust=False)
             # A state file written by older code (or a restart mid-update) can
             # lack the cash-out fields; the history is authoritative, so never
             # let a funded account at/after $4,000 fall back to 4000:1000.
@@ -284,7 +300,19 @@ class VirtualAccountManager:
         try:
             self._restore_from_state_file(day)
         finally:
-            self._apply_replayed_history(had_state_file)
+            self._apply_replayed_history(had_state_file, day)
+            self._retire_eval_accounts_past_limit()
+
+    def _retire_eval_accounts_past_limit(self) -> None:
+        """Forward-only application of the Eval bust rule at startup: an
+        unfunded account already at/below the trailing floor (peak since the
+        rule began, starting at $0) is busted now. Judged on the account's
+        CURRENT balance only -- never by re-walking old history."""
+        for a in self.accounts:
+            if not a.funded and not a.retired and a.net_dollars <= a.funded_high_water - self.cfg.topstep_eval.trailing_max_drawdown:
+                a.busted = True
+                logger.info("%s BUSTED IN EVAL (balance $%.0f, limit $%.0f below its $%.0f peak) -- permanently done trading.",
+                            a.name, a.net_dollars, self.cfg.topstep_eval.trailing_max_drawdown, a.funded_high_water)
 
     def _restore_from_state_file(self, day: date) -> None:
         if not self._state_path.exists():
@@ -483,7 +511,7 @@ class VirtualAccountManager:
             self._save_state(self._current_day)
         return result
 
-    def _apply_pnl(self, account: VirtualAccount, pnl_dollars: float) -> None:
+    def _apply_pnl(self, account: VirtualAccount, pnl_dollars: float, enforce_eval_bust: bool = True) -> None:
         """Eval -> funded -> cash-out stage -> cashed out / busted state
         machine, advanced by one closed trade. Shared by live resolution and
         by history replay on startup."""
@@ -492,25 +520,30 @@ class VirtualAccountManager:
         account.net_dollars += pnl_dollars
         risk = self.cfg.risk
         if not account.funded and not account.retired:
-            # Eval stage: same TRAILING max drawdown as the funded stage (and
-            # therefore never looser than a flat -trailing_max_drawdown from $0,
-            # since the high-water mark starts at $0). Per explicit user
-            # request an unfunded account that hits it is permanently BUSTED.
-            account.funded_high_water = max(account.funded_high_water, account.net_dollars)
             if account.net_dollars >= self.cfg.topstep_eval.profit_target:
                 account.funded = True
                 account.net_dollars = 0.0
                 account.funded_high_water = 0.0
                 logger.info("%s FUNDED! Balance reset to $0 -- future trades aim for $%.0f.",
                             account.name, risk.funded_target_dollars)
-            elif account.net_dollars <= account.funded_high_water - self.cfg.topstep_eval.trailing_max_drawdown:
-                account.busted = True
-                logger.info(
-                    "%s BUSTED IN EVAL (balance $%.0f is $%.0f below its $%.0f peak) -- "
-                    "permanently done trading.",
-                    account.name, account.net_dollars, self.cfg.topstep_eval.trailing_max_drawdown,
-                    account.funded_high_water,
-                )
+            elif enforce_eval_bust:
+                # Eval stage: same TRAILING max drawdown as the funded stage (and
+                # therefore never looser than a flat -trailing_max_drawdown from
+                # $0, since the high-water mark starts at $0). Per explicit user
+                # request an unfunded account that hits it is permanently BUSTED.
+                # NOT applied when replaying old history (enforce_eval_bust=False):
+                # that history was played under the old rule, where an Eval account
+                # could dip and recover, so re-judging it would retroactively bust
+                # accounts that were legitimately alive.
+                account.funded_high_water = max(account.funded_high_water, account.net_dollars)
+                if account.net_dollars <= account.funded_high_water - self.cfg.topstep_eval.trailing_max_drawdown:
+                    account.busted = True
+                    logger.info(
+                        "%s BUSTED IN EVAL (balance $%.0f is $%.0f below its $%.0f peak) -- "
+                        "permanently done trading.",
+                        account.name, account.net_dollars, self.cfg.topstep_eval.trailing_max_drawdown,
+                        account.funded_high_water,
+                    )
         elif account.funded and not account.retired:
             was_cashout_stage = account.cashout_stage
             account.funded_high_water = max(account.funded_high_water, account.net_dollars)

@@ -16,6 +16,9 @@ type Stage = "eval" | "funded" | "busted" | "cashout";
 // Mirrors cfg.risk.cashout_wins_required / funded_target_dollars in config.yaml.
 const FUNDED_TARGET = 4000;
 const CASHOUT_WINS_REQUIRED = 5;
+// When the Eval-stage bust rule took effect (2026-11-11 ~20:00 UTC). Trades before it
+// are never re-judged by it.
+const EVAL_BUST_CUTOVER_MS = Date.parse("2026-11-11T20:00:00Z");
 
 type AccountSummary = {
   account: string;
@@ -50,21 +53,24 @@ function replayStage(trades: Trade[]): { stage: Stage; stageBalance: number } {
   let stage: Stage = "eval";
   let balance = 0;
   let fundedHighWater = 0;
+  let evalHighWater = 0;
   let cashoutStage = false;
   let cashoutWins = 0;
   for (const t of sorted) {
     if (stage === "busted" || stage === "cashout") break;
     balance += t.pnl_dollars;
     if (stage === "eval") {
-      // Eval: same trailing max drawdown as funded (never looser than a flat
-      // -TRAILING_DRAWDOWN from $0, since the peak starts at $0).
-      fundedHighWater = Math.max(fundedHighWater, balance);
       if (balance >= EVAL_SIM.EVAL_TARGET) {
         stage = "funded";
         balance = 0;
         fundedHighWater = 0;
-      } else if (balance <= fundedHighWater - EVAL_SIM.TRAILING_DRAWDOWN) {
-        stage = "busted";
+      } else if (new Date(t.timestamp).getTime() >= EVAL_BUST_CUTOVER_MS) {
+        // Eval accounts bust at the trailing max drawdown (peak since the rule
+        // began, starting at $0 -- never looser than a flat -$2,000 from $0).
+        // Only trades AFTER the cutover count: older history was played under
+        // the old rule where an Eval account could dip and recover.
+        evalHighWater = Math.max(evalHighWater, balance);
+        if (balance <= evalHighWater - EVAL_SIM.TRAILING_DRAWDOWN) stage = "busted";
       }
     } else if (stage === "funded") {
       fundedHighWater = Math.max(fundedHighWater, balance);
@@ -77,6 +83,9 @@ function replayStage(trades: Trade[]): { stage: Stage; stageBalance: number } {
       }
     }
   }
+  // Same forward-only check the bot runs at startup: an account that is still
+  // Eval and already at/below its floor is busted now.
+  if (stage === "eval" && balance <= evalHighWater - EVAL_SIM.TRAILING_DRAWDOWN) stage = "busted";
   return { stage, stageBalance: balance };
 }
 

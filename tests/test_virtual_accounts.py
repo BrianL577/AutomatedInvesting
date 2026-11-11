@@ -565,17 +565,45 @@ def test_eval_account_busts_on_trailing_drawdown_from_its_peak():
     assert a.busted is True
 
 
-def test_eval_busted_state_is_rebuilt_from_history():
+def _history_manager(pnls, name="Virtual-01", day_for_all=1):
     import json
     cfg = load_config()
     log_path = _temp_path()
-    rows = [{"timestamp": f"2024-01-0{i}T10:00:00", "account_name": "Virtual-01", "source": "virtual_practice",
-             "pnl_dollars": p, "reason": "[NY AM] x"} for i, p in enumerate([-1000.0, -1000.0, 1520.0], start=1)]
+    rows = [{"timestamp": f"2024-01-0{i + 1}T10:00:00-05:00", "account_name": name, "source": "virtual_practice",
+             "pnl_dollars": p, "reason": "[NY AM] x"} for i, p in enumerate(pnls)]
     log_path.write_text(json.dumps(rows))
     state_path = _temp_path(); state_path.unlink()
     manager = VirtualAccountManager(cfg, num_accounts=1, trade_log_path=log_path, state_path=state_path)
     manager.on_bar(mkbar(9, 30, 100, 100, 100, 100, day=9))
-    assert manager.accounts[0].busted is True, "busted in eval stays busted even though a later trade won"
+    return manager
+
+
+def test_history_that_dipped_below_minus_2000_then_recovered_is_NOT_retroactively_busted():
+    """Played under the old rule, an Eval account could dip and recover; replay
+    must not re-judge that history (this wrongly busted every account once)."""
+    m = _history_manager([-1000.0, -1000.0, -300.0, 5500.0, 100.0])
+    a = m.accounts[0]
+    assert a.busted is False
+    assert a.funded is True
+
+
+def test_eval_account_currently_below_the_limit_is_busted_at_startup():
+    m = _history_manager([-1000.0, -1000.0, -960.0])
+    assert m.accounts[0].busted is True
+
+
+def test_traded_today_is_rebuilt_from_history_when_state_file_is_missing():
+    import json
+    cfg = load_config()
+    log_path = _temp_path()
+    rows = [{"timestamp": "2024-01-09T10:00:00-05:00", "account_name": "Virtual-01", "source": "virtual_practice",
+             "pnl_dollars": 100.0, "reason": "[NY AM] x"}]
+    log_path.write_text(json.dumps(rows))
+    state_path = _temp_path(); state_path.unlink()
+    manager = VirtualAccountManager(cfg, num_accounts=2, trade_log_path=log_path, state_path=state_path)
+    manager.on_bar(mkbar(9, 30, 100, 100, 100, 100, day=9))
+    assert manager.accounts[0].traded_today is True
+    assert manager.accounts[1].traded_today is False
 
 
 if __name__ == "__main__":
@@ -598,4 +626,7 @@ if __name__ == "__main__":
     test_reaching_funded_target_enters_cashout_stage_with_500_250_trades()
     test_five_cashout_wins_cash_out_account_and_it_never_trades_again()
     test_busted_state_is_rebuilt_from_trade_history_when_state_file_is_lost()
+    test_history_that_dipped_below_minus_2000_then_recovered_is_NOT_retroactively_busted()
+    test_eval_account_currently_below_the_limit_is_busted_at_startup()
+    test_traded_today_is_rebuilt_from_history_when_state_file_is_missing()
     print("All tests passed.")
